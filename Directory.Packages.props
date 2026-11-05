@@ -1,0 +1,28 @@
+<Project>
+  <ItemGroup>
+    <!-- Binary / metadata -->
+    <PackageVersion Include="AsmResolver.PE" Version="6.0.1" />
+    <PackageVersion Include="AsmResolver.PE.File" Version="6.0.1" />
+    <PackageVersion Include="AsmResolver.DotNet" Version="6.0.1" />
+    <!-- Disassembly / decompilation -->
+    <PackageVersion Include="Iced" Version="1.21.0" />
+    <PackageVersion Include="ICSharpCode.Decompiler" Version="9.1.0.7988" />
+    <!-- Logging -->
+    <PackageVersion Include="Serilog" Version="4.4.0" />
+    <PackageVersion Include="Serilog.Sinks.Console" Version="6.1.1" />
+    <PackageVersion Include="Serilog.Sinks.File" Version="7.0.0" />
+    <PackageVersion Include="Serilog.Formatting.Compact" Version="3.0.0" />
+    <!-- CLI -->
+    <PackageVersion Include="System.CommandLine" Version="2.0.14" />
+    <!-- GUI -->
+    <PackageVersion Include="Avalonia" Version="11.3.0" />
+    <PackageVersion Include="Avalonia.Desktop" Version="11.3.0" />
+    <PackageVersion Include="Avalonia.Themes.Fluent" Version="11.3.0" />
+    <PackageVersion Include="Avalonia.Fonts.Inter" Version="11.3.0" />
+    <PackageVersion Include="Avalonia.AvaloniaEdit" Version="11.3.0" />
+    <PackageVersion Include="AvaloniaEdit.TextMate" Version="11.3.0" />
+    <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <!-- Tests -->
+    <PackageVersion Include="xunit.v3.mtp-v2" Version="4.0.0" />
+  </ItemGroup>
+</Project>

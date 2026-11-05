@@ -1,0 +1,108 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Il2CppStudio.Gui.ViewModels"
+        xmlns:diag="using:Il2CppStudio.Core.Diagnostics"
+        xmlns:ae="using:AvaloniaEdit"
+        x:Class="Il2CppStudio.Gui.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Title="{Binding Title}" Width="1400" Height="860" MinWidth="800" MinHeight="500"
+        WindowStartupLocation="CenterScreen" SystemDecorations="Full" CanResize="True"
+        ExtendClientAreaToDecorationsHint="False">
+
+  <DockPanel>
+    <!-- Menu bar -->
+    <Menu DockPanel.Dock="Top">
+      <MenuItem Header="_File">
+        <MenuItem Header="_Load Folder…" Command="{Binding LoadFolderCommand}" InputGesture="Ctrl+O" />
+        <MenuItem Header="_Export All…" Command="{Binding ExportAllCommand}" InputGesture="Ctrl+E" />
+        <Separator />
+        <MenuItem Header="E_xit" Click="OnExit" />
+      </MenuItem>
+      <MenuItem Header="_View">
+        <MenuItem Header="Substitute BCL (Clean/Fast)" ToggleType="CheckBox" IsChecked="{Binding SubstituteBcl}" />
+      </MenuItem>
+      <MenuItem Header="_Tools">
+        <MenuItem Header="Configure Diagnostic _Boot Flags…" Command="{Binding ConfigureBootFlagsCommand}" />
+        <MenuItem Header="Export _Resources…" Command="{Binding ExportResourcesCommand}" />
+      </MenuItem>
+    </Menu>
+
+    <!-- Status bar -->
+    <Border DockPanel.Dock="Bottom" Background="#1E1E1E" Padding="8,3">
+      <DockPanel>
+        <TextBlock DockPanel.Dock="Right" Text="{Binding ModeLabel}" Foreground="#4EC9B0" FontWeight="SemiBold" />
+        <ProgressBar DockPanel.Dock="Right" IsIndeterminate="True" IsVisible="{Binding IsBusy}" Width="120" Margin="8,0" />
+        <TextBlock Text="{Binding Status}" TextTrimming="CharacterEllipsis" />
+      </DockPanel>
+    </Border>
+
+    <Grid ColumnDefinitions="380,4,*">
+      <!-- Left sidebar: assembly tree -->
+      <DockPanel Grid.Column="0">
+        <TextBox DockPanel.Dock="Top" Margin="4" Watermark="Search types and methods…" Text="{Binding SearchText}" />
+        <TreeView ItemsSource="{Binding Roots}" SelectedItem="{Binding SelectedNode}">
+          <TreeView.Styles>
+            <Style Selector="TreeViewItem" x:DataType="vm:TreeNodeViewModel">
+              <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+            </Style>
+          </TreeView.Styles>
+          <TreeView.ItemTemplate>
+            <TreeDataTemplate x:DataType="vm:TreeNodeViewModel" ItemsSource="{Binding Children}">
+              <StackPanel Orientation="Horizontal" Spacing="6" Background="Transparent">
+                <StackPanel.ContextMenu>
+                  <ContextMenu IsVisible="{Binding HasCode}">
+                    <MenuItem Header="Copy RVA" Command="{Binding CopyRvaCommand}" IsEnabled="{Binding IsMethod}" />
+                    <MenuItem Header="View in HxD" Command="{Binding ViewInHxdCommand}" IsEnabled="{Binding IsMethod}" />
+                    <Separator />
+                    <MenuItem Header="Export C#" Command="{Binding ExportCSharpCommand}" />
+                    <MenuItem Header="Export C++" Command="{Binding ExportCppCommand}" />
+                  </ContextMenu>
+                </StackPanel.ContextMenu>
+                <TextBlock Text="{Binding Icon}" Foreground="#C586C0" Width="16" />
+                <TextBlock Text="{Binding Text}" />
+              </StackPanel>
+            </TreeDataTemplate>
+          </TreeView.ItemTemplate>
+        </TreeView>
+      </DockPanel>
+
+      <GridSplitter Grid.Column="1" ResizeDirection="Columns" />
+
+      <Grid Grid.Column="2" RowDefinitions="*,4,260">
+        <!-- Central 3-tab code viewer -->
+        <TabControl Grid.Row="0">
+          <TabItem Header="C/C++">
+            <ae:TextEditor x:Name="CppEditor" IsReadOnly="True" ShowLineNumbers="True" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="13" />
+          </TabItem>
+          <TabItem Header="IL Code">
+            <ae:TextEditor x:Name="IlEditor" IsReadOnly="True" ShowLineNumbers="True" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="13" />
+          </TabItem>
+          <TabItem Header="C#">
+            <ae:TextEditor x:Name="CSharpEditor" IsReadOnly="True" ShowLineNumbers="True" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="13" />
+          </TabItem>
+        </TabControl>
+
+        <GridSplitter Grid.Row="1" ResizeDirection="Rows" />
+
+        <!-- Bottom panels -->
+        <TabControl Grid.Row="2">
+          <TabItem Header="Diagnostics Logs">
+            <ListBox ItemsSource="{Binding Diagnostics}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="diag:Diagnostic">
+                  <TextBlock Text="{Binding}" TextWrapping="NoWrap" />
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </TabItem>
+          <TabItem Header="Binary / Metadata Inspection Info">
+            <ae:TextEditor x:Name="InspectionEditor" IsReadOnly="True" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="12" />
+          </TabItem>
+          <TabItem Header="Exported Resources">
+            <ListBox ItemsSource="{Binding ExportedResources}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12" />
+          </TabItem>
+        </TabControl>
+      </Grid>
+    </Grid>
+  </DockPanel>
+</Window>

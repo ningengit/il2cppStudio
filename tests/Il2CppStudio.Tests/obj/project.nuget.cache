@@ -1,0 +1,46 @@
+{
+  "version": 2,
+  "dgSpecHash": "Ryj9vVR5U88=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\13131313\\.gemini\\antigravity\\scratch\\Il2CppStudio\\tests\\Il2CppStudio.Tests\\Il2CppStudio.Tests.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\13131313\\.nuget\\packages\\asmresolver\\6.0.1\\asmresolver.6.0.1.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\asmresolver.dotnet\\6.0.1\\asmresolver.dotnet.6.0.1.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\asmresolver.pe\\6.0.1\\asmresolver.pe.6.0.1.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\asmresolver.pe.file\\6.0.1\\asmresolver.pe.file.6.0.1.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\iced\\1.21.0\\iced.1.21.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\icsharpcode.decompiler\\9.1.0.7988\\icsharpcode.decompiler.9.1.0.7988.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\isexternalinit\\1.0.3\\isexternalinit.1.0.3.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\microsoft.applicationinsights\\2.23.0\\microsoft.applicationinsights.2.23.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\microsoft.bcl.asyncinterfaces\\6.0.0\\microsoft.bcl.asyncinterfaces.6.0.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\microsoft.testing.extensions.telemetry\\2.3.3\\microsoft.testing.extensions.telemetry.2.3.3.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\microsoft.testing.extensions.trxreport.abstractions\\2.3.3\\microsoft.testing.extensions.trxreport.abstractions.2.3.3.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\microsoft.testing.platform\\2.3.3\\microsoft.testing.platform.2.3.3.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\microsoft.testing.platform.msbuild\\2.3.3\\microsoft.testing.platform.msbuild.2.3.3.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\microsoft.win32.registry\\5.0.0\\microsoft.win32.registry.5.0.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\serilog\\4.4.0\\serilog.4.4.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\serilog.formatting.compact\\3.0.0\\serilog.formatting.compact.3.0.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\serilog.sinks.console\\6.1.1\\serilog.sinks.console.6.1.1.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\serilog.sinks.file\\7.0.0\\serilog.sinks.file.7.0.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\system.security.accesscontrol\\6.0.1\\system.security.accesscontrol.6.0.1.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\xunit.analyzers\\2.0.0\\xunit.analyzers.2.0.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\xunit.v3.assert\\4.0.0\\xunit.v3.assert.4.0.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\xunit.v3.common\\4.0.0\\xunit.v3.common.4.0.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\xunit.v3.core.mtp-v2\\4.0.0\\xunit.v3.core.mtp-v2.4.0.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\xunit.v3.extensibility.core\\4.0.0\\xunit.v3.extensibility.core.4.0.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\xunit.v3.mtp-v2\\4.0.0\\xunit.v3.mtp-v2.4.0.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\xunit.v3.runner.common\\4.0.0\\xunit.v3.runner.common.4.0.0.nupkg.sha512",
+    "C:\\Users\\13131313\\.nuget\\packages\\xunit.v3.runner.inproc.console\\4.0.0\\xunit.v3.runner.inproc.console.4.0.0.nupkg.sha512"
+  ],
+  "logs": [
+    {
+      "code": "NU1900",
+      "level": "Warning",
+      "message": "Fehler beim Abrufen von Paketsicherheitsrisikodaten: Der Dienstindex für die Quelle \"https://api.nuget.org/v3/index.json\" konnte nicht geladen werden.",
+      "projectPath": "C:\\Users\\13131313\\.gemini\\antigravity\\scratch\\Il2CppStudio\\tests\\Il2CppStudio.Tests\\Il2CppStudio.Tests.csproj",
+      "warningLevel": 1,
+      "filePath": "C:\\Users\\13131313\\.gemini\\antigravity\\scratch\\Il2CppStudio\\tests\\Il2CppStudio.Tests\\Il2CppStudio.Tests.csproj",
+      "targetGraphs": []
+    }
+  ]
+}
