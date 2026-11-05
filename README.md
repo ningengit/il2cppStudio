@@ -12,7 +12,7 @@ Capstone & Capstone.NET — Multi-architecture disassembly engine bindings lever
 
 uwdtool (uwdtool-master) — Provided essential structural insights and reference logic for unpacking Unity WebGL data containers (unitywebdata).
 
-[WDU Code](https://local/WDU code) — Used for modeling and extracting Unity WebGL metadata container formats.
+WDU (https://github.com/SeriousCache/UABE/issues/312) — Used for modeling and extracting Unity WebGL metadata container formats.
 
 Web Global Metadata Parser (web-global-metadata-parser-main) — Clean reference parsing implementation for handling web-packaged global-metadata.dat files.
 
