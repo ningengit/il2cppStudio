@@ -25,14 +25,16 @@ It will support a lot of platforms like Webgl, Android, iOS and soo on
 # Getting Started & Prerequisites
 Runtime: .NET 8.0 / .NET 11+ SDK
 
-IDE / Editor: Visual Studio 2022 or VS Code / Rider
+IDE / Editor: Visual Studio 2026 or VS Code / Rider
 
 Local Reference Assets (Optional for Version Profiles): Il2CppStudio can leverage local Unity Hub editor installations (C:\Program Files\Unity\Hub\Editor) to reference exact runtime headers (libil2cpp) for specialized builds.
 
 # Building from Source
 
 git clone https://github.com/YourUsername/Il2CppStudio.git
+
 cd Il2CppStudio
+
 dotnet build -c Release
 
 # Testing & Validation
