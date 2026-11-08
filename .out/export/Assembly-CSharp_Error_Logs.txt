@@ -1,0 +1,921 @@
+Il2CppStudio error log for Assembly-CSharp.dll — 305 entries, generated 2026-11-05 15:32:26Z
+  DecompilerWarning: 108
+  TypeConversion: 46
+  UnresolvedCall: 44
+  UnsupportedInstruction: 107
+====================================================================================================
+[TypeConversion] AgentTest::FixedUpdate (token 0x060000E0)  (RVA 0x0023E6C0)
+    bit reinterpretation I8 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] AgentTest::FixedUpdate (token 0x060000E0)  (RVA 0x0023E6C0)
+    bit reinterpretation I8 -> R4 of unpcklps xmm6,xmm7 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] AgentTest::FixedUpdate (token 0x060000E0)  (RVA 0x0023E6C0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] BsodaEffectScript::OnTriggerStay (token 0x06000160)  (RVA 0x00253710)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] BullyScript::Activate (token 0x060000F6)  (RVA 0x0023FB80)
+    bit reinterpretation I8 -> R4 of cvtps2pd xmm1,xmm6 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] BullyScript::Activate (token 0x060000F6)  (RVA 0x0023FB80)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] BullyScript::Activate (token 0x060000F6)  (RVA 0x0023FB80)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[TypeConversion] BullyScript::FixedUpdate (token 0x060000F5)  (RVA 0x0023FDD0)
+    bit reinterpretation I8 -> R4 of unpcklps xmm9,xmm10 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] BullyScript::FixedUpdate (token 0x060000F5)  (RVA 0x0023FDD0)
+    bit reinterpretation I8 -> R4 of unpcklps xmm6,xmm7 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] BullyScript::FixedUpdate (token 0x060000F5)  (RVA 0x0023FDD0)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] BullyScript::OnTriggerEnter (token 0x060000F7)  (RVA 0x002400F0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] BullyScript::OnTriggerEnter (token 0x060000F7)  (RVA 0x002400F0)
+    3 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] CameraScript::Start (token 0x0600013B)  (RVA 0x00241120)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] CameraScript::Update (token 0x0600013C)  (RVA 0x002411D0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] CameraScript_Simple::Start (token 0x0600013F)  (RVA 0x00241070)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] ChatController::AddToChatOutput (token 0x060001A9)  (RVA 0x00254C80)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] ClickableTest::Update (token 0x060000FC)  (RVA 0x002413A0)
+    bit reinterpretation I8 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] ControlsMenu+<RebindCoroutine>d__15::MoveNext (token 0x06000094)  (RVA 0x00251050)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] ControlsMenu+<RebindCoroutine>d__15::MoveNext (token 0x06000094)  (RVA 0x00251050)
+    2 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] ControlsMenu+<RebindCoroutine>d__15::System.Collections.IEnumerator.Reset (token 0x06000096)  (RVA 0x00251510)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] ControlsMenu::FormatKeyText (token 0x06000082)  (RVA 0x00241AA0)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] ControlsMenu::StartRebindKeyboard (token 0x06000084)  (RVA 0x00242400)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] ControlsMenu::StartRebindMouse (token 0x06000085)  (RVA 0x002425E0)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] ControlsMenu::UpdateAllButtonTexts (token 0x06000081)  (RVA 0x00242860)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] CraftersTriggerScript::OnTriggerEnter (token 0x06000105)  (RVA 0x00243380)
+    bit reinterpretation I8 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] CraftersTriggerScript::OnTriggerExit (token 0x06000106)  (RVA 0x00243450)
+    bit reinterpretation I8 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] DebugScript+<LogDissappear>d__3::MoveNext (token 0x06000019)  (RVA 0x00250DF0)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] DebugScript+<LogDissappear>d__3::System.Collections.IEnumerator.Reset (token 0x0600001B)  (RVA 0x00251010)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] DebugScript::LogError (token 0x06000012)  (RVA 0x00243710)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] DebugScript::Update (token 0x06000015)  (RVA 0x002439D0)
+    bit reinterpretation I8 -> R4 of xmm0 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] DebugScript::Update (token 0x06000015)  (RVA 0x002439D0)
+    5 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] DebugScript::Update (token 0x06000015)  (RVA 0x002439D0)
+    8 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] DefaultSettingsScript+<CloseOptions>d__1::System.Collections.IEnumerator.Reset (token 0x060000B3)  (RVA 0x00250DB0)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] DetentionTextScript::Update (token 0x06000143)  (RVA 0x00243F60)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] DetentionTextScript::Update (token 0x06000143)  (RVA 0x00243F60)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[TypeConversion] DoorScript::Update (token 0x06000146)  (RVA 0x00244250)
+    bit reinterpretation I8 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] DoorScript::Update (token 0x06000146)  (RVA 0x00244250)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] EndlessNotebookScript::Update (token 0x06000167)  (RVA 0x002551A0)
+    bit reinterpretation I8 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] EndlessNotebookScript::Update (token 0x06000167)  (RVA 0x002551A0)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] EndlessTextScript::Start (token 0x060000CB)  (RVA 0x00244760)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] EndlessTextScript::Start (token 0x060000CB)  (RVA 0x00244760)
+    4 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] EnvMapAnimator+<Start>d__4::System.Collections.IEnumerator.Reset (token 0x060001B2)  (RVA 0x00262D80)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] EnvMapAnimator::Awake (token 0x060001AB)  (RVA 0x00255480)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] FirstPrizeScript::FixedUpdate (token 0x0600010C)  (RVA 0x00244C10)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] FirstPrizeScript::Update (token 0x0600010B)  (RVA 0x002452B0)
+    bit reinterpretation I8 -> R4 of andps xmm6,[1813EAC20h] (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] FirstPrizeScript::Update (token 0x0600010B)  (RVA 0x002452B0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] FirstPrizeScript::Update (token 0x0600010B)  (RVA 0x002452B0)
+    2 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] FirstPrizeSpriteScript::Update (token 0x06000114)  (RVA 0x00245940)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] GameControllerScript+<BootAnimation>d__19::System.Collections.IEnumerator.Reset (token 0x0600003D)  (RVA 0x00250B00)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] GameControllerScript+<Teleporter>d__20::System.Collections.IEnumerator.Reset (token 0x06000043)  (RVA 0x00251800)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] GameControllerScript::CollectItem (token 0x0600002E)  (RVA 0x00245E60)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] GameControllerScript::DecreaseItemSelection (token 0x0600002C)  (RVA 0x00246250)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] GameControllerScript::ExitReached (token 0x06000036)  (RVA 0x00246380)
+    bit reinterpretation I8 -> R4 of global_13EAC10 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] GameControllerScript::IncreaseItemSelection (token 0x0600002B)  (RVA 0x00246630)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] GameControllerScript::LoseItem (token 0x06000034)  (RVA 0x00246770)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] GameControllerScript::ResetItem (token 0x06000033)  (RVA 0x002468D0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] GameControllerScript::Update (token 0x0600001E)  (RVA 0x00247010)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] GameControllerScript::UpdateItemName (token 0x06000035)  (RVA 0x00246DA0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] GameControllerScript::UpdateItemSelection (token 0x0600002D)  (RVA 0x00246E10)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] GameControllerScript::UpdateNotebookCount (token 0x0600001F)  (RVA 0x00246ED0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] GameControllerScript::UseItem (token 0x0600002F)  (RVA 0x00247790)
+    bit reinterpretation I8 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] GameControllerScript::UseItem (token 0x0600002F)  (RVA 0x00247790)
+    12 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] GameOverScript::Update (token 0x060000D1)  (RVA 0x00248C60)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] HuggingScript::OnTriggerStay (token 0x06000119)  (RVA 0x00248E80)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] InputManager::GetDefaultBinding (token 0x060000AA)  (RVA 0x00249480)
+    9 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] InputManager::KeyCodeToDisplayString (token 0x060000A9)  (RVA 0x00249620)
+    7 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] InputManager::UpdateSimulatedKeys (token 0x0600009C)  (RVA 0x00249E30)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] JumpRopeScript::Fail (token 0x06000063)  (RVA 0x0024A2F0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] JumpRopeScript::OnEnable (token 0x0600005F)  (RVA 0x0024A3A0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] JumpRopeScript::RopeHit (token 0x06000061)  (RVA 0x0024A470)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] JumpRopeScript::Success (token 0x06000062)  (RVA 0x0024A6A0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] MaterialKit.DpCanvasScaler::Handle (token 0x060002BB)  (RVA 0x00263CF0)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] MaterialKit.DpCanvasScaler::OnDisable (token 0x060002B9)  (RVA 0x00263DB0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] MaterialKit.DpCanvasScaler::OnEnable (token 0x060002B8)  (RVA 0x00263E30)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] MaterialKit.DpCanvasScaler::Update (token 0x060002BA)  (RVA 0x00263F20)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] MathGameScript+<CheatText>d__11::MoveNext (token 0x06000074)  (RVA 0x00250B80)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] MathGameScript+<CheatText>d__11::System.Collections.IEnumerator.Reset (token 0x06000076)  (RVA 0x00250CA0)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] MathGameScript::CheckAnswer (token 0x06000069)  (RVA 0x0024AA60)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] MathGameScript::NewProblem (token 0x06000067)  (RVA 0x0024AFF0)
+    bit reinterpretation I8 -> R4 of *(BinaryExpr) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] MathGameScript::NewProblem (token 0x06000067)  (RVA 0x0024AFF0)
+    15 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] MathGameScript::NewProblem (token 0x06000067)  (RVA 0x0024AFF0)
+    68 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] MenuController::OnEnable (token 0x06000078)  (RVA 0x0024DDA0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] MouseSliderScript::Start (token 0x060000B5)  (RVA 0x0024DE30)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] MouseSliderScript::Update (token 0x060000B6)  (RVA 0x0024DEC0)
+    bit reinterpretation I8 -> R4 of xmm0 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] MouseSliderScript::Update (token 0x060000B6)  (RVA 0x0024DEC0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] NearExitTriggerScript::OnTriggerEnter (token 0x060000D8)  (RVA 0x0024DFF0)
+    bit reinterpretation I8 -> R4 of global_13EAC10 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] NoKeyboardScript::Start (token 0x060000DC)  (RVA 0x0024E390)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] NotebookScript::Update (token 0x0600016A)  (RVA 0x00255710)
+    bit reinterpretation I8 -> R4 of cvtps2pd xmm1,xmm6 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] NotebookScript::Update (token 0x0600016A)  (RVA 0x00255710)
+    4 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] NotebookScript::Update (token 0x0600016A)  (RVA 0x00255710)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] OptionsManager::Start (token 0x060000B8)  (RVA 0x0024E410)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] OptionsManager::Update (token 0x060000B9)  (RVA 0x0024E530)
+    bit reinterpretation I8 -> R4 of xmm0 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] OptionsManager::Update (token 0x060000B9)  (RVA 0x0024E530)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] PickupAnimationScript::Update (token 0x0600016D)  (RVA 0x002560E0)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[TypeConversion] PickupScript::Update (token 0x0600016F)  (RVA 0x00256150)
+    bit reinterpretation I8 -> R4 of cvtps2pd xmm1,xmm6 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] PickupScript::Update (token 0x0600016F)  (RVA 0x00256150)
+    4 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] PickupScript::Update (token 0x0600016F)  (RVA 0x00256150)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[TypeConversion] PlayerMovement::StaminaUpdate (token 0x0600017F)  (RVA 0x002572E0)
+    bit reinterpretation I8 -> R4 of maxss xmm7,xmm0 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] PlayerMovement::StaminaUpdate (token 0x0600017F)  (RVA 0x002572E0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] PlayerMovement::Update (token 0x0600017C)  (RVA 0x002573E0)
+    bit reinterpretation I8 -> R4 of maxss xmm7,xmm11 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] PlayerMovement::Update (token 0x0600017C)  (RVA 0x002573E0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] PlayerScript+<BootTimer>d__14::System.Collections.IEnumerator.Reset (token 0x06000195)  (RVA 0x00260DA0)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] PlayerScript+<KeepTheHudOff>d__6::System.Collections.IEnumerator.Reset (token 0x0600019B)  (RVA 0x00261960)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] PlayerScript::PlayerMove (token 0x06000184)  (RVA 0x00258010)
+    9 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] PlayerScript::StaminaCheck (token 0x06000185)  (RVA 0x00258800)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] PlayerScript::Update (token 0x06000182)  (RVA 0x00258A70)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] PlaytimeScript::FixedUpdate (token 0x06000120)  (RVA 0x0024E780)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] PrincipalScript::FixedUpdate (token 0x06000127)  (RVA 0x0024F210)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] PrincipalScript::OnTriggerStay (token 0x0600012C)  (RVA 0x0024F860)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] ScoreScript::Start (token 0x0600019D)  (RVA 0x00258EF0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.Benchmark01+<Start>d__10::MoveNext (token 0x060001D7)  (RVA 0x00261DB0)
+    7 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.Benchmark01+<Start>d__10::System.Collections.IEnumerator.Reset (token 0x060001D9)  (RVA 0x00262800)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] TMPro.Examples.Benchmark01_UGUI+<Start>d__10::MoveNext (token 0x060001DF)  (RVA 0x00262350)
+    8 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.Benchmark01_UGUI+<Start>d__10::System.Collections.IEnumerator.Reset (token 0x060001E1)  (RVA 0x00262840)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[TypeConversion] TMPro.Examples.Benchmark02::Start (token 0x060001E3)  (RVA 0x00252A20)
+    bit reinterpretation I8 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] TMPro.Examples.Benchmark02::Start (token 0x060001E3)  (RVA 0x00252A20)
+    6 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] TMPro.Examples.Benchmark03::Start (token 0x060001E6)  (RVA 0x002530C0)
+    bit reinterpretation I8 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] TMPro.Examples.Benchmark03::Start (token 0x060001E6)  (RVA 0x002530C0)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.Benchmark04::Start (token 0x060001E8)  (RVA 0x00253360)
+    5 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] TMPro.Examples.CameraController::GetPlayerInput (token 0x060001ED)  (RVA 0x00253C80)
+    bit reinterpretation I4 -> R4 of *(LocalExpr + 0x174) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] TMPro.Examples.CameraController::GetPlayerInput (token 0x060001ED)  (RVA 0x00253C80)
+    bit reinterpretation I4 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] TMPro.Examples.CameraController::GetPlayerInput (token 0x060001ED)  (RVA 0x00253C80)
+    bit reinterpretation I8 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] TMPro.Examples.CameraController::GetPlayerInput (token 0x060001ED)  (RVA 0x00253C80)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.CameraController::LateUpdate (token 0x060001EC)  (RVA 0x00254650)
+    4 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.CameraController::LateUpdate (token 0x060001EC)  (RVA 0x00254650)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] TMPro.Examples.ObjectSpin::Update (token 0x060001F0)  (RVA 0x00255EB0)
+    2 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] TMPro.Examples.ShaderPropAnimator+<AnimateProperties>d__6::System.Collections.IEnumerator.Reset (token 0x060001FA)  (RVA 0x00260CD0)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] TMPro.Examples.SimpleScript::Start (token 0x060001FC)  (RVA 0x00259150)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] TMPro.Examples.SimpleScript::Update (token 0x060001FD)  (RVA 0x00259210)
+    bit reinterpretation I8 -> R4 of xmm0 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnresolvedCall] TMPro.Examples.SimpleScript::Update (token 0x060001FD)  (RVA 0x00259210)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[TypeConversion] TMPro.Examples.SkewTextExample+<WarpText>d__7::MoveNext (token 0x06000206)  (RVA 0x00262E00)
+    bit reinterpretation I8 -> R4 of *(LocalExpr + 0x20) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] TMPro.Examples.SkewTextExample+<WarpText>d__7::MoveNext (token 0x06000206)  (RVA 0x00262E00)
+    bit reinterpretation I4 -> R4 of *(LocalExpr + 0x28) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] TMPro.Examples.SkewTextExample+<WarpText>d__7::MoveNext (token 0x06000206)  (RVA 0x00262E00)
+    14 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.SkewTextExample+<WarpText>d__7::MoveNext (token 0x06000206)  (RVA 0x00262E00)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] TMPro.Examples.SkewTextExample+<WarpText>d__7::System.Collections.IEnumerator.Reset (token 0x06000208)  (RVA 0x00263990)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] TMPro.Examples.TMP_ExampleScript_01::Awake (token 0x0600023E)  (RVA 0x00259B50)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.TMP_ExampleScript_01::Update (token 0x0600023F)  (RVA 0x00259D80)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.TMP_FrameRateCounter::Awake (token 0x06000241)  (RVA 0x00259E00)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.TMP_FrameRateCounter::Set_FrameCounter_Position (token 0x06000244)  (RVA 0x0025A080)
+    5 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.TMP_FrameRateCounter::Update (token 0x06000243)  (RVA 0x0025A310)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.TMP_TextSelector_A::Awake (token 0x0600024F)  (RVA 0x0025C430)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.TMP_TextSelector_A::LateUpdate (token 0x06000250)  (RVA 0x0025C4D0)
+    4 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] TMPro.Examples.TMP_TextSelector_B::LateUpdate (token 0x06000258)  (RVA 0x0025D020)
+    bit reinterpretation I8 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] TMPro.Examples.TMP_TextSelector_B::RestoreCachedVertexAttributes (token 0x0600025D)  (RVA 0x0025E2B0)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.TMP_UiFrameRateCounter::Awake (token 0x0600025F)  (RVA 0x0025ED40)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.TMP_UiFrameRateCounter::Set_FrameCounter_Position (token 0x06000262)  (RVA 0x0025EF60)
+    10 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.TMP_UiFrameRateCounter::Update (token 0x06000261)  (RVA 0x0025F1B0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.TMPro_InstructionOverlay::Awake (token 0x0600023B)  (RVA 0x0025F340)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.TeleType+<Start>d__4::MoveNext (token 0x0600020F)  (RVA 0x00262880)
+    5 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.TeleType+<Start>d__4::System.Collections.IEnumerator.Reset (token 0x06000211)  (RVA 0x00262DC0)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] TMPro.Examples.TeleType::Awake (token 0x0600020A)  (RVA 0x0025FA60)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] TMPro.Examples.TextConsoleSimulator+<RevealCharacters>d__7::MoveNext (token 0x0600021D)  (RVA 0x002619A0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.TextConsoleSimulator+<RevealCharacters>d__7::System.Collections.IEnumerator.Reset (token 0x0600021F)  (RVA 0x00261B30)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] TMPro.Examples.TextConsoleSimulator+<RevealWords>d__8::MoveNext (token 0x06000223)  (RVA 0x00261B70)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.TextConsoleSimulator+<RevealWords>d__8::System.Collections.IEnumerator.Reset (token 0x06000225)  (RVA 0x00261D70)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] TMPro.Examples.TextMeshProFloatingText+<DisplayTextMeshFloatingText>d__13::System.Collections.IEnumerator.Reset (token 0x06000230)  (RVA 0x002612F0)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] TMPro.Examples.TextMeshProFloatingText+<DisplayTextMeshProFloatingText>d__12::MoveNext (token 0x06000234)  (RVA 0x00261330)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.TextMeshProFloatingText+<DisplayTextMeshProFloatingText>d__12::System.Collections.IEnumerator.Reset (token 0x06000236)  (RVA 0x00261850)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] TMPro.Examples.TextMeshProFloatingText::Start (token 0x06000228)  (RVA 0x00260150)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] TMPro.Examples.TextMeshSpawner::Start (token 0x06000239)  (RVA 0x00260720)
+    bit reinterpretation I8 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] TMPro.Examples.TextMeshSpawner::Start (token 0x06000239)  (RVA 0x00260720)
+    2 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[TypeConversion] TMPro.Examples.VertexColorCycler+<AnimateVertexColors>d__3::MoveNext (token 0x0600026A)  (RVA 0x00267DB0)
+    bit reinterpretation I8 -> R4 of *(LocalExpr->klass + 0x0) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] TMPro.Examples.VertexColorCycler+<AnimateVertexColors>d__3::MoveNext (token 0x0600026A)  (RVA 0x00267DB0)
+    4 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.VertexColorCycler+<AnimateVertexColors>d__3::System.Collections.IEnumerator.Reset (token 0x0600026C)  (RVA 0x00268080)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[TypeConversion] TMPro.Examples.VertexJitter+<AnimateVertexColors>d__11::MoveNext (token 0x06000277)  (RVA 0x00267130)
+    bit reinterpretation I8 -> R4 of *(LocalExpr + 0x20) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] TMPro.Examples.VertexJitter+<AnimateVertexColors>d__11::MoveNext (token 0x06000277)  (RVA 0x00267130)
+    bit reinterpretation I4 -> R4 of *(LocalExpr + 0x28) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] TMPro.Examples.VertexJitter+<AnimateVertexColors>d__11::MoveNext (token 0x06000277)  (RVA 0x00267130)
+    4 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.VertexJitter+<AnimateVertexColors>d__11::MoveNext (token 0x06000277)  (RVA 0x00267130)
+    2 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] TMPro.Examples.VertexJitter+<AnimateVertexColors>d__11::System.Collections.IEnumerator.Reset (token 0x06000279)  (RVA 0x00267D30)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[TypeConversion] TMPro.Examples.VertexShakeA+<AnimateVertexColors>d__11::MoveNext (token 0x06000284)  (RVA 0x002663A0)
+    bit reinterpretation I8 -> R4 of LocalExpr (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] TMPro.Examples.VertexShakeA+<AnimateVertexColors>d__11::MoveNext (token 0x06000284)  (RVA 0x002663A0)
+    bit reinterpretation I8 -> R4 of unpcklps xmm1,xmm0 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] TMPro.Examples.VertexShakeA+<AnimateVertexColors>d__11::MoveNext (token 0x06000284)  (RVA 0x002663A0)
+    bit reinterpretation I8 -> R4 of *(ArrayElementExpr + 0x20) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] TMPro.Examples.VertexShakeA+<AnimateVertexColors>d__11::MoveNext (token 0x06000284)  (RVA 0x002663A0)
+    bit reinterpretation I4 -> R4 of *(ArrayElementExpr + 0x28) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] TMPro.Examples.VertexShakeA+<AnimateVertexColors>d__11::MoveNext (token 0x06000284)  (RVA 0x002663A0)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.VertexShakeA+<AnimateVertexColors>d__11::System.Collections.IEnumerator.Reset (token 0x06000286)  (RVA 0x00267D70)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[TypeConversion] TMPro.Examples.VertexShakeB+<AnimateVertexColors>d__10::MoveNext (token 0x06000291)  (RVA 0x00264F00)
+    bit reinterpretation I8 -> R4 of *(ArrayElementExpr + 0x20) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] TMPro.Examples.VertexShakeB+<AnimateVertexColors>d__10::MoveNext (token 0x06000291)  (RVA 0x00264F00)
+    bit reinterpretation I4 -> R4 of *(ArrayElementExpr + 0x28) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] TMPro.Examples.VertexShakeB+<AnimateVertexColors>d__10::MoveNext (token 0x06000291)  (RVA 0x00264F00)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.VertexShakeB+<AnimateVertexColors>d__10::System.Collections.IEnumerator.Reset (token 0x06000293)  (RVA 0x00266320)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[TypeConversion] TMPro.Examples.VertexZoom+<AnimateVertexColors>d__10::MoveNext (token 0x060002A0)  (RVA 0x00264000)
+    bit reinterpretation I8 -> R4 of unpcklps xmm1,xmm0 (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] TMPro.Examples.VertexZoom+<AnimateVertexColors>d__10::MoveNext (token 0x060002A0)  (RVA 0x00264000)
+    bit reinterpretation I8 -> R4 of *(*(FieldExpr + 0x30) + 0x20) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] TMPro.Examples.VertexZoom+<AnimateVertexColors>d__10::MoveNext (token 0x060002A0)  (RVA 0x00264000)
+    bit reinterpretation I4 -> R4 of *(*(FieldExpr + 0x30) + 0x28) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] TMPro.Examples.VertexZoom+<AnimateVertexColors>d__10::MoveNext (token 0x060002A0)  (RVA 0x00264000)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.VertexZoom+<AnimateVertexColors>d__10::MoveNext (token 0x060002A0)  (RVA 0x00264000)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] TMPro.Examples.VertexZoom+<AnimateVertexColors>d__10::System.Collections.IEnumerator.Reset (token 0x060002A2)  (RVA 0x00266360)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[TypeConversion] TMPro.Examples.WarpTextExample+<WarpText>d__8::MoveNext (token 0x060002AB)  (RVA 0x00268160)
+    bit reinterpretation I8 -> R4 of *(LocalExpr + 0x20) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[TypeConversion] TMPro.Examples.WarpTextExample+<WarpText>d__8::MoveNext (token 0x060002AB)  (RVA 0x00268160)
+    bit reinterpretation I4 -> R4 of *(LocalExpr + 0x28) (non-constant raw-bit move)
+    -> action: Value reinterpreted with NativeIntrinsics.Reinterpret<T>.
+[UnsupportedInstruction] TMPro.Examples.WarpTextExample+<WarpText>d__8::MoveNext (token 0x060002AB)  (RVA 0x00268160)
+    12 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnresolvedCall] TMPro.Examples.WarpTextExample+<WarpText>d__8::MoveNext (token 0x060002AB)  (RVA 0x00268160)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnresolvedCall] TMPro.Examples.WarpTextExample+<WarpText>d__8::System.Collections.IEnumerator.Reset (token 0x060002AD)  (RVA 0x00268BF0)
+    1 call(s) to functions without a metadata method or known helper.
+    -> action: Emitted as NativeIntrinsics.CallNative("sub_RVA", …); see diagnostics (IS8001/IS8002) for targets.
+[UnsupportedInstruction] TMPro.TMP_TextEventHandler::LateUpdate (token 0x060001C5)  (RVA 0x0025B910)
+    4 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] UIController::OnEnable (token 0x060000BE)  (RVA 0x00251860)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] UIController::SelectDummy (token 0x060000C5)  (RVA 0x002518A0)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] UIController::SwitchMenu (token 0x060000C0)  (RVA 0x00251860)
+    1 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] UIController::UIUpdate (token 0x060000C2)  (RVA 0x00251910)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] UIController::UpdateControllerType (token 0x060000C1)  (RVA 0x00251A50)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[UnsupportedInstruction] UiManager::Start (token 0x060000BB)  (RVA 0x00251BD0)
+    3 instruction(s) without a CIL equivalent.
+    -> action: Emitted as NativeIntrinsics.Asm/Stmt calls carrying the original instruction text.
+[DecompilerWarning] private IEnumerator AnimateProperties()  (RVA 0x00258FF0)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private IEnumerator AnimateVertexColors()  (RVA 0x00268C30)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private IEnumerator BootAnimation()  (RVA 0x00245DF0)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private IEnumerator BootTimer()  (RVA 0x00257770)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private IEnumerator CheatText(string text)  (RVA 0x0024A9D0)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private IEnumerator LogDissappear()  (RVA 0x002436A0)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private IEnumerator RebindCoroutine(float duration)  (RVA 0x00241FF0)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private IEnumerator RevealCharacters(TMP_Text textComponent)  (RVA 0x0025FE00)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private IEnumerator RevealWords(TMP_Text textComponent)  (RVA 0x0025FE90)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private IEnumerator Start()  (RVA 0x00255500)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private IEnumerator Teleporter()  (RVA 0x00246C50)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private IEnumerator WarpText()  (RVA 0x002593F0)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private InputBinding GetDefaultBinding(InputAction action)  (RVA 0x00249480)
+    IL_0007: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private bool GetPressedInput(out KeyCode pressedKey)  (RVA 0x00241D30)
+    IL_005c: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private bool GetPressedInput(out KeyCode pressedKey)  (RVA 0x00241D30)
+    IL_0082: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private bool IsMouseKey(KeyCode key)  (RVA 0x00241DF0)
+    IL_0007: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private bool IsMouseKey(KeyCode key)  (RVA 0x00241DF0)
+    IL_0026: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private bool MoveNext()  (RVA 0x00261DB0)
+    IL_0117: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private bool MoveNext()  (RVA 0x00261DB0)
+    IL_03c6: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private bool MoveNext()  (RVA 0x00262350)
+    IL_0315: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private string FormatKeyText(KeyCode key)  (RVA 0x00241AA0)
+    IL_0007: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private string FormatKeyText(KeyCode key)  (RVA 0x00241AA0)
+    IL_0013: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private string FormatKeyText(KeyCode key)  (RVA 0x00241AA0)
+    IL_00a4: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private string FormatMouseText(KeyCode mouseKey)  (RVA 0x00241C80)
+    IL_0007: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private string FormatMouseText(KeyCode mouseKey)  (RVA 0x00241C80)
+    IL_001e: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private string FormatMouseText(KeyCode mouseKey)  (RVA 0x00241C80)
+    IL_002a: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private string FormatMouseText(KeyCode mouseKey)  (RVA 0x00241C80)
+    IL_0041: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private string FormatMouseText(KeyCode mouseKey)  (RVA 0x00241C80)
+    IL_007e: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private unsafe bool GetKeyState(KeyCode key)  (RVA 0x002495A0)
+    IL_0007: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private unsafe bool MoveNext()  (RVA 0x00251050)
+    IL_00ee: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private unsafe bool MoveNext()  (RVA 0x00251050)
+    IL_0117: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private unsafe static MonoScriptData Get()  (RVA 0x010DB1E0)
+    IL_003a: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private unsafe static MonoScriptData Get()  (RVA 0x010DB1E0)
+    IL_0067: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private unsafe void GetPlayerInput()  (RVA 0x00253C80)
+    IL_0422: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private unsafe void LateUpdate()  (RVA 0x0025C4D0)
+    IL_0605: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private unsafe void UpdateSimulatedKeys()  (RVA 0x00249E30)
+    IL_003e: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private unsafe void UpdateSimulatedKeys()  (RVA 0x00249E30)
+    IL_010b: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private unsafe void UpdateSimulatedKeys()  (RVA 0x00249E30)
+    IL_011f: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private unsafe void UseItem()  (RVA 0x00247790)
+    IL_0145: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Awake()  (RVA 0x00241660)
+    IL_0014: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Awake()  (RVA 0x00255480)
+    IL_001f: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Awake()  (RVA 0x0025B760)
+    IL_003a: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Awake()  (RVA 0x0025B760)
+    IL_00cc: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Awake()  (RVA 0x0025B760)
+    IL_00d8: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Awake()  (RVA 0x00253BA0)
+    IL_0042: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Awake()  (RVA 0x00253BA0)
+    IL_005d: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Awake()  (RVA 0x00259B50)
+    IL_000c: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Awake()  (RVA 0x00259E00)
+    IL_0118: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Awake()  (RVA 0x0025CE60)
+    IL_003f: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Awake()  (RVA 0x0025CE60)
+    IL_004b: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Awake()  (RVA 0x0025ED40)
+    IL_00e2: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void LateUpdate()  (RVA 0x00254650)
+    IL_0026: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void LateUpdate()  (RVA 0x00254650)
+    IL_003f: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void LogError(string logString, string stackTrace, LogType type)  (RVA 0x00243710)
+    IL_0007: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void LogError(string logString, string stackTrace, LogType type)  (RVA 0x00243710)
+    IL_0013: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void LogError(string logString, string stackTrace, LogType type)  (RVA 0x00243710)
+    IL_0092: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void OnTriggerEnter(Collider other)  (RVA 0x00257BC0)
+    IL_0136: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Set_FrameCounter_Position(FpsCounterAnchorPositions anchor_position)  (RVA 0x0025A080)
+    IL_0007: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Set_FrameCounter_Position(FpsCounterAnchorPositions anchor_position)  (RVA 0x0025EF60)
+    IL_0012: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Set_FrameCounter_Position(FpsCounterAnchorPositions anchor_position)  (RVA 0x0025EF60)
+    IL_0027: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Set_FrameCounter_Position(FpsCounterAnchorPositions anchor_position)  (RVA 0x0025EF60)
+    IL_0035: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Start()  (RVA 0x00243E30)
+    IL_0033: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Start()  (RVA 0x002590D0)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Start()  (RVA 0x0025FF00)
+    IL_0017: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Start()  (RVA 0x00260150)
+    IL_02f0: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Update()  (RVA 0x00255EB0)
+    IL_0013: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Update()  (RVA 0x00255EB0)
+    IL_0033: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Update()  (RVA 0x0025A310)
+    IL_000c: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Update()  (RVA 0x0025A310)
+    IL_001c: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] private void Update()  (RVA 0x0025A310)
+    IL_004f: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] protected virtual void Handle()  (RVA 0x00263CF0)
+    IL_004d: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public IEnumerator CloseOptions()  (RVA 0x00243DC0)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public IEnumerator DisplayTextMeshFloatingText()  (RVA 0x00260070)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public IEnumerator DisplayTextMeshProFloatingText()  (RVA 0x002600E0)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public IEnumerator KeepTheHudOff()  (RVA 0x00257850)
+    IL_0010: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public PrincipalScript()  (RVA 0x00250040)
+    IL_0018: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public string KeyCodeToDisplayString(KeyCode key)  (RVA 0x00249620)
+    IL_0007: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public string KeyCodeToDisplayString(KeyCode key)  (RVA 0x00249620)
+    IL_0013: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public string KeyCodeToDisplayString(KeyCode key)  (RVA 0x00249620)
+    IL_010e: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe InputBinding(KeyCode primary, [Optional] KeyCode secondary)  (RVA 0x00249060)
+    IL_0007: Expected native int or pointer, but got O
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe InputBinding(KeyCode primary, [Optional] KeyCode secondary)  (RVA 0x00249060)
+    IL_0012: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe InputBinding(KeyCode primary, [Optional] KeyCode secondary)  (RVA 0x00249060)
+    IL_0022: Expected native int or pointer, but got O
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe InputBinding(KeyCode primary, [Optional] KeyCode secondary)  (RVA 0x00249060)
+    IL_002d: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe string ConvertInputActionToString(InputAction action)  (RVA 0x002492F0)
+    IL_0007: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe string ConvertInputActionToString(InputAction action)  (RVA 0x002492F0)
+    IL_00a3: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe void ClearPrimaryKey(InputAction action)  (RVA 0x002491B0)
+    IL_0007: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe void ClearSecondaryKey(InputAction action)  (RVA 0x00249250)
+    IL_0007: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe void Load()  (RVA 0x00249860)
+    IL_001c: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe void Modify(InputAction action, KeyCode newKey, [Optional] KeyCode secondaryKey)  (RVA 0x00249A00)
+    IL_0007: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe void Modify(InputAction action, KeyCode newKey, [Optional] KeyCode secondaryKey)  (RVA 0x00249A00)
+    IL_0013: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe void Modify(InputAction action, KeyCode newKey, [Optional] KeyCode secondaryKey)  (RVA 0x00249A00)
+    IL_001f: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe void Save()  (RVA 0x00249AC0)
+    IL_0010: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe void Save()  (RVA 0x00249AC0)
+    IL_00ca: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe void Save()  (RVA 0x00249AC0)
+    IL_00de: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe void Save()  (RVA 0x00249AC0)
+    IL_0052: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe void SimulateKey(KeyCode key)  (RVA 0x00249D90)
+    IL_0007: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public unsafe void UpdateAllButtonTexts()  (RVA 0x00242860)
+    IL_002b: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public void ActivateBoots()  (RVA 0x00257690)
+    IL_0017: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public void ConfirmRebind()  (RVA 0x00241870)
+    IL_0041: Expected O, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public void StartGame()  (RVA 0x002502C0)
+    IL_000c: Expected O, but got I4
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public void StartRebindKeyboard(int actionIndex)  (RVA 0x00242400)
+    IL_004a: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public void StartRebindKeyboard(int actionIndex)  (RVA 0x00242400)
+    IL_00c6: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public void StartRebindKeyboard(int actionIndex)  (RVA 0x00242400)
+    IL_00df: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public void StartRebindMouse(int actionIndex)  (RVA 0x002425E0)
+    IL_004a: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public void StartRebindMouse(int actionIndex)  (RVA 0x002425E0)
+    IL_00c6: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public void StartRebindMouse(int actionIndex)  (RVA 0x002425E0)
+    IL_00df: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public void Update()  (RVA 0x002439D0)
+    IL_00c1: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.
+[DecompilerWarning] public void Update()  (RVA 0x002439D0)
+    IL_028c: Expected I, but got I8
+    -> action: Removed from C# output; the decompiler inserted an implicit conversion to continue.

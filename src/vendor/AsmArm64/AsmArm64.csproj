@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Vendored AsmArm64 (BSD-2-Clause, Alexandre Mutel): ARM64 v8/v9 disassembler, compiled from source (no NuGet restore needed). -->
+  <PropertyGroup>
+    <AssemblyName>AsmArm64</AssemblyName>
+    <RootNamespace>AsmArm64</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <NoWarn>$(NoWarn);CS1591;CS1573;CS1574;CS0419;CS1584;CS1580;CS1658;CS8618;CS8600;CS8602;CS8603;CS8604;CS8625</NoWarn>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AnalysisLevel>none</AnalysisLevel>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

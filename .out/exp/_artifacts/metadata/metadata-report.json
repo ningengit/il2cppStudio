@@ -1,0 +1,1228 @@
+{
+  "Path": "C:\\Users\\13131313\\.gemini\\antigravity\\scratch\\Il2CppStudio\\testdata\\template il2cpp\\Baldi's Basics Classic_Data\\il2cpp_data\\Metadata\\global-metadata.dat",
+  "Version": "31",
+  "UnityRange": "Unity 2022.2 - 6000.x",
+  "FileSize": 6703960,
+  "HeaderSize": 256,
+  "Statistics": {
+    "Version": "31",
+    "UnityRange": "Unity 2022.2 - 6000.x",
+    "FileSize": 6703960,
+    "Images": 59,
+    "Assemblies": 59,
+    "Types": 7846,
+    "Methods": 53474,
+    "Fields": 32365,
+    "Parameters": 57170,
+    "Properties": 10585,
+    "Events": 119,
+    "GenericContainers": 1245,
+    "GenericParameters": 2224,
+    "StringLiterals": 11202,
+    "VTableSlots": 93372,
+    "Interfaces": 2443,
+    "NestedTypes": 2386,
+    "FieldRefs": 492,
+    "CustomAttributeEntries": 13122
+  },
+  "Sections": [
+    {
+      "Name": "stringLiteral",
+      "Offset": 256,
+      "Size": 89616,
+      "ElementSize": 8,
+      "ElementCount": 11202,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppStringLiteral"
+    },
+    {
+      "Name": "stringLiteralData",
+      "Offset": 89872,
+      "Size": 314408,
+      "ElementSize": 1,
+      "ElementCount": 314408,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "UTF-8 string literal bytes"
+    },
+    {
+      "Name": "string",
+      "Offset": 404280,
+      "Size": 982320,
+      "ElementSize": 1,
+      "ElementCount": 982320,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "NUL-terminated metadata identifier strings"
+    },
+    {
+      "Name": "events",
+      "Offset": 1386600,
+      "Size": 2856,
+      "ElementSize": 24,
+      "ElementCount": 119,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppEventDefinition"
+    },
+    {
+      "Name": "properties",
+      "Offset": 1389456,
+      "Size": 211700,
+      "ElementSize": 20,
+      "ElementCount": 10585,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppPropertyDefinition"
+    },
+    {
+      "Name": "methods",
+      "Offset": 1601156,
+      "Size": 1925064,
+      "ElementSize": 36,
+      "ElementCount": 53474,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppMethodDefinition"
+    },
+    {
+      "Name": "parameterDefaultValues",
+      "Offset": 3526220,
+      "Size": 7500,
+      "ElementSize": 12,
+      "ElementCount": 625,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppParameterDefaultValue"
+    },
+    {
+      "Name": "fieldDefaultValues",
+      "Offset": 3533720,
+      "Size": 115248,
+      "ElementSize": 12,
+      "ElementCount": 9604,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppFieldDefaultValue"
+    },
+    {
+      "Name": "fieldAndParameterDefaultValueData",
+      "Offset": 3648968,
+      "Size": 166636,
+      "ElementSize": 1,
+      "ElementCount": 166636,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Default value blob (uint8)"
+    },
+    {
+      "Name": "fieldMarshaledSizes",
+      "Offset": 3815604,
+      "Size": 27924,
+      "ElementSize": 12,
+      "ElementCount": 2327,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppFieldMarshaledSize"
+    },
+    {
+      "Name": "parameters",
+      "Offset": 3843528,
+      "Size": 686040,
+      "ElementSize": 12,
+      "ElementCount": 57170,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppParameterDefinition"
+    },
+    {
+      "Name": "fields",
+      "Offset": 4529568,
+      "Size": 388380,
+      "ElementSize": 12,
+      "ElementCount": 32365,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppFieldDefinition"
+    },
+    {
+      "Name": "genericParameters",
+      "Offset": 4917948,
+      "Size": 35584,
+      "ElementSize": 16,
+      "ElementCount": 2224,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppGenericParameter"
+    },
+    {
+      "Name": "genericParameterConstraints",
+      "Offset": 4953532,
+      "Size": 1252,
+      "ElementSize": 4,
+      "ElementCount": 313,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "TypeIndex"
+    },
+    {
+      "Name": "genericContainers",
+      "Offset": 4954784,
+      "Size": 19920,
+      "ElementSize": 16,
+      "ElementCount": 1245,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppGenericContainer"
+    },
+    {
+      "Name": "nestedTypes",
+      "Offset": 4974704,
+      "Size": 9544,
+      "ElementSize": 4,
+      "ElementCount": 2386,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "TypeDefinitionIndex"
+    },
+    {
+      "Name": "interfaces",
+      "Offset": 4984248,
+      "Size": 9772,
+      "ElementSize": 4,
+      "ElementCount": 2443,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "TypeIndex"
+    },
+    {
+      "Name": "vtableMethods",
+      "Offset": 4994020,
+      "Size": 373488,
+      "ElementSize": 4,
+      "ElementCount": 93372,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "EncodedMethodIndex"
+    },
+    {
+      "Name": "interfaceOffsets",
+      "Offset": 5367508,
+      "Size": 62752,
+      "ElementSize": 8,
+      "ElementCount": 7844,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppInterfaceOffsetPair"
+    },
+    {
+      "Name": "typeDefinitions",
+      "Offset": 5430260,
+      "Size": 690448,
+      "ElementSize": 88,
+      "ElementCount": 7846,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppTypeDefinition"
+    },
+    {
+      "Name": "images",
+      "Offset": 6120708,
+      "Size": 2360,
+      "ElementSize": 40,
+      "ElementCount": 59,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppImageDefinition"
+    },
+    {
+      "Name": "assemblies",
+      "Offset": 6123068,
+      "Size": 3776,
+      "ElementSize": 64,
+      "ElementCount": 59,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppAssemblyDefinition"
+    },
+    {
+      "Name": "fieldRefs",
+      "Offset": 6126844,
+      "Size": 3936,
+      "ElementSize": 8,
+      "ElementCount": 492,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppFieldRef"
+    },
+    {
+      "Name": "referencedAssemblies",
+      "Offset": 6130780,
+      "Size": 1188,
+      "ElementSize": 4,
+      "ElementCount": 297,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "int32 assembly index"
+    },
+    {
+      "Name": "attributeData",
+      "Offset": 6131968,
+      "Size": 420620,
+      "ElementSize": 1,
+      "ElementCount": 420620,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Encoded custom attribute blob"
+    },
+    {
+      "Name": "attributeDataRange",
+      "Offset": 6552588,
+      "Size": 104976,
+      "ElementSize": 8,
+      "ElementCount": 13122,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppCustomAttributeDataRange"
+    },
+    {
+      "Name": "unresolvedIndirectCallParameterTypes",
+      "Offset": 6657564,
+      "Size": 23696,
+      "ElementSize": 4,
+      "ElementCount": 5924,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "TypeIndex"
+    },
+    {
+      "Name": "unresolvedIndirectCallParameterRanges",
+      "Offset": 6681260,
+      "Size": 14752,
+      "ElementSize": 8,
+      "ElementCount": 1844,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppMetadataRange"
+    },
+    {
+      "Name": "windowsRuntimeTypeNames",
+      "Offset": 6696012,
+      "Size": 0,
+      "ElementSize": 8,
+      "ElementCount": 0,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "Il2CppWindowsRuntimeTypeNamePair"
+    },
+    {
+      "Name": "exportedTypeDefinitions",
+      "Offset": 6696012,
+      "Size": 7948,
+      "ElementSize": 4,
+      "ElementCount": 1987,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "TypeDefinitionIndex"
+    },
+    {
+      "Name": "windowsRuntimeStrings",
+      "Offset": 6696012,
+      "Size": 0,
+      "ElementSize": 1,
+      "ElementCount": 0,
+      "InBounds": true,
+      "Aligned": true,
+      "Description": "const char*"
+    }
+  ],
+  "Assemblies": [
+    {
+      "Name": "mscorlib",
+      "Version": "4.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "b77a5c561934e089",
+      "ImageName": "mscorlib.dll",
+      "TypeCount": 1702,
+      "References": []
+    },
+    {
+      "Name": "UnityEngine.UIElementsModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.UIElementsModule.dll",
+      "TypeCount": 1092,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "UnityEngine.IMGUIModule",
+        "UnityEngine.InputLegacyModule",
+        "UnityEngine.TextRenderingModule",
+        "UnityEngine.TextCoreTextEngineModule",
+        "UnityEngine.TextCoreFontEngineModule",
+        "UnityEngine.UIModule",
+        "mscorlib",
+        "System.Core",
+        "System"
+      ]
+    },
+    {
+      "Name": "System.Xml",
+      "Version": "4.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "7cec85d7bea7798e",
+      "ImageName": "System.Xml.dll",
+      "TypeCount": 669,
+      "References": [
+        "mscorlib",
+        "System",
+        "System.Configuration"
+      ]
+    },
+    {
+      "Name": "System",
+      "Version": "4.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "7cec85d7bea7798e",
+      "ImageName": "System.dll",
+      "TypeCount": 787,
+      "References": [
+        "mscorlib",
+        "Mono.Security",
+        "System.Xml",
+        "System.Numerics",
+        "System.Core",
+        "System.Configuration"
+      ]
+    },
+    {
+      "Name": "Newtonsoft.Json",
+      "Version": "13.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "30ad4fe6b2a6aeed",
+      "ImageName": "Newtonsoft.Json.dll",
+      "TypeCount": 496,
+      "References": [
+        "mscorlib",
+        "System.Numerics",
+        "System",
+        "System.Xml",
+        "System.Xml.Linq",
+        "System.Core",
+        "System.Runtime.Serialization",
+        "System.Data"
+      ]
+    },
+    {
+      "Name": "System.Data",
+      "Version": "4.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "b77a5c561934e089",
+      "ImageName": "System.Data.dll",
+      "TypeCount": 240,
+      "References": [
+        "mscorlib",
+        "System",
+        "System.Xml",
+        "System.Numerics",
+        "System.Core",
+        "System.Drawing"
+      ]
+    },
+    {
+      "Name": "System.Core",
+      "Version": "4.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "7cec85d7bea7798e",
+      "ImageName": "System.Core.dll",
+      "TypeCount": 650,
+      "References": [
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "Unity.TextMeshPro",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "Unity.TextMeshPro.dll",
+      "TypeCount": 177,
+      "References": [
+        "mscorlib",
+        "System",
+        "UnityEngine.CoreModule",
+        "UnityEngine.UI",
+        "UnityEngine.TextCoreFontEngineModule",
+        "UnityEngine.UIModule",
+        "UnityEngine.TextRenderingModule",
+        "System.Core",
+        "UnityEngine.IMGUIModule",
+        "UnityEngine.InputLegacyModule"
+      ]
+    },
+    {
+      "Name": "UnityEngine.CoreModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.CoreModule.dll",
+      "TypeCount": 667,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "mscorlib",
+        "System",
+        "System.Core"
+      ]
+    },
+    {
+      "Name": "UnityEngine.UI",
+      "Version": "1.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.UI.dll",
+      "TypeCount": 205,
+      "References": [
+        "mscorlib",
+        "System",
+        "UnityEngine.CoreModule",
+        "UnityEngine.UIModule",
+        "UnityEngine.TextRenderingModule",
+        "System.Core",
+        "UnityEngine.PhysicsModule",
+        "UnityEngine.Physics2DModule",
+        "UnityEngine.IMGUIModule",
+        "UnityEngine.AnimationModule",
+        "UnityEngine.UIElementsModule",
+        "UnityEngine.InputLegacyModule",
+        "UnityEngine.TilemapModule",
+        "UnityEngine.SpriteShapeModule"
+      ]
+    },
+    {
+      "Name": "UnityEngine.TextCoreTextEngineModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.TextCoreTextEngineModule.dll",
+      "TypeCount": 68,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.TextCoreFontEngineModule",
+        "UnityEngine.CoreModule",
+        "UnityEngine.TextRenderingModule",
+        "mscorlib",
+        "System",
+        "System.Core"
+      ]
+    },
+    {
+      "Name": "Assembly-CSharp",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "Assembly-CSharp.dll",
+      "TypeCount": 155,
+      "References": [
+        "mscorlib",
+        "UnityEngine.CoreModule",
+        "UnityEngine.AudioModule",
+        "Unity.TextMeshPro",
+        "UnityEngine.PhysicsModule",
+        "UnityEngine.UI",
+        "UnityEngine.AnimationModule",
+        "UnityEngine.UIModule",
+        "UnityEngine.AIModule",
+        "System",
+        "UnityEngine.TextRenderingModule",
+        "UnityEngine.InputLegacyModule"
+      ]
+    },
+    {
+      "Name": "Mono.Security",
+      "Version": "4.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "0738eb9f132ed756",
+      "ImageName": "Mono.Security.dll",
+      "TypeCount": 104,
+      "References": [
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "UnityEngine.IMGUIModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.IMGUIModule.dll",
+      "TypeCount": 41,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "UnityEngine.InputLegacyModule",
+        "UnityEngine.TextRenderingModule",
+        "UnityEngine.TextCoreTextEngineModule",
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "Unity.Services.Core.Internal",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "Unity.Services.Core.Internal.dll",
+      "TypeCount": 117,
+      "References": [
+        "mscorlib",
+        "System",
+        "UnityEngine.CoreModule",
+        "Unity.Services.Core",
+        "Newtonsoft.Json",
+        "UnityEngine.UnityWebRequestModule"
+      ]
+    },
+    {
+      "Name": "Unity.Services.Analytics",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "Unity.Services.Analytics.dll",
+      "TypeCount": 78,
+      "References": [
+        "mscorlib",
+        "Unity.Services.Core.Internal",
+        "UnityEngine.CoreModule",
+        "System",
+        "System.Core",
+        "UnityEngine.UnityWebRequestModule",
+        "Unity.Services.Core",
+        "UnityEngine.UnityAnalyticsCommonModule"
+      ]
+    },
+    {
+      "Name": "UnityEngine",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.dll",
+      "TypeCount": 1,
+      "References": [
+        "UnityEngine.CoreModule",
+        "UnityEngine.AudioModule",
+        "UnityEngine.PropertiesModule",
+        "UnityEngine.AndroidJNIModule",
+        "UnityEngine.InputLegacyModule",
+        "UnityEngine.UIModule",
+        "UnityEngine.AIModule",
+        "UnityEngine.UnityAnalyticsModule",
+        "UnityEngine.UnityAnalyticsCommonModule",
+        "UnityEngine.Physics2DModule",
+        "UnityEngine.AnimationModule",
+        "UnityEngine.PhysicsModule",
+        "UnityEngine.AssetBundleModule",
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.TextRenderingModule",
+        "UnityEngine.TilemapModule",
+        "UnityEngine.TerrainModule",
+        "UnityEngine.IMGUIModule",
+        "UnityEngine.VFXModule",
+        "UnityEngine.VideoModule",
+        "UnityEngine.VRModule",
+        "UnityEngine.GridModule",
+        "UnityEngine.SubsystemsModule",
+        "UnityEngine.UnityWebRequestModule",
+        "UnityEngine.ParticleSystemModule",
+        "UnityEngine.DirectorModule",
+        "UnityEngine.TextCoreFontEngineModule",
+        "UnityEngine.TextCoreTextEngineModule",
+        "UnityEngine.SpriteShapeModule",
+        "UnityEngine.UIElementsModule",
+        "UnityEngine.XRModule",
+        "UnityEngine.InputModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "System.Drawing",
+      "Version": "4.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "b03f5f7f11d50a3a",
+      "ImageName": "System.Drawing.dll",
+      "TypeCount": 11,
+      "References": [
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "UnityEngine.AndroidJNIModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.AndroidJNIModule.dll",
+      "TypeCount": 15,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib",
+        "System.Core"
+      ]
+    },
+    {
+      "Name": "UnityEngine.PropertiesModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.PropertiesModule.dll",
+      "TypeCount": 105,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib",
+        "System.Core",
+        "System"
+      ]
+    },
+    {
+      "Name": "System.Numerics",
+      "Version": "4.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "b77a5c561934e089",
+      "ImageName": "System.Numerics.dll",
+      "TypeCount": 13,
+      "References": [
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "System.Xml.Linq",
+      "Version": "4.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "31bf3856ad364e35",
+      "ImageName": "System.Xml.Linq.dll",
+      "TypeCount": 38,
+      "References": [
+        "mscorlib",
+        "System.Xml",
+        "System",
+        "System.Core"
+      ]
+    },
+    {
+      "Name": "UnityEngine.TextCoreFontEngineModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.TextCoreFontEngineModule.dll",
+      "TypeCount": 24,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "UnityEngine.TextRenderingModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "UnityEngine.UnityWebRequestModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.UnityWebRequestModule.dll",
+      "TypeCount": 14,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "UnityEngine.PhysicsModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.PhysicsModule.dll",
+      "TypeCount": 23,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "UnityEngine.AnimationModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.AnimationModule.dll",
+      "TypeCount": 32,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "UnityEngine.XRModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.XRModule.dll",
+      "TypeCount": 29,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "UnityEngine.SubsystemsModule",
+        "UnityEngine.PhysicsModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "UnityEngine.UIModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.UIModule.dll",
+      "TypeCount": 11,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "UnityEngine.TextRenderingModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "UnityEngine.TextRenderingModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.TextRenderingModule.dll",
+      "TypeCount": 14,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "UnityEngine.InputLegacyModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.InputLegacyModule.dll",
+      "TypeCount": 13,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "UnityEngine.TerrainModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.TerrainModule.dll",
+      "TypeCount": 14,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "UnityEngine.TilemapModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.TilemapModule.dll",
+      "TypeCount": 15,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "UnityEngine.GridModule",
+        "UnityEngine.Physics2DModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "UnityEngine.Physics2DModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.Physics2DModule.dll",
+      "TypeCount": 9,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "UnityEngine.SharedInternalsModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.SharedInternalsModule.dll",
+      "TypeCount": 30,
+      "References": [
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "Unity.Services.Core",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "Unity.Services.Core.dll",
+      "TypeCount": 22,
+      "References": [
+        "mscorlib",
+        "System",
+        "UnityEngine.CoreModule"
+      ]
+    },
+    {
+      "Name": "Unity.Services.Core.Registration",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "Unity.Services.Core.Registration.dll",
+      "TypeCount": 8,
+      "References": [
+        "mscorlib",
+        "System",
+        "Unity.Services.Core.Internal",
+        "Unity.Services.Core.Scheduler",
+        "Unity.Services.Core.Device",
+        "Unity.Services.Core.Configuration",
+        "Unity.Services.Core.Environments.Internal",
+        "Unity.Services.Core.Threading",
+        "Unity.Services.Core",
+        "UnityEngine.CoreModule",
+        "Newtonsoft.Json",
+        "Unity.Services.Core.Telemetry"
+      ]
+    },
+    {
+      "Name": "UnityEngine.VFXModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.VFXModule.dll",
+      "TypeCount": 14,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "UnityEngine.AudioModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.AudioModule.dll",
+      "TypeCount": 14,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "UnityEngine.ParticleSystemModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.ParticleSystemModule.dll",
+      "TypeCount": 5,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "UnityEngine.SubsystemsModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.SubsystemsModule.dll",
+      "TypeCount": 14,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "UnityEngine.VideoModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.VideoModule.dll",
+      "TypeCount": 16,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "UnityEngine.AudioModule",
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "UnityEngine.UnityAnalyticsModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.UnityAnalyticsModule.dll",
+      "TypeCount": 11,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "UnityEngine.AIModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.AIModule.dll",
+      "TypeCount": 6,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "UnityEngine.InputModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.InputModule.dll",
+      "TypeCount": 5,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "Unity.Services.Core.Configuration",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "Unity.Services.Core.Configuration.dll",
+      "TypeCount": 13,
+      "References": [
+        "mscorlib",
+        "System",
+        "Unity.Services.Core.Internal",
+        "Unity.Services.Core",
+        "Newtonsoft.Json",
+        "UnityEngine.CoreModule",
+        "System.Core"
+      ]
+    },
+    {
+      "Name": "Unity.Services.Core.Scheduler",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "Unity.Services.Core.Scheduler.dll",
+      "TypeCount": 9,
+      "References": [
+        "mscorlib",
+        "System",
+        "Unity.Services.Core.Internal",
+        "UnityEngine.CoreModule"
+      ]
+    },
+    {
+      "Name": "UnityEngine.AssetBundleModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.AssetBundleModule.dll",
+      "TypeCount": 5,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib",
+        "System"
+      ]
+    },
+    {
+      "Name": "UnityEngine.DirectorModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.DirectorModule.dll",
+      "TypeCount": 2,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "UnityEngine.GridModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.GridModule.dll",
+      "TypeCount": 2,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "UnityEngine.UnityAnalyticsCommonModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.UnityAnalyticsCommonModule.dll",
+      "TypeCount": 3,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "UnityEngine.VRModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.VRModule.dll",
+      "TypeCount": 2,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "UnityEngine.SpriteShapeModule",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "UnityEngine.SpriteShapeModule.dll",
+      "TypeCount": 2,
+      "References": [
+        "UnityEngine.SharedInternalsModule",
+        "UnityEngine.CoreModule",
+        "mscorlib"
+      ]
+    },
+    {
+      "Name": "System.Runtime.Serialization",
+      "Version": "4.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "7cec85d7bea7798e",
+      "ImageName": "System.Runtime.Serialization.dll",
+      "TypeCount": 5,
+      "References": [
+        "mscorlib",
+        "System.Xml",
+        "System",
+        "System.Core",
+        "System.Configuration"
+      ]
+    },
+    {
+      "Name": "Unity.Services.Core.Threading",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "Unity.Services.Core.Threading.dll",
+      "TypeCount": 2,
+      "References": [
+        "mscorlib",
+        "System",
+        "Unity.Services.Core.Internal",
+        "Unity.Services.Core"
+      ]
+    },
+    {
+      "Name": "Unity.Services.Core.Device",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "Unity.Services.Core.Device.dll",
+      "TypeCount": 5,
+      "References": [
+        "mscorlib",
+        "System",
+        "Unity.Services.Core.Internal",
+        "UnityEngine.CoreModule"
+      ]
+    },
+    {
+      "Name": "System.Configuration",
+      "Version": "4.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "b03f5f7f11d50a3a",
+      "ImageName": "System.Configuration.dll",
+      "TypeCount": 10,
+      "References": [
+        "mscorlib",
+        "System",
+        "System.Xml"
+      ]
+    },
+    {
+      "Name": "Unity.Services.Core.Telemetry",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "Unity.Services.Core.Telemetry.dll",
+      "TypeCount": 5,
+      "References": [
+        "mscorlib",
+        "System",
+        "Unity.Services.Core.Internal"
+      ]
+    },
+    {
+      "Name": "Unity.Services.Core.Environments.Internal",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "Unity.Services.Core.Environments.Internal.dll",
+      "TypeCount": 2,
+      "References": [
+        "mscorlib",
+        "System",
+        "Unity.Services.Core.Internal"
+      ]
+    },
+    {
+      "Name": "__Generated",
+      "Version": "0.0.0.0",
+      "Culture": "",
+      "PublicKeyToken": "null",
+      "ImageName": "__Generated",
+      "TypeCount": 5,
+      "References": [
+        "mscorlib"
+      ]
+    }
+  ]
+}

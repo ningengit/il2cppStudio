@@ -1,0 +1,13 @@
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\AsmArm64\bin\Debug\net11.0\AsmArm64.deps.json
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\AsmArm64\bin\Debug\net11.0\AsmArm64.dll
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\AsmArm64\bin\Debug\net11.0\AsmArm64.pdb
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\AsmArm64\obj\Debug\net11.0\AsmArm64.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\AsmArm64\obj\Debug\net11.0\AsmArm64.AssemblyInfoInputs.cache
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\AsmArm64\obj\Debug\net11.0\AsmArm64.AssemblyInfo.cs
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\AsmArm64\obj\Debug\net11.0\AsmArm64.csproj.CoreCompileInputs.cache
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\AsmArm64\obj\Debug\net11.0\AsmArm64.dll
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\AsmArm64\obj\Debug\net11.0\refint\AsmArm64.dll
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\AsmArm64\obj\Debug\net11.0\AsmArm64.pdb
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\AsmArm64\obj\Debug\net11.0\ref\AsmArm64.dll
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\AsmArm64\obj\Debug\net11.0\AsmArm64.csproj.Up2Date
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\AsmArm64\obj\Debug\net11.0\AsmArm64.sourcelink.json

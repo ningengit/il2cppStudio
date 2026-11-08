@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Il2CppStudio.Core</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AsmResolver.PE" />
+    <PackageReference Include="AsmResolver.PE.File" />
+    <PackageReference Include="AsmResolver.DotNet" />
+    <PackageReference Include="Iced" />
+    <PackageReference Include="ICSharpCode.Decompiler" />
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <PackageReference Include="Serilog.Sinks.File" />
+    <PackageReference Include="Serilog.Formatting.Compact" />
+  </ItemGroup>
+
+  <!-- Vendored disassemblers (sources + licenses under src/vendor): ARM64, WebAssembly; ARMv7 through native Capstone. -->
+  <ItemGroup>
+    <ProjectReference Include="..\vendor\AsmArm64\AsmArm64.csproj" />
+    <ProjectReference Include="..\vendor\WasmDisassembler\WasmDisassembler.csproj" />
+    <None Include="..\vendor\capstone\capstone.dll" Link="capstone.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

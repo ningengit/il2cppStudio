@@ -1,0 +1,3 @@
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\.out\exp\Assembly-CSharp\obj\Debug\netstandard2.1\Assembly-CSharp.csproj.AssemblyReference.cache
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\.out\exp\Assembly-CSharp\obj\Debug\netstandard2.1\Assembly-CSharp.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\.out\exp\Assembly-CSharp\obj\Debug\netstandard2.1\Assembly-CSharp.csproj.CoreCompileInputs.cache

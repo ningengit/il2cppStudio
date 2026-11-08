@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Il2CppStudio.Core/Il2CppStudio.Core.csproj" />
+    <Project Path="src/Il2CppStudio.Cli/Il2CppStudio.Cli.csproj" />
+    <Project Path="src/Il2CppStudio.Gui/Il2CppStudio.Gui.csproj" />
+  </Folder>
+  <Folder Name="/src/vendor/">
+    <Project Path="src/vendor/AsmArm64/AsmArm64.csproj" />
+    <Project Path="src/vendor/WasmDisassembler/WasmDisassembler.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Il2CppStudio.Tests/Il2CppStudio.Tests.csproj" />
+  </Folder>
+</Solution>

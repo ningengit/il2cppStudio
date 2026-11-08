@@ -1,0 +1,300 @@
+// Copyright (c) Alexandre Mutel. All rights reserved.
+// Licensed under the BSD-Clause 2 license.
+// See license.txt file in the project root for full license information.
+
+namespace AsmArm64;
+
+/// <summary>
+/// Options for configuring the ARM64 disassembler.
+/// </summary>
+public class Arm64DisassemblerOptions
+{
+    internal const string DefaultLocalLabelFormat = "LL_{0:00}";
+
+    private int _formatLineBufferLength;
+    private int _indentSize;
+    private int _instructionTextPaddingLength;
+    private string _localLabelPrefix;
+    private string _localLabelFormat;
+    private string _commentPrefix;
+    private string _addressPrefix;
+    private Arm64DisassemblyStyle _style;
+    private Arm64InstructionFormattingOptions _instructionFormatting = new();
+    private Arm64DisassemblerLabelFallback _labelFallback;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="Arm64DisassemblerOptions"/> class.
+    /// </summary>
+    public Arm64DisassemblerOptions()
+    {
+        BaseAddress = 0x1_0000;
+        FormatLineBufferLength = 4096;
+        IndentSize = 4;
+        _localLabelPrefix = "LL_";
+        _localLabelFormat = DefaultLocalLabelFormat;
+        _commentPrefix = "//";
+        _addressPrefix = string.Empty;
+        PrintNewLineBeforeLabel = true;
+        PrintNewLineAfterBranch = true;
+        PrintLabelBeforeFirstInstruction = true;
+        InstructionTextPaddingLength = 16;
+        InvalidDataMode = Arm64InvalidDataMode.Throw;
+        AutoLabelKinds = Arm64DisassemblerAutoLabelKind.All;
+        UseUppercaseHex = true;
+    }
+
+    /// <summary>
+    /// Gets or sets the delegate to format labels from absolute addresses.
+    /// Returning false requests local-label or numeric fallback; returning true must supply a valid character count.
+    /// </summary>
+    public Arm64TryFormatDelegate? TryFormatLabel { get; set; }
+
+    /// <summary>
+    /// Gets or sets numeric fallback for unresolved targets. Defaults to relative offsets.
+    /// Symbol resolution takes precedence, followed by local labels eligible under <see cref="AutoLabelKinds"/>.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The fallback is undefined.</exception>
+    public Arm64DisassemblerLabelFallback LabelFallback
+    {
+        get => _labelFallback;
+        set
+        {
+            if (value is not Arm64DisassemblerLabelFallback.RelativeOffset and not Arm64DisassemblerLabelFallback.AbsoluteAddress)
+                throw new ArgumentOutOfRangeException(nameof(value), value, "Unknown label fallback.");
+            _labelFallback = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the instruction text options shared with individual instruction formatting.
+    /// Listing styles and <see cref="UseUppercaseHex"/> do not change these options.
+    /// </summary>
+    /// <exception cref="ArgumentNullException">The options are null.</exception>
+    public Arm64InstructionFormattingOptions InstructionFormatting
+    {
+        get => _instructionFormatting;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _instructionFormatting = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the delegate to format instruction comments.
+    /// </summary>
+    public Arm64TryFormatInstructionCommentDelegate? TryFormatComment { get; set; }
+
+    /// <summary>
+    /// Gets or sets the length of the instruction text padding.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is negative.</exception>
+    public int InstructionTextPaddingLength
+    {
+        get => _instructionTextPaddingLength;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            _instructionTextPaddingLength = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the delegate to print a text before the instruction being printed.
+    /// </summary>
+    public Arm64InstructionPrinterDelegate? PreInstructionPrinter { get; set; }
+
+    /// <summary>
+    /// Gets or sets the delegate to print a text after the instruction being printed.
+    /// </summary>
+    public Arm64InstructionPrinterDelegate? PostInstructionPrinter { get; set; }
+
+    /// <summary>
+    /// Gets or sets the maximum formatted line length, excluding the newline. Defaults to 4096.
+    /// Disassembly throws <see cref="InvalidOperationException"/> if a line cannot fit; increase this value for long symbols, comments, or indentation.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is less than 256.</exception>
+    public int FormatLineBufferLength
+    {
+        get => _formatLineBufferLength;
+        set
+        {
+            if (value < 256) throw new ArgumentOutOfRangeException(nameof(value), "The format buffer length must be at least 256");
+            _formatLineBufferLength = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the prefix for local labels.
+    /// </summary>
+    /// <exception cref="ArgumentNullException">Thrown when the value is <c>null</c>.</exception>
+    public string LocalLabelPrefix
+    {
+        get => _localLabelPrefix;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _localLabelPrefix = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the composite format string used for generated local labels. The label index is argument 0.
+    /// </summary>
+    /// <exception cref="ArgumentNullException">Thrown when the value is <c>null</c>.</exception>
+    public string LocalLabelFormat
+    {
+        get => _localLabelFormat;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _localLabelFormat = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the prefix used before generated instruction comments.
+    /// </summary>
+    /// <exception cref="ArgumentNullException">Thrown when the value is <c>null</c>.</exception>
+    public string CommentPrefix
+    {
+        get => _commentPrefix;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _commentPrefix = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the prefix emitted before addresses printed by the disassembler.
+    /// </summary>
+    /// <exception cref="ArgumentNullException">Thrown when the value is <c>null</c>.</exception>
+    public string AddressPrefix
+    {
+        get => _addressPrefix;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _addressPrefix = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether disassembler-owned hexadecimal text uses upper-case digits.
+    /// </summary>
+    public bool UseUppercaseHex { get; set; }
+
+    /// <summary>
+    /// Gets or sets the formatting style preset.
+    /// </summary>
+    public Arm64DisassemblyStyle Style
+    {
+        get => _style;
+        set
+        {
+            _style = value;
+            switch (value)
+            {
+                case Arm64DisassemblyStyle.Default:
+                    CommentPrefix = "//";
+                    AddressPrefix = string.Empty;
+                    LocalLabelFormat = DefaultLocalLabelFormat;
+                    UseUppercaseHex = true;
+                    break;
+                case Arm64DisassemblyStyle.Gas:
+                    CommentPrefix = "//";
+                    AddressPrefix = "0x";
+                    LocalLabelFormat = ".L{0:00}";
+                    UseUppercaseHex = false;
+                    break;
+                case Arm64DisassemblyStyle.Llvm:
+                    CommentPrefix = "//";
+                    AddressPrefix = "0x";
+                    LocalLabelFormat = ".LBB0_{0}";
+                    UseUppercaseHex = false;
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(value), value, "Unknown disassembly style.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to print the address.
+    /// </summary>
+    public bool PrintAddress { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to print the assembly bytes.
+    /// </summary>
+    public bool PrintAssemblyBytes { get; set; }
+
+    /// <summary>
+    /// Gets or sets the base address.
+    /// </summary>
+    public long BaseAddress { get; set; }
+
+    /// <summary>
+    /// Gets or sets the size of the indent.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is negative.</exception>
+    public int IndentSize
+    {
+        get => _indentSize;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            _indentSize = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to print a label before the first instruction.
+    /// </summary>
+    public bool PrintLabelBeforeFirstInstruction { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to print a new line after a branch.
+    /// </summary>
+    public bool PrintNewLineAfterBranch { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to print a new line before a label.
+    /// </summary>
+    public bool PrintNewLineBeforeLabel { get; set; }
+
+    /// <summary>
+    /// Gets or sets which PC-relative targets are converted to generated local labels.
+    /// </summary>
+    public Arm64DisassemblerAutoLabelKind AutoLabelKinds { get; set; }
+
+    /// <summary>
+    /// Gets or sets how trailing bytes that do not form a complete ARM64 instruction are handled.
+    /// </summary>
+    public Arm64InvalidDataMode InvalidDataMode { get; set; }
+
+    /// <summary>
+    /// Gets or sets the numeric format provider. When non-null, overrides the provider in <see cref="InstructionFormatting"/>.
+    /// </summary>
+    public IFormatProvider? FormatProvider { get; set; }
+}
+
+
+/// <summary>
+/// A delegate used to print a text before/after an instruction.
+/// </summary>
+/// <param name="offset">The offset relative to the beginning of the buffer.</param>
+/// <param name="instruction">The instruction being decoded.</param>
+/// <param name="writer">The text writer to write the text.</param>
+public delegate void Arm64InstructionPrinterDelegate(long offset, Arm64Instruction instruction, TextWriter writer);
+
+/// <summary>
+/// A delegate used to format the comment of an instruction.
+/// </summary>
+/// <param name="offset">The offset relative to the beginning of the buffer.</param>
+/// <param name="instruction">The instruction being decoded.</param>
+/// <param name="destination">The destination buffer receiving the comment.</param>
+/// <param name="charsWritten">The number of character written.</param>
+/// <returns><c>true</c> if formatting the comment was successful.</returns>
+public delegate bool Arm64TryFormatInstructionCommentDelegate(long offset, Arm64Instruction instruction, Span<char> destination, out int charsWritten);

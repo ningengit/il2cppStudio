@@ -1,0 +1,240 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v11.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v11.0": {
+      "Il2CppStudio.Core/0.1.0-phase1": {
+        "dependencies": {
+          "AsmArm64": "0.1.0-phase1",
+          "AsmResolver.DotNet": "6.0.1",
+          "AsmResolver.PE": "6.0.1",
+          "AsmResolver.PE.File": "6.0.1",
+          "ICSharpCode.Decompiler": "9.1.0.7988",
+          "Iced": "1.21.0",
+          "Serilog": "4.4.0",
+          "Serilog.Formatting.Compact": "3.0.0",
+          "Serilog.Sinks.Console": "6.1.1",
+          "Serilog.Sinks.File": "7.0.0",
+          "WasmDisassembler": "0.1.0-phase1"
+        },
+        "runtime": {
+          "Il2CppStudio.Core.dll": {}
+        }
+      },
+      "AsmResolver/6.0.1": {
+        "runtime": {
+          "lib/net10.0/AsmResolver.dll": {
+            "assemblyVersion": "6.0.1.0",
+            "fileVersion": "6.0.1.0",
+            "localPath": "AsmResolver.dll"
+          }
+        }
+      },
+      "AsmResolver.DotNet/6.0.1": {
+        "dependencies": {
+          "AsmResolver.PE": "6.0.1"
+        },
+        "runtime": {
+          "lib/net10.0/AsmResolver.DotNet.dll": {
+            "assemblyVersion": "6.0.1.0",
+            "fileVersion": "6.0.1.0",
+            "localPath": "AsmResolver.DotNet.dll"
+          }
+        }
+      },
+      "AsmResolver.PE/6.0.1": {
+        "dependencies": {
+          "AsmResolver.PE.File": "6.0.1"
+        },
+        "runtime": {
+          "lib/net10.0/AsmResolver.PE.dll": {
+            "assemblyVersion": "6.0.1.0",
+            "fileVersion": "6.0.1.0",
+            "localPath": "AsmResolver.PE.dll"
+          }
+        }
+      },
+      "AsmResolver.PE.File/6.0.1": {
+        "dependencies": {
+          "AsmResolver": "6.0.1"
+        },
+        "runtime": {
+          "lib/net10.0/AsmResolver.PE.File.dll": {
+            "assemblyVersion": "6.0.1.0",
+            "fileVersion": "6.0.1.0",
+            "localPath": "AsmResolver.PE.File.dll"
+          }
+        }
+      },
+      "Iced/1.21.0": {
+        "runtime": {
+          "lib/netstandard2.1/Iced.dll": {
+            "assemblyVersion": "1.21.0.0",
+            "fileVersion": "1.21.0.0",
+            "localPath": "Iced.dll"
+          }
+        }
+      },
+      "ICSharpCode.Decompiler/9.1.0.7988": {
+        "runtime": {
+          "lib/netstandard2.0/ICSharpCode.Decompiler.dll": {
+            "assemblyVersion": "9.1.0.7988",
+            "fileVersion": "9.1.0.7988",
+            "localPath": "ICSharpCode.Decompiler.dll"
+          }
+        }
+      },
+      "Serilog/4.4.0": {
+        "runtime": {
+          "lib/net10.0/Serilog.dll": {
+            "assemblyVersion": "4.4.0.0",
+            "fileVersion": "4.4.0.0",
+            "localPath": "Serilog.dll"
+          }
+        }
+      },
+      "Serilog.Formatting.Compact/3.0.0": {
+        "dependencies": {
+          "Serilog": "4.4.0"
+        },
+        "runtime": {
+          "lib/net8.0/Serilog.Formatting.Compact.dll": {
+            "assemblyVersion": "3.0.0.0",
+            "fileVersion": "3.0.0.0",
+            "localPath": "Serilog.Formatting.Compact.dll"
+          }
+        }
+      },
+      "Serilog.Sinks.Console/6.1.1": {
+        "dependencies": {
+          "Serilog": "4.4.0"
+        },
+        "runtime": {
+          "lib/net8.0/Serilog.Sinks.Console.dll": {
+            "assemblyVersion": "6.1.1.0",
+            "fileVersion": "6.1.1.0",
+            "localPath": "Serilog.Sinks.Console.dll"
+          }
+        }
+      },
+      "Serilog.Sinks.File/7.0.0": {
+        "dependencies": {
+          "Serilog": "4.4.0"
+        },
+        "runtime": {
+          "lib/net9.0/Serilog.Sinks.File.dll": {
+            "assemblyVersion": "7.0.0.0",
+            "fileVersion": "7.0.0.0",
+            "localPath": "Serilog.Sinks.File.dll"
+          }
+        }
+      },
+      "AsmArm64/0.1.0-phase1": {
+        "runtime": {
+          "AsmArm64.dll": {
+            "assemblyVersion": "0.1.0.0",
+            "fileVersion": "0.1.0.0"
+          }
+        }
+      },
+      "WasmDisassembler/0.1.0-phase1": {
+        "runtime": {
+          "WasmDisassembler.dll": {
+            "assemblyVersion": "0.1.0.0",
+            "fileVersion": "0.1.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "Il2CppStudio.Core/0.1.0-phase1": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "AsmResolver/6.0.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-2+MlgBd4R5jv+kACL4CB4Jvd9xqmXLIn27nYNQvv98oQ5707D9ule3Kjtf65A0Lha7R64KZQYTrqAxlm0oQU8g==",
+      "path": "asmresolver/6.0.1",
+      "hashPath": "asmresolver.6.0.1.nupkg.sha512"
+    },
+    "AsmResolver.DotNet/6.0.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-npVfl5ar/5rVceEVc+IMbti1WViBmPTqRPCQHqL9PtidHpLzcHrY82CL9Tep+DVsZ/++4gzFdHqndRjbb0hBkg==",
+      "path": "asmresolver.dotnet/6.0.1",
+      "hashPath": "asmresolver.dotnet.6.0.1.nupkg.sha512"
+    },
+    "AsmResolver.PE/6.0.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-n8mkaymM3P6b3HsTvLACSpPVnAf0n7gJEkrad4M1F5zwEN003T+nMeR6iM17AFEgVt+vTV2GQ6/0ZjHEASn81g==",
+      "path": "asmresolver.pe/6.0.1",
+      "hashPath": "asmresolver.pe.6.0.1.nupkg.sha512"
+    },
+    "AsmResolver.PE.File/6.0.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-aHHgIq9SRMAktSuhPH5gXJfB+cCCyGtEaGuilrTfk0Q5A/4AYRNPTDffVSTdsicXw0Orc1lSArNYEoPTHuJFvg==",
+      "path": "asmresolver.pe.file/6.0.1",
+      "hashPath": "asmresolver.pe.file.6.0.1.nupkg.sha512"
+    },
+    "Iced/1.21.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-dv5+81Q1TBQvVMSOOOmRcjJmvWcX3BZPZsIq31+RLc5cNft0IHAyNlkdb7ZarOWG913PyBoFDsDXoCIlKmLclg==",
+      "path": "iced/1.21.0",
+      "hashPath": "iced.1.21.0.nupkg.sha512"
+    },
+    "ICSharpCode.Decompiler/9.1.0.7988": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-N5HEh7n/9GpnkH6ojwPbzWbO1Ma+SFZCKafz69uRLnkt/bWzPON7wf7NLxTdU/fGWPnG2TEXRsu5DnRyvIQSaQ==",
+      "path": "icsharpcode.decompiler/9.1.0.7988",
+      "hashPath": "icsharpcode.decompiler.9.1.0.7988.nupkg.sha512"
+    },
+    "Serilog/4.4.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-ZC6Le3rr4TVJJjS4KsQAesxeF1EhW9qcZmmG7eP5Y2G3+gTGkJEUXkq4+tZNPtyp05I0wWOxnIjwtxFweJsObw==",
+      "path": "serilog/4.4.0",
+      "hashPath": "serilog.4.4.0.nupkg.sha512"
+    },
+    "Serilog.Formatting.Compact/3.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-wQsv14w9cqlfB5FX2MZpNsTawckN4a8dryuNGbebB/3Nh1pXnROHZov3swtu3Nj5oNG7Ba+xdu7Et/ulAUPanQ==",
+      "path": "serilog.formatting.compact/3.0.0",
+      "hashPath": "serilog.formatting.compact.3.0.0.nupkg.sha512"
+    },
+    "Serilog.Sinks.Console/6.1.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-8jbqgjUyZlfCuSTaJk6lOca465OndqOz3KZP6Cryt/IqZYybyBu7GP0fE/AXBzrrQB3EBmQntBFAvMVz1COvAA==",
+      "path": "serilog.sinks.console/6.1.1",
+      "hashPath": "serilog.sinks.console.6.1.1.nupkg.sha512"
+    },
+    "Serilog.Sinks.File/7.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-fKL7mXv7qaiNBUC71ssvn/dU0k9t0o45+qm2XgKAlSt19xF+ijjxyA3R6HmCgfKEKwfcfkwWjayuQtRueZFkYw==",
+      "path": "serilog.sinks.file/7.0.0",
+      "hashPath": "serilog.sinks.file.7.0.0.nupkg.sha512"
+    },
+    "AsmArm64/0.1.0-phase1": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "WasmDisassembler/0.1.0-phase1": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

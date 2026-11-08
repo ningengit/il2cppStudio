@@ -1,0 +1,13 @@
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\WasmDisassembler\bin\Debug\net11.0\WasmDisassembler.deps.json
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\WasmDisassembler\bin\Debug\net11.0\WasmDisassembler.dll
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\WasmDisassembler\bin\Debug\net11.0\WasmDisassembler.pdb
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\WasmDisassembler\obj\Debug\net11.0\WasmDisassembler.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\WasmDisassembler\obj\Debug\net11.0\WasmDisassembler.AssemblyInfoInputs.cache
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\WasmDisassembler\obj\Debug\net11.0\WasmDisassembler.AssemblyInfo.cs
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\WasmDisassembler\obj\Debug\net11.0\WasmDisassembler.csproj.CoreCompileInputs.cache
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\WasmDisassembler\obj\Debug\net11.0\WasmDisassembler.dll
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\WasmDisassembler\obj\Debug\net11.0\refint\WasmDisassembler.dll
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\WasmDisassembler\obj\Debug\net11.0\WasmDisassembler.pdb
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\WasmDisassembler\obj\Debug\net11.0\ref\WasmDisassembler.dll
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\WasmDisassembler\obj\Debug\net11.0\WasmDisa.BDD08BC2.Up2Date
+C:\Users\13131313\.gemini\antigravity\scratch\Il2CppStudio\src\vendor\WasmDisassembler\obj\Debug\net11.0\WasmDisassembler.sourcelink.json

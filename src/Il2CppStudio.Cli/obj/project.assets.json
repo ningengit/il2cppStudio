@@ -1,0 +1,1077 @@
+{
+  "version": 4,
+  "targets": {
+    "net11.0": {
+      "AsmResolver/6.0.1": {
+        "type": "package",
+        "compile": {
+          "lib/net10.0/AsmResolver.dll": {
+            "related": ".pdb;.xml"
+          }
+        },
+        "runtime": {
+          "lib/net10.0/AsmResolver.dll": {
+            "related": ".pdb;.xml"
+          }
+        }
+      },
+      "AsmResolver.DotNet/6.0.1": {
+        "type": "package",
+        "dependencies": {
+          "AsmResolver.PE": "6.0.1",
+          "IsExternalInit": "1.0.3"
+        },
+        "compile": {
+          "lib/net10.0/AsmResolver.DotNet.dll": {
+            "related": ".pdb;.xml"
+          }
+        },
+        "runtime": {
+          "lib/net10.0/AsmResolver.DotNet.dll": {
+            "related": ".pdb;.xml"
+          }
+        }
+      },
+      "AsmResolver.PE/6.0.1": {
+        "type": "package",
+        "dependencies": {
+          "AsmResolver.PE.File": "6.0.1"
+        },
+        "compile": {
+          "lib/net10.0/AsmResolver.PE.dll": {
+            "related": ".pdb;.xml"
+          }
+        },
+        "runtime": {
+          "lib/net10.0/AsmResolver.PE.dll": {
+            "related": ".pdb;.xml"
+          }
+        }
+      },
+      "AsmResolver.PE.File/6.0.1": {
+        "type": "package",
+        "dependencies": {
+          "AsmResolver": "6.0.1"
+        },
+        "compile": {
+          "lib/net10.0/AsmResolver.PE.File.dll": {
+            "related": ".pdb;.xml"
+          }
+        },
+        "runtime": {
+          "lib/net10.0/AsmResolver.PE.File.dll": {
+            "related": ".pdb;.xml"
+          }
+        }
+      },
+      "Iced/1.21.0": {
+        "type": "package",
+        "compile": {
+          "lib/netstandard2.1/Iced.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/netstandard2.1/Iced.dll": {
+            "related": ".xml"
+          }
+        }
+      },
+      "ICSharpCode.Decompiler/9.1.0.7988": {
+        "type": "package",
+        "compile": {
+          "lib/netstandard2.0/ICSharpCode.Decompiler.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/netstandard2.0/ICSharpCode.Decompiler.dll": {
+            "related": ".xml"
+          }
+        }
+      },
+      "IsExternalInit/1.0.3": {
+        "type": "package",
+        "contentFiles": {
+          "contentFiles/any/any/_._": {
+            "buildAction": "None",
+            "codeLanguage": "any",
+            "copyToOutput": false
+          }
+        },
+        "build": {
+          "build/_._": {}
+        }
+      },
+      "Serilog/4.4.0": {
+        "type": "package",
+        "compile": {
+          "lib/net10.0/Serilog.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/net10.0/Serilog.dll": {
+            "related": ".xml"
+          }
+        },
+        "build": {
+          "buildTransitive/Serilog.targets": {}
+        }
+      },
+      "Serilog.Formatting.Compact/3.0.0": {
+        "type": "package",
+        "dependencies": {
+          "Serilog": "4.0.0"
+        },
+        "compile": {
+          "lib/net8.0/Serilog.Formatting.Compact.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/net8.0/Serilog.Formatting.Compact.dll": {
+            "related": ".xml"
+          }
+        }
+      },
+      "Serilog.Sinks.Console/6.1.1": {
+        "type": "package",
+        "dependencies": {
+          "Serilog": "4.0.0"
+        },
+        "compile": {
+          "lib/net8.0/Serilog.Sinks.Console.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/net8.0/Serilog.Sinks.Console.dll": {
+            "related": ".xml"
+          }
+        }
+      },
+      "Serilog.Sinks.File/7.0.0": {
+        "type": "package",
+        "dependencies": {
+          "Serilog": "4.2.0"
+        },
+        "compile": {
+          "lib/net9.0/Serilog.Sinks.File.dll": {
+            "related": ".xml"
+          }
+        },
+        "runtime": {
+          "lib/net9.0/Serilog.Sinks.File.dll": {
+            "related": ".xml"
+          }
+        }
+      },
+      "System.CommandLine/2.0.14": {
+        "type": "package",
+        "compile": {
+          "lib/net8.0/System.CommandLine.dll": {
+            "related": ".pdb;.xml"
+          }
+        },
+        "runtime": {
+          "lib/net8.0/System.CommandLine.dll": {
+            "related": ".pdb;.xml"
+          }
+        },
+        "resource": {
+          "lib/net8.0/cs/System.CommandLine.resources.dll": {
+            "locale": "cs"
+          },
+          "lib/net8.0/de/System.CommandLine.resources.dll": {
+            "locale": "de"
+          },
+          "lib/net8.0/es/System.CommandLine.resources.dll": {
+            "locale": "es"
+          },
+          "lib/net8.0/fr/System.CommandLine.resources.dll": {
+            "locale": "fr"
+          },
+          "lib/net8.0/it/System.CommandLine.resources.dll": {
+            "locale": "it"
+          },
+          "lib/net8.0/ja/System.CommandLine.resources.dll": {
+            "locale": "ja"
+          },
+          "lib/net8.0/ko/System.CommandLine.resources.dll": {
+            "locale": "ko"
+          },
+          "lib/net8.0/pl/System.CommandLine.resources.dll": {
+            "locale": "pl"
+          },
+          "lib/net8.0/pt-BR/System.CommandLine.resources.dll": {
+            "locale": "pt-BR"
+          },
+          "lib/net8.0/ru/System.CommandLine.resources.dll": {
+            "locale": "ru"
+          },
+          "lib/net8.0/tr/System.CommandLine.resources.dll": {
+            "locale": "tr"
+          },
+          "lib/net8.0/zh-Hans/System.CommandLine.resources.dll": {
+            "locale": "zh-Hans"
+          },
+          "lib/net8.0/zh-Hant/System.CommandLine.resources.dll": {
+            "locale": "zh-Hant"
+          }
+        }
+      },
+      "AsmArm64/0.1.0-phase1": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v11.0",
+        "compile": {
+          "bin/placeholder/AsmArm64.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/AsmArm64.dll": {}
+        }
+      },
+      "Il2CppStudio.Core/0.1.0-phase1": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v11.0",
+        "dependencies": {
+          "AsmArm64": "0.1.0-phase1",
+          "AsmResolver.DotNet": "6.0.1",
+          "AsmResolver.PE": "6.0.1",
+          "AsmResolver.PE.File": "6.0.1",
+          "ICSharpCode.Decompiler": "9.1.0.7988",
+          "Iced": "1.21.0",
+          "Serilog": "4.4.0",
+          "Serilog.Formatting.Compact": "3.0.0",
+          "Serilog.Sinks.Console": "6.1.1",
+          "Serilog.Sinks.File": "7.0.0",
+          "WasmDisassembler": "0.1.0-phase1"
+        },
+        "compile": {
+          "bin/placeholder/Il2CppStudio.Core.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/Il2CppStudio.Core.dll": {}
+        }
+      },
+      "WasmDisassembler/0.1.0-phase1": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v11.0",
+        "compile": {
+          "bin/placeholder/WasmDisassembler.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/WasmDisassembler.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "AsmResolver/6.0.1": {
+      "sha512": "2+MlgBd4R5jv+kACL4CB4Jvd9xqmXLIn27nYNQvv98oQ5707D9ule3Kjtf65A0Lha7R64KZQYTrqAxlm0oQU8g==",
+      "type": "package",
+      "path": "asmresolver/6.0.1",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "asmresolver.6.0.1.nupkg.sha512",
+        "asmresolver.nuspec",
+        "lib/net10.0/AsmResolver.dll",
+        "lib/net10.0/AsmResolver.pdb",
+        "lib/net10.0/AsmResolver.xml",
+        "lib/net35/AsmResolver.dll",
+        "lib/net35/AsmResolver.pdb",
+        "lib/net35/AsmResolver.xml",
+        "lib/net462/AsmResolver.dll",
+        "lib/net462/AsmResolver.pdb",
+        "lib/net462/AsmResolver.xml",
+        "lib/net472/AsmResolver.dll",
+        "lib/net472/AsmResolver.pdb",
+        "lib/net472/AsmResolver.xml",
+        "lib/net6.0/AsmResolver.dll",
+        "lib/net6.0/AsmResolver.pdb",
+        "lib/net6.0/AsmResolver.xml",
+        "lib/net8.0/AsmResolver.dll",
+        "lib/net8.0/AsmResolver.pdb",
+        "lib/net8.0/AsmResolver.xml",
+        "lib/net9.0/AsmResolver.dll",
+        "lib/net9.0/AsmResolver.pdb",
+        "lib/net9.0/AsmResolver.xml",
+        "lib/netcoreapp3.1/AsmResolver.dll",
+        "lib/netcoreapp3.1/AsmResolver.pdb",
+        "lib/netcoreapp3.1/AsmResolver.xml",
+        "lib/netstandard2.0/AsmResolver.dll",
+        "lib/netstandard2.0/AsmResolver.pdb",
+        "lib/netstandard2.0/AsmResolver.xml",
+        "lib/netstandard2.1/AsmResolver.dll",
+        "lib/netstandard2.1/AsmResolver.pdb",
+        "lib/netstandard2.1/AsmResolver.xml"
+      ]
+    },
+    "AsmResolver.DotNet/6.0.1": {
+      "sha512": "npVfl5ar/5rVceEVc+IMbti1WViBmPTqRPCQHqL9PtidHpLzcHrY82CL9Tep+DVsZ/++4gzFdHqndRjbb0hBkg==",
+      "type": "package",
+      "path": "asmresolver.dotnet/6.0.1",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "asmresolver.dotnet.6.0.1.nupkg.sha512",
+        "asmresolver.dotnet.nuspec",
+        "lib/net10.0/AsmResolver.DotNet.dll",
+        "lib/net10.0/AsmResolver.DotNet.pdb",
+        "lib/net10.0/AsmResolver.DotNet.xml",
+        "lib/net35/AsmResolver.DotNet.dll",
+        "lib/net35/AsmResolver.DotNet.pdb",
+        "lib/net35/AsmResolver.DotNet.xml",
+        "lib/net462/AsmResolver.DotNet.dll",
+        "lib/net462/AsmResolver.DotNet.pdb",
+        "lib/net462/AsmResolver.DotNet.xml",
+        "lib/net472/AsmResolver.DotNet.dll",
+        "lib/net472/AsmResolver.DotNet.pdb",
+        "lib/net472/AsmResolver.DotNet.xml",
+        "lib/net6.0/AsmResolver.DotNet.dll",
+        "lib/net6.0/AsmResolver.DotNet.pdb",
+        "lib/net6.0/AsmResolver.DotNet.xml",
+        "lib/net8.0/AsmResolver.DotNet.dll",
+        "lib/net8.0/AsmResolver.DotNet.pdb",
+        "lib/net8.0/AsmResolver.DotNet.xml",
+        "lib/net9.0/AsmResolver.DotNet.dll",
+        "lib/net9.0/AsmResolver.DotNet.pdb",
+        "lib/net9.0/AsmResolver.DotNet.xml",
+        "lib/netcoreapp3.1/AsmResolver.DotNet.dll",
+        "lib/netcoreapp3.1/AsmResolver.DotNet.pdb",
+        "lib/netcoreapp3.1/AsmResolver.DotNet.xml",
+        "lib/netstandard2.0/AsmResolver.DotNet.dll",
+        "lib/netstandard2.0/AsmResolver.DotNet.pdb",
+        "lib/netstandard2.0/AsmResolver.DotNet.xml",
+        "lib/netstandard2.1/AsmResolver.DotNet.dll",
+        "lib/netstandard2.1/AsmResolver.DotNet.pdb",
+        "lib/netstandard2.1/AsmResolver.DotNet.xml"
+      ]
+    },
+    "AsmResolver.PE/6.0.1": {
+      "sha512": "n8mkaymM3P6b3HsTvLACSpPVnAf0n7gJEkrad4M1F5zwEN003T+nMeR6iM17AFEgVt+vTV2GQ6/0ZjHEASn81g==",
+      "type": "package",
+      "path": "asmresolver.pe/6.0.1",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "asmresolver.pe.6.0.1.nupkg.sha512",
+        "asmresolver.pe.nuspec",
+        "lib/net10.0/AsmResolver.PE.dll",
+        "lib/net10.0/AsmResolver.PE.pdb",
+        "lib/net10.0/AsmResolver.PE.xml",
+        "lib/net35/AsmResolver.PE.dll",
+        "lib/net35/AsmResolver.PE.pdb",
+        "lib/net35/AsmResolver.PE.xml",
+        "lib/net462/AsmResolver.PE.dll",
+        "lib/net462/AsmResolver.PE.pdb",
+        "lib/net462/AsmResolver.PE.xml",
+        "lib/net472/AsmResolver.PE.dll",
+        "lib/net472/AsmResolver.PE.pdb",
+        "lib/net472/AsmResolver.PE.xml",
+        "lib/net6.0/AsmResolver.PE.dll",
+        "lib/net6.0/AsmResolver.PE.pdb",
+        "lib/net6.0/AsmResolver.PE.xml",
+        "lib/net8.0/AsmResolver.PE.dll",
+        "lib/net8.0/AsmResolver.PE.pdb",
+        "lib/net8.0/AsmResolver.PE.xml",
+        "lib/net9.0/AsmResolver.PE.dll",
+        "lib/net9.0/AsmResolver.PE.pdb",
+        "lib/net9.0/AsmResolver.PE.xml",
+        "lib/netcoreapp3.1/AsmResolver.PE.dll",
+        "lib/netcoreapp3.1/AsmResolver.PE.pdb",
+        "lib/netcoreapp3.1/AsmResolver.PE.xml",
+        "lib/netstandard2.0/AsmResolver.PE.dll",
+        "lib/netstandard2.0/AsmResolver.PE.pdb",
+        "lib/netstandard2.0/AsmResolver.PE.xml",
+        "lib/netstandard2.1/AsmResolver.PE.dll",
+        "lib/netstandard2.1/AsmResolver.PE.pdb",
+        "lib/netstandard2.1/AsmResolver.PE.xml"
+      ]
+    },
+    "AsmResolver.PE.File/6.0.1": {
+      "sha512": "aHHgIq9SRMAktSuhPH5gXJfB+cCCyGtEaGuilrTfk0Q5A/4AYRNPTDffVSTdsicXw0Orc1lSArNYEoPTHuJFvg==",
+      "type": "package",
+      "path": "asmresolver.pe.file/6.0.1",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "asmresolver.pe.file.6.0.1.nupkg.sha512",
+        "asmresolver.pe.file.nuspec",
+        "lib/net10.0/AsmResolver.PE.File.dll",
+        "lib/net10.0/AsmResolver.PE.File.pdb",
+        "lib/net10.0/AsmResolver.PE.File.xml",
+        "lib/net35/AsmResolver.PE.File.dll",
+        "lib/net35/AsmResolver.PE.File.pdb",
+        "lib/net35/AsmResolver.PE.File.xml",
+        "lib/net462/AsmResolver.PE.File.dll",
+        "lib/net462/AsmResolver.PE.File.pdb",
+        "lib/net462/AsmResolver.PE.File.xml",
+        "lib/net472/AsmResolver.PE.File.dll",
+        "lib/net472/AsmResolver.PE.File.pdb",
+        "lib/net472/AsmResolver.PE.File.xml",
+        "lib/net6.0/AsmResolver.PE.File.dll",
+        "lib/net6.0/AsmResolver.PE.File.pdb",
+        "lib/net6.0/AsmResolver.PE.File.xml",
+        "lib/net8.0/AsmResolver.PE.File.dll",
+        "lib/net8.0/AsmResolver.PE.File.pdb",
+        "lib/net8.0/AsmResolver.PE.File.xml",
+        "lib/net9.0/AsmResolver.PE.File.dll",
+        "lib/net9.0/AsmResolver.PE.File.pdb",
+        "lib/net9.0/AsmResolver.PE.File.xml",
+        "lib/netcoreapp3.1/AsmResolver.PE.File.dll",
+        "lib/netcoreapp3.1/AsmResolver.PE.File.pdb",
+        "lib/netcoreapp3.1/AsmResolver.PE.File.xml",
+        "lib/netstandard2.0/AsmResolver.PE.File.dll",
+        "lib/netstandard2.0/AsmResolver.PE.File.pdb",
+        "lib/netstandard2.0/AsmResolver.PE.File.xml",
+        "lib/netstandard2.1/AsmResolver.PE.File.dll",
+        "lib/netstandard2.1/AsmResolver.PE.File.pdb",
+        "lib/netstandard2.1/AsmResolver.PE.File.xml"
+      ]
+    },
+    "Iced/1.21.0": {
+      "sha512": "dv5+81Q1TBQvVMSOOOmRcjJmvWcX3BZPZsIq31+RLc5cNft0IHAyNlkdb7ZarOWG913PyBoFDsDXoCIlKmLclg==",
+      "type": "package",
+      "path": "iced/1.21.0",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "LICENSE.txt",
+        "iced.1.21.0.nupkg.sha512",
+        "iced.nuspec",
+        "lib/net45/Iced.dll",
+        "lib/net45/Iced.xml",
+        "lib/netstandard2.0/Iced.dll",
+        "lib/netstandard2.0/Iced.xml",
+        "lib/netstandard2.1/Iced.dll",
+        "lib/netstandard2.1/Iced.xml",
+        "logo.png"
+      ]
+    },
+    "ICSharpCode.Decompiler/9.1.0.7988": {
+      "sha512": "N5HEh7n/9GpnkH6ojwPbzWbO1Ma+SFZCKafz69uRLnkt/bWzPON7wf7NLxTdU/fGWPnG2TEXRsu5DnRyvIQSaQ==",
+      "type": "package",
+      "path": "icsharpcode.decompiler/9.1.0.7988",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "DecompilerNuGetPackageIcon.png",
+        "PackageReadme.md",
+        "_manifest/spdx_2.2/manifest.spdx.json",
+        "_manifest/spdx_2.2/manifest.spdx.json.sha256",
+        "icsharpcode.decompiler.9.1.0.7988.nupkg.sha512",
+        "icsharpcode.decompiler.nuspec",
+        "lib/netstandard2.0/ICSharpCode.Decompiler.dll",
+        "lib/netstandard2.0/ICSharpCode.Decompiler.xml"
+      ]
+    },
+    "IsExternalInit/1.0.3": {
+      "sha512": "jcdN7vpDwjnV7U9KGCv/oNIWHJ/RIbyrpVsLQL2qbj6Cbi5U3iafKsaMn1rP+qCbkLbkB0v6oAwbVEkqrUnlyg==",
+      "type": "package",
+      "path": "isexternalinit/1.0.3",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "build/IsExternalInit.props",
+        "content/net20/IsExternalInit/IsExternalInit.cs",
+        "content/net40/IsExternalInit/IsExternalInit.cs",
+        "content/net5.0/IsExternalInit/IsExternalInit.cs",
+        "content/netstandard1.0/IsExternalInit/IsExternalInit.cs",
+        "content/netstandard2.0/IsExternalInit/IsExternalInit.cs",
+        "contentFiles/cs/net20/IsExternalInit/IsExternalInit.cs",
+        "contentFiles/cs/net40/IsExternalInit/IsExternalInit.cs",
+        "contentFiles/cs/net5.0/IsExternalInit/IsExternalInit.cs",
+        "contentFiles/cs/netstandard1.0/IsExternalInit/IsExternalInit.cs",
+        "contentFiles/cs/netstandard2.0/IsExternalInit/IsExternalInit.cs",
+        "icon.png",
+        "isexternalinit.1.0.3.nupkg.sha512",
+        "isexternalinit.nuspec"
+      ]
+    },
+    "Serilog/4.4.0": {
+      "sha512": "ZC6Le3rr4TVJJjS4KsQAesxeF1EhW9qcZmmG7eP5Y2G3+gTGkJEUXkq4+tZNPtyp05I0wWOxnIjwtxFweJsObw==",
+      "type": "package",
+      "path": "serilog/4.4.0",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "README.md",
+        "build/Serilog.targets",
+        "buildTransitive/Serilog.targets",
+        "icon.png",
+        "lib/net10.0/Serilog.dll",
+        "lib/net10.0/Serilog.xml",
+        "lib/net462/Serilog.dll",
+        "lib/net462/Serilog.xml",
+        "lib/net471/Serilog.dll",
+        "lib/net471/Serilog.xml",
+        "lib/net6.0/Serilog.dll",
+        "lib/net6.0/Serilog.xml",
+        "lib/net8.0/Serilog.dll",
+        "lib/net8.0/Serilog.xml",
+        "lib/net9.0/Serilog.dll",
+        "lib/net9.0/Serilog.xml",
+        "lib/netstandard2.0/Serilog.dll",
+        "lib/netstandard2.0/Serilog.xml",
+        "serilog.4.4.0.nupkg.sha512",
+        "serilog.nuspec"
+      ]
+    },
+    "Serilog.Formatting.Compact/3.0.0": {
+      "sha512": "wQsv14w9cqlfB5FX2MZpNsTawckN4a8dryuNGbebB/3Nh1pXnROHZov3swtu3Nj5oNG7Ba+xdu7Et/ulAUPanQ==",
+      "type": "package",
+      "path": "serilog.formatting.compact/3.0.0",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "README.md",
+        "lib/net462/Serilog.Formatting.Compact.dll",
+        "lib/net462/Serilog.Formatting.Compact.xml",
+        "lib/net471/Serilog.Formatting.Compact.dll",
+        "lib/net471/Serilog.Formatting.Compact.xml",
+        "lib/net6.0/Serilog.Formatting.Compact.dll",
+        "lib/net6.0/Serilog.Formatting.Compact.xml",
+        "lib/net8.0/Serilog.Formatting.Compact.dll",
+        "lib/net8.0/Serilog.Formatting.Compact.xml",
+        "lib/netstandard2.0/Serilog.Formatting.Compact.dll",
+        "lib/netstandard2.0/Serilog.Formatting.Compact.xml",
+        "serilog-extension-nuget.png",
+        "serilog.formatting.compact.3.0.0.nupkg.sha512",
+        "serilog.formatting.compact.nuspec"
+      ]
+    },
+    "Serilog.Sinks.Console/6.1.1": {
+      "sha512": "8jbqgjUyZlfCuSTaJk6lOca465OndqOz3KZP6Cryt/IqZYybyBu7GP0fE/AXBzrrQB3EBmQntBFAvMVz1COvAA==",
+      "type": "package",
+      "path": "serilog.sinks.console/6.1.1",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "README.md",
+        "icon.png",
+        "lib/net462/Serilog.Sinks.Console.dll",
+        "lib/net462/Serilog.Sinks.Console.xml",
+        "lib/net471/Serilog.Sinks.Console.dll",
+        "lib/net471/Serilog.Sinks.Console.xml",
+        "lib/net6.0/Serilog.Sinks.Console.dll",
+        "lib/net6.0/Serilog.Sinks.Console.xml",
+        "lib/net8.0/Serilog.Sinks.Console.dll",
+        "lib/net8.0/Serilog.Sinks.Console.xml",
+        "lib/netstandard2.0/Serilog.Sinks.Console.dll",
+        "lib/netstandard2.0/Serilog.Sinks.Console.xml",
+        "serilog.sinks.console.6.1.1.nupkg.sha512",
+        "serilog.sinks.console.nuspec"
+      ]
+    },
+    "Serilog.Sinks.File/7.0.0": {
+      "sha512": "fKL7mXv7qaiNBUC71ssvn/dU0k9t0o45+qm2XgKAlSt19xF+ijjxyA3R6HmCgfKEKwfcfkwWjayuQtRueZFkYw==",
+      "type": "package",
+      "path": "serilog.sinks.file/7.0.0",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "README.md",
+        "lib/net462/Serilog.Sinks.File.dll",
+        "lib/net462/Serilog.Sinks.File.xml",
+        "lib/net471/Serilog.Sinks.File.dll",
+        "lib/net471/Serilog.Sinks.File.xml",
+        "lib/net6.0/Serilog.Sinks.File.dll",
+        "lib/net6.0/Serilog.Sinks.File.xml",
+        "lib/net8.0/Serilog.Sinks.File.dll",
+        "lib/net8.0/Serilog.Sinks.File.xml",
+        "lib/net9.0/Serilog.Sinks.File.dll",
+        "lib/net9.0/Serilog.Sinks.File.xml",
+        "lib/netstandard2.0/Serilog.Sinks.File.dll",
+        "lib/netstandard2.0/Serilog.Sinks.File.xml",
+        "serilog-sink-nuget.png",
+        "serilog.sinks.file.7.0.0.nupkg.sha512",
+        "serilog.sinks.file.nuspec"
+      ]
+    },
+    "System.CommandLine/2.0.14": {
+      "sha512": "15fyVO4aG6poR6IKmhM74zf7PUzaU6FZAGm2d3SQSO9yIyGAeo44e6t9qeKjjaqyMEqYdqcb2G1B0gpLoDU2cA==",
+      "type": "package",
+      "path": "system.commandline/2.0.14",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "Icon.png",
+        "README.md",
+        "lib/net8.0/System.CommandLine.dll",
+        "lib/net8.0/System.CommandLine.pdb",
+        "lib/net8.0/System.CommandLine.xml",
+        "lib/net8.0/cs/System.CommandLine.resources.dll",
+        "lib/net8.0/de/System.CommandLine.resources.dll",
+        "lib/net8.0/es/System.CommandLine.resources.dll",
+        "lib/net8.0/fr/System.CommandLine.resources.dll",
+        "lib/net8.0/it/System.CommandLine.resources.dll",
+        "lib/net8.0/ja/System.CommandLine.resources.dll",
+        "lib/net8.0/ko/System.CommandLine.resources.dll",
+        "lib/net8.0/pl/System.CommandLine.resources.dll",
+        "lib/net8.0/pt-BR/System.CommandLine.resources.dll",
+        "lib/net8.0/ru/System.CommandLine.resources.dll",
+        "lib/net8.0/tr/System.CommandLine.resources.dll",
+        "lib/net8.0/zh-Hans/System.CommandLine.resources.dll",
+        "lib/net8.0/zh-Hant/System.CommandLine.resources.dll",
+        "lib/netstandard2.0/System.CommandLine.dll",
+        "lib/netstandard2.0/System.CommandLine.pdb",
+        "lib/netstandard2.0/System.CommandLine.xml",
+        "lib/netstandard2.0/cs/System.CommandLine.resources.dll",
+        "lib/netstandard2.0/de/System.CommandLine.resources.dll",
+        "lib/netstandard2.0/es/System.CommandLine.resources.dll",
+        "lib/netstandard2.0/fr/System.CommandLine.resources.dll",
+        "lib/netstandard2.0/it/System.CommandLine.resources.dll",
+        "lib/netstandard2.0/ja/System.CommandLine.resources.dll",
+        "lib/netstandard2.0/ko/System.CommandLine.resources.dll",
+        "lib/netstandard2.0/pl/System.CommandLine.resources.dll",
+        "lib/netstandard2.0/pt-BR/System.CommandLine.resources.dll",
+        "lib/netstandard2.0/ru/System.CommandLine.resources.dll",
+        "lib/netstandard2.0/tr/System.CommandLine.resources.dll",
+        "lib/netstandard2.0/zh-Hans/System.CommandLine.resources.dll",
+        "lib/netstandard2.0/zh-Hant/System.CommandLine.resources.dll",
+        "system.commandline.2.0.14.nupkg.sha512",
+        "system.commandline.nuspec"
+      ]
+    },
+    "AsmArm64/0.1.0-phase1": {
+      "type": "project",
+      "path": "../vendor/AsmArm64/AsmArm64.csproj",
+      "msbuildProject": "../vendor/AsmArm64/AsmArm64.csproj"
+    },
+    "Il2CppStudio.Core/0.1.0-phase1": {
+      "type": "project",
+      "path": "../Il2CppStudio.Core/Il2CppStudio.Core.csproj",
+      "msbuildProject": "../Il2CppStudio.Core/Il2CppStudio.Core.csproj"
+    },
+    "WasmDisassembler/0.1.0-phase1": {
+      "type": "project",
+      "path": "../vendor/WasmDisassembler/WasmDisassembler.csproj",
+      "msbuildProject": "../vendor/WasmDisassembler/WasmDisassembler.csproj"
+    }
+  },
+  "projectFileDependencyGroups": {
+    "net11.0": [
+      "Il2CppStudio.Core >= 0.1.0-phase1",
+      "System.CommandLine >= 2.0.14"
+    ]
+  },
+  "packageFolders": {
+    "C:\\Users\\13131313\\.nuget\\packages\\": {}
+  },
+  "project": {
+    "version": "0.1.0-phase1",
+    "restore": {
+      "projectUniqueName": "C:\\Users\\13131313\\.gemini\\antigravity\\scratch\\Il2CppStudio\\src\\Il2CppStudio.Cli\\Il2CppStudio.Cli.csproj",
+      "projectName": "il2cppstudio",
+      "projectPath": "C:\\Users\\13131313\\.gemini\\antigravity\\scratch\\Il2CppStudio\\src\\Il2CppStudio.Cli\\Il2CppStudio.Cli.csproj",
+      "packagesPath": "C:\\Users\\13131313\\.nuget\\packages\\",
+      "outputPath": "C:\\Users\\13131313\\.gemini\\antigravity\\scratch\\Il2CppStudio\\src\\Il2CppStudio.Cli\\obj\\",
+      "projectStyle": "PackageReference",
+      "centralPackageVersionsManagementEnabled": true,
+      "configFilePaths": [
+        "C:\\Users\\13131313\\AppData\\Roaming\\NuGet\\NuGet.Config",
+        "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+      ],
+      "originalTargetFrameworks": [
+        "net11.0"
+      ],
+      "sources": {
+        "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+        "C:\\Program Files\\dotnet\\library-packs": {},
+        "https://api.nuget.org/v3/index.json": {}
+      },
+      "frameworks": {
+        "net11.0": {
+          "framework": "net11.0",
+          "targetAlias": "net11.0",
+          "projectReferences": {
+            "C:\\Users\\13131313\\.gemini\\antigravity\\scratch\\Il2CppStudio\\src\\Il2CppStudio.Core\\Il2CppStudio.Core.csproj": {
+              "projectPath": "C:\\Users\\13131313\\.gemini\\antigravity\\scratch\\Il2CppStudio\\src\\Il2CppStudio.Core\\Il2CppStudio.Core.csproj"
+            }
+          }
+        }
+      },
+      "warningProperties": {
+        "warnAsError": [
+          "NU1605"
+        ]
+      },
+      "restoreAuditProperties": {
+        "enableAudit": "true",
+        "auditLevel": "low",
+        "auditMode": "all"
+      },
+      "SdkAnalysisLevel": "11.0.100"
+    },
+    "frameworks": {
+      "net11.0": {
+        "framework": "net11.0",
+        "targetAlias": "net11.0",
+        "dependencies": {
+          "System.CommandLine": {
+            "target": "Package",
+            "version": "[2.0.14, )",
+            "versionCentrallyManaged": true
+          }
+        },
+        "centralPackageVersions": {
+          "AsmResolver.DotNet": "6.0.1",
+          "AsmResolver.PE": "6.0.1",
+          "AsmResolver.PE.File": "6.0.1",
+          "Avalonia": "11.3.0",
+          "Avalonia.AvaloniaEdit": "11.3.0",
+          "Avalonia.Desktop": "11.3.0",
+          "Avalonia.Fonts.Inter": "11.3.0",
+          "Avalonia.Themes.Fluent": "11.3.0",
+          "AvaloniaEdit.TextMate": "11.3.0",
+          "CommunityToolkit.Mvvm": "8.4.0",
+          "Iced": "1.21.0",
+          "ICSharpCode.Decompiler": "9.1.0.7988",
+          "Serilog": "4.4.0",
+          "Serilog.Formatting.Compact": "3.0.0",
+          "Serilog.Sinks.Console": "6.1.1",
+          "Serilog.Sinks.File": "7.0.0",
+          "System.CommandLine": "2.0.14",
+          "xunit.v3.mtp-v2": "4.0.0"
+        },
+        "imports": [
+          "net461",
+          "net462",
+          "net47",
+          "net471",
+          "net472",
+          "net48",
+          "net481"
+        ],
+        "assetTargetFallback": true,
+        "warn": true,
+        "frameworkReferences": {
+          "Microsoft.NETCore.App": {
+            "privateAssets": "all"
+          }
+        },
+        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\11.0.100-rc.3.26522.148/PortableRuntimeIdentifierGraph.json",
+        "packagesToPrune": {
+          "Microsoft.CSharp": "(,4.7.32767]",
+          "Microsoft.Extensions.Caching.Abstractions": "(,11.0.0-rc.3.26522.148]",
+          "Microsoft.Extensions.Configuration.Abstractions": "(,11.0.0-rc.3.26522.148]",
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "(,11.0.0-rc.3.26522.148]",
+          "Microsoft.Extensions.Diagnostics.Abstractions": "(,11.0.0-rc.3.26522.148]",
+          "Microsoft.Extensions.FileProviders.Abstractions": "(,11.0.0-rc.3.26522.148]",
+          "Microsoft.Extensions.Hosting.Abstractions": "(,11.0.0-rc.3.26522.148]",
+          "Microsoft.Extensions.Logging.Abstractions": "(,11.0.0-rc.3.26522.148]",
+          "Microsoft.Extensions.Options": "(,11.0.0-rc.3.26522.148]",
+          "Microsoft.Extensions.Primitives": "(,11.0.0-rc.3.26522.148]",
+          "Microsoft.NETCore.App": "(,2.2.32767]",
+          "Microsoft.NETCore.DotNetHost": "(,8.0.32767]",
+          "Microsoft.NETCore.DotNetHostPolicy": "(,8.0.32767]",
+          "Microsoft.NETCore.DotNetHostResolver": "(,8.0.32767]",
+          "Microsoft.NETCore.Jit": "(,2.0.32767]",
+          "Microsoft.NETCore.Platforms": "(,7.0.32767]",
+          "Microsoft.NETCore.Runtime.CoreCLR": "(,2.0.32767]",
+          "Microsoft.NETCore.Targets": "(,5.0.32767]",
+          "Microsoft.NETCore.Windows.ApiSets": "(,1.0.32767]",
+          "Microsoft.VisualBasic": "(,10.4.32767]",
+          "Microsoft.Win32.Primitives": "(,4.3.32767]",
+          "Microsoft.Win32.Registry": "(,5.0.32767]",
+          "NETStandard.Library": "(,2.0.32767]",
+          "runtime.any.System.Collections": "(,4.3.32767]",
+          "runtime.any.System.Diagnostics.Tools": "(,4.3.32767]",
+          "runtime.any.System.Diagnostics.Tracing": "(,4.3.32767]",
+          "runtime.any.System.Globalization": "(,4.3.32767]",
+          "runtime.any.System.Globalization.Calendars": "(,4.3.32767]",
+          "runtime.any.System.IO": "(,4.3.32767]",
+          "runtime.any.System.Reflection": "(,4.3.32767]",
+          "runtime.any.System.Reflection.Extensions": "(,4.3.32767]",
+          "runtime.any.System.Reflection.Primitives": "(,4.3.32767]",
+          "runtime.any.System.Resources.ResourceManager": "(,4.3.32767]",
+          "runtime.any.System.Runtime": "(,4.3.32767]",
+          "runtime.any.System.Runtime.Handles": "(,4.3.32767]",
+          "runtime.any.System.Runtime.InteropServices": "(,4.3.32767]",
+          "runtime.any.System.Text.Encoding": "(,4.3.32767]",
+          "runtime.any.System.Text.Encoding.Extensions": "(,4.3.32767]",
+          "runtime.any.System.Threading.Tasks": "(,4.3.32767]",
+          "runtime.any.System.Threading.Timer": "(,4.3.32767]",
+          "runtime.aot.System.Collections": "(,4.3.32767]",
+          "runtime.aot.System.Diagnostics.Tools": "(,4.3.32767]",
+          "runtime.aot.System.Diagnostics.Tracing": "(,4.3.32767]",
+          "runtime.aot.System.Globalization": "(,4.3.32767]",
+          "runtime.aot.System.Globalization.Calendars": "(,4.3.32767]",
+          "runtime.aot.System.IO": "(,4.3.32767]",
+          "runtime.aot.System.Reflection": "(,4.3.32767]",
+          "runtime.aot.System.Reflection.Extensions": "(,4.3.32767]",
+          "runtime.aot.System.Reflection.Primitives": "(,4.3.32767]",
+          "runtime.aot.System.Resources.ResourceManager": "(,4.3.32767]",
+          "runtime.aot.System.Runtime": "(,4.3.32767]",
+          "runtime.aot.System.Runtime.Handles": "(,4.3.32767]",
+          "runtime.aot.System.Runtime.InteropServices": "(,4.3.32767]",
+          "runtime.aot.System.Text.Encoding": "(,4.3.32767]",
+          "runtime.aot.System.Text.Encoding.Extensions": "(,4.3.32767]",
+          "runtime.aot.System.Threading.Tasks": "(,4.3.32767]",
+          "runtime.aot.System.Threading.Timer": "(,4.3.32767]",
+          "runtime.debian.8-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.debian.8-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.debian.8-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.debian.8-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.debian.8-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.debian.8-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.debian.9-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.debian.9-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.debian.9-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.debian.9-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.debian.9-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.debian.9-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.fedora.23-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.fedora.23-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.fedora.23-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.fedora.23-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.fedora.23-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.fedora.23-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.fedora.24-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.fedora.24-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.fedora.24-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.fedora.24-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.fedora.24-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.fedora.24-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.fedora.27-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.fedora.27-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.fedora.27-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.fedora.27-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.fedora.27-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.fedora.27-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.fedora.28-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.fedora.28-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.fedora.28-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.fedora.28-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.fedora.28-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.fedora.28-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.native.System": "(,4.3.32767]",
+          "runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.native.System.Security.Cryptography.Apple": "(,4.3.32767]",
+          "runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.opensuse.13.2-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.opensuse.13.2-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.opensuse.13.2-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.opensuse.13.2-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.opensuse.13.2-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.opensuse.13.2-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.opensuse.42.1-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.opensuse.42.1-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.opensuse.42.1-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.opensuse.42.1-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.opensuse.42.1-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.opensuse.42.1-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.opensuse.42.3-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.opensuse.42.3-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.opensuse.42.3-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.opensuse.42.3-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.opensuse.42.3-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.opensuse.42.3-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.osx.10.10-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.osx.10.10-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.osx.10.10-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.osx.10.10-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.osx.10.10-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.osx.10.10-x64.runtime.native.System.Security.Cryptography.Apple": "(,4.3.32767]",
+          "runtime.osx.10.10-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.rhel.7-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.rhel.7-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.rhel.7-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.rhel.7-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.rhel.7-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.rhel.7-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.ubuntu.14.04-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.ubuntu.14.04-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.ubuntu.14.04-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.ubuntu.14.04-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.ubuntu.14.04-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.ubuntu.14.04-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.ubuntu.16.04-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.ubuntu.16.04-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.ubuntu.16.04-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.ubuntu.16.04-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.ubuntu.16.04-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.ubuntu.16.04-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.ubuntu.16.10-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.ubuntu.16.10-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.ubuntu.16.10-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.ubuntu.16.10-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.ubuntu.16.10-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.ubuntu.16.10-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.ubuntu.18.04-x64.runtime.native.System": "(,4.3.32767]",
+          "runtime.ubuntu.18.04-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.ubuntu.18.04-x64.runtime.native.System.Net.Http": "(,4.3.32767]",
+          "runtime.ubuntu.18.04-x64.runtime.native.System.Net.Security": "(,4.3.32767]",
+          "runtime.ubuntu.18.04-x64.runtime.native.System.Security.Cryptography": "(,4.3.32767]",
+          "runtime.ubuntu.18.04-x64.runtime.native.System.Security.Cryptography.OpenSsl": "(,4.3.32767]",
+          "runtime.unix.Microsoft.Win32.Primitives": "(,4.3.32767]",
+          "runtime.unix.System.Console": "(,4.3.32767]",
+          "runtime.unix.System.Diagnostics.Debug": "(,4.3.32767]",
+          "runtime.unix.System.IO.FileSystem": "(,4.3.32767]",
+          "runtime.unix.System.Net.Primitives": "(,4.3.32767]",
+          "runtime.unix.System.Net.Sockets": "(,4.3.32767]",
+          "runtime.unix.System.Private.Uri": "(,4.3.32767]",
+          "runtime.unix.System.Runtime.Extensions": "(,4.3.32767]",
+          "runtime.win.Microsoft.Win32.Primitives": "(,4.3.32767]",
+          "runtime.win.System.Console": "(,4.3.32767]",
+          "runtime.win.System.Diagnostics.Debug": "(,4.3.32767]",
+          "runtime.win.System.IO.FileSystem": "(,4.3.32767]",
+          "runtime.win.System.Net.Primitives": "(,4.3.32767]",
+          "runtime.win.System.Net.Sockets": "(,4.3.32767]",
+          "runtime.win.System.Runtime.Extensions": "(,4.3.32767]",
+          "runtime.win10-arm-aot.runtime.native.System.IO.Compression": "(,4.0.32767]",
+          "runtime.win10-arm64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.win10-x64-aot.runtime.native.System.IO.Compression": "(,4.0.32767]",
+          "runtime.win10-x86-aot.runtime.native.System.IO.Compression": "(,4.0.32767]",
+          "runtime.win7-x64.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.win7-x86.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "runtime.win7.System.Private.Uri": "(,4.3.32767]",
+          "runtime.win8-arm.runtime.native.System.IO.Compression": "(,4.3.32767]",
+          "System.AppContext": "(,4.3.32767]",
+          "System.Buffers": "(,5.0.32767]",
+          "System.Collections": "(,4.3.32767]",
+          "System.Collections.Concurrent": "(,4.3.32767]",
+          "System.Collections.Immutable": "(,11.0.0-rc.3.26522.148]",
+          "System.Collections.NonGeneric": "(,4.3.32767]",
+          "System.Collections.Specialized": "(,4.3.32767]",
+          "System.ComponentModel": "(,4.3.32767]",
+          "System.ComponentModel.Annotations": "(,5.0.32767]",
+          "System.ComponentModel.EventBasedAsync": "(,4.3.32767]",
+          "System.ComponentModel.Primitives": "(,4.3.32767]",
+          "System.ComponentModel.TypeConverter": "(,4.3.32767]",
+          "System.Console": "(,4.3.32767]",
+          "System.Data.Common": "(,4.3.32767]",
+          "System.Data.DataSetExtensions": "(,4.5.32767]",
+          "System.Diagnostics.Contracts": "(,4.3.32767]",
+          "System.Diagnostics.Debug": "(,4.3.32767]",
+          "System.Diagnostics.DiagnosticSource": "(,11.0.0-rc.3.26522.148]",
+          "System.Diagnostics.FileVersionInfo": "(,4.3.32767]",
+          "System.Diagnostics.Process": "(,4.3.32767]",
+          "System.Diagnostics.StackTrace": "(,4.3.32767]",
+          "System.Diagnostics.TextWriterTraceListener": "(,4.3.32767]",
+          "System.Diagnostics.Tools": "(,4.3.32767]",
+          "System.Diagnostics.TraceSource": "(,4.3.32767]",
+          "System.Diagnostics.Tracing": "(,4.3.32767]",
+          "System.Drawing.Primitives": "(,4.3.32767]",
+          "System.Dynamic.Runtime": "(,4.3.32767]",
+          "System.Formats.Asn1": "(,11.0.0-rc.3.26522.148]",
+          "System.Formats.Tar": "(,11.0.0-rc.3.26522.148]",
+          "System.Globalization": "(,4.3.32767]",
+          "System.Globalization.Calendars": "(,4.3.32767]",
+          "System.Globalization.Extensions": "(,4.3.32767]",
+          "System.IO": "(,4.3.32767]",
+          "System.IO.Compression": "(,4.3.32767]",
+          "System.IO.Compression.ZipFile": "(,4.3.32767]",
+          "System.IO.FileSystem": "(,4.3.32767]",
+          "System.IO.FileSystem.AccessControl": "(,5.0.32767]",
+          "System.IO.FileSystem.DriveInfo": "(,4.3.32767]",
+          "System.IO.FileSystem.Primitives": "(,4.3.32767]",
+          "System.IO.FileSystem.Watcher": "(,4.3.32767]",
+          "System.IO.IsolatedStorage": "(,4.3.32767]",
+          "System.IO.MemoryMappedFiles": "(,4.3.32767]",
+          "System.IO.Pipelines": "(,11.0.0-rc.3.26522.148]",
+          "System.IO.Pipes": "(,4.3.32767]",
+          "System.IO.Pipes.AccessControl": "(,5.0.32767]",
+          "System.IO.UnmanagedMemoryStream": "(,4.3.32767]",
+          "System.Linq": "(,4.3.32767]",
+          "System.Linq.AsyncEnumerable": "(,11.0.0-rc.3.26522.148]",
+          "System.Linq.Expressions": "(,4.3.32767]",
+          "System.Linq.Parallel": "(,4.3.32767]",
+          "System.Linq.Queryable": "(,4.3.32767]",
+          "System.Memory": "(,5.0.32767]",
+          "System.Net.Http": "(,4.3.32767]",
+          "System.Net.Http.Json": "(,11.0.0-rc.3.26522.148]",
+          "System.Net.NameResolution": "(,4.3.32767]",
+          "System.Net.NetworkInformation": "(,4.3.32767]",
+          "System.Net.Ping": "(,4.3.32767]",
+          "System.Net.Primitives": "(,4.3.32767]",
+          "System.Net.Requests": "(,4.3.32767]",
+          "System.Net.Security": "(,4.3.32767]",
+          "System.Net.ServerSentEvents": "(,11.0.0-rc.3.26522.148]",
+          "System.Net.Sockets": "(,4.3.32767]",
+          "System.Net.WebHeaderCollection": "(,4.3.32767]",
+          "System.Net.WebSockets": "(,4.3.32767]",
+          "System.Net.WebSockets.Client": "(,4.3.32767]",
+          "System.Numerics.Vectors": "(,5.0.32767]",
+          "System.ObjectModel": "(,4.3.32767]",
+          "System.Private.DataContractSerialization": "(,4.3.32767]",
+          "System.Private.Uri": "(,4.3.32767]",
+          "System.Reflection": "(,4.3.32767]",
+          "System.Reflection.DispatchProxy": "(,6.0.32767]",
+          "System.Reflection.Emit": "(,4.7.32767]",
+          "System.Reflection.Emit.ILGeneration": "(,4.7.32767]",
+          "System.Reflection.Emit.Lightweight": "(,4.7.32767]",
+          "System.Reflection.Extensions": "(,4.3.32767]",
+          "System.Reflection.Metadata": "(,11.0.0-rc.3.26522.148]",
+          "System.Reflection.Primitives": "(,4.3.32767]",
+          "System.Reflection.TypeExtensions": "(,4.7.32767]",
+          "System.Resources.Reader": "(,4.3.32767]",
+          "System.Resources.ResourceManager": "(,4.3.32767]",
+          "System.Resources.Writer": "(,4.3.32767]",
+          "System.Runtime": "(,4.3.32767]",
+          "System.Runtime.CompilerServices.Unsafe": "(,7.0.32767]",
+          "System.Runtime.CompilerServices.VisualC": "(,4.3.32767]",
+          "System.Runtime.Extensions": "(,4.3.32767]",
+          "System.Runtime.Handles": "(,4.3.32767]",
+          "System.Runtime.InteropServices": "(,4.3.32767]",
+          "System.Runtime.InteropServices.RuntimeInformation": "(,4.3.32767]",
+          "System.Runtime.Loader": "(,4.3.32767]",
+          "System.Runtime.Numerics": "(,4.3.32767]",
+          "System.Runtime.Serialization.Formatters": "(,4.3.32767]",
+          "System.Runtime.Serialization.Json": "(,4.3.32767]",
+          "System.Runtime.Serialization.Primitives": "(,4.3.32767]",
+          "System.Runtime.Serialization.Xml": "(,4.3.32767]",
+          "System.Security.AccessControl": "(,6.0.32767]",
+          "System.Security.Claims": "(,4.3.32767]",
+          "System.Security.Cryptography.Algorithms": "(,4.3.32767]",
+          "System.Security.Cryptography.Cng": "(,5.0.32767]",
+          "System.Security.Cryptography.Csp": "(,4.3.32767]",
+          "System.Security.Cryptography.Encoding": "(,4.3.32767]",
+          "System.Security.Cryptography.OpenSsl": "(,5.0.32767]",
+          "System.Security.Cryptography.Primitives": "(,4.3.32767]",
+          "System.Security.Cryptography.X509Certificates": "(,4.3.32767]",
+          "System.Security.Principal": "(,4.3.32767]",
+          "System.Security.Principal.Windows": "(,5.0.32767]",
+          "System.Security.SecureString": "(,4.3.32767]",
+          "System.Text.Encoding": "(,4.3.32767]",
+          "System.Text.Encoding.CodePages": "(,11.0.0-rc.3.26522.148]",
+          "System.Text.Encoding.Extensions": "(,4.3.32767]",
+          "System.Text.Encodings.Web": "(,11.0.0-rc.3.26522.148]",
+          "System.Text.Json": "(,11.0.0-rc.3.26522.148]",
+          "System.Text.RegularExpressions": "(,4.3.32767]",
+          "System.Threading": "(,4.3.32767]",
+          "System.Threading.AccessControl": "(,11.0.0-rc.3.26522.148]",
+          "System.Threading.Channels": "(,11.0.0-rc.3.26522.148]",
+          "System.Threading.Overlapped": "(,4.3.32767]",
+          "System.Threading.Tasks": "(,4.3.32767]",
+          "System.Threading.Tasks.Dataflow": "(,11.0.0-rc.3.26522.148]",
+          "System.Threading.Tasks.Extensions": "(,5.0.32767]",
+          "System.Threading.Tasks.Parallel": "(,4.3.32767]",
+          "System.Threading.Thread": "(,4.3.32767]",
+          "System.Threading.ThreadPool": "(,4.3.32767]",
+          "System.Threading.Timer": "(,4.3.32767]",
+          "System.ValueTuple": "(,4.6.32767]",
+          "System.Xml.ReaderWriter": "(,4.3.32767]",
+          "System.Xml.XDocument": "(,4.3.32767]",
+          "System.Xml.XmlDocument": "(,4.3.32767]",
+          "System.Xml.XmlSerializer": "(,4.3.32767]",
+          "System.Xml.XPath": "(,4.3.32767]",
+          "System.Xml.XPath.XDocument": "(,5.0.32767]"
+        }
+      }
+    }
+  },
+  "logs": [
+    {
+      "code": "NU1900",
+      "level": "Warning",
+      "warningLevel": 1,
+      "message": "Fehler beim Abrufen von Paketsicherheitsrisikodaten: Der Dienstindex für die Quelle \"https://api.nuget.org/v3/index.json\" konnte nicht geladen werden."
+    }
+  ]
+}

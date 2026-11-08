@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v11.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v11.0": {
+      "AsmArm64/0.1.0-phase1": {
+        "runtime": {
+          "AsmArm64.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "AsmArm64/0.1.0-phase1": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

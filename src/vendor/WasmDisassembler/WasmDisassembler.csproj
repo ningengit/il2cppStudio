@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Vendored WasmDisassembler (MIT, Samboy063 / Cpp2IL): zero-dependency WebAssembly bytecode disassembler. -->
+  <PropertyGroup>
+    <AssemblyName>WasmDisassembler</AssemblyName>
+    <RootNamespace>WasmDisassembler</RootNamespace>
+    <AnalysisLevel>none</AnalysisLevel>
+    <NoWarn>$(NoWarn);CS8618;CS8600;CS8602;CS8603;CS8604</NoWarn>
+  </PropertyGroup>
+</Project>

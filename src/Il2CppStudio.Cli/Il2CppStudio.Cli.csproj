@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Il2CppStudio.Cli</RootNamespace>
+    <AssemblyName>il2cppstudio</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Il2CppStudio.Core\Il2CppStudio.Core.csproj" />
+    <PackageReference Include="System.CommandLine" />
+  </ItemGroup>
+
+</Project>
