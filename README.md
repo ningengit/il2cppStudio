@@ -12,12 +12,13 @@ It supports (or will support) a wide range of platforms, including **WebGL, Andr
 * **Il2CppDumper** — Used as a foundational structural reference for parsing binary envelopes (ELF, PE, WebAssembly), resolving metadata pointers, and mapping version-specific struct layouts across metadata v24–v31+.
 * **Cpp2IL / WasmDisassembler** — Used as a structural reference for WebAssembly disassembly handling, intermediate representation (IR) design, calling-convention profiles, and IL2CPP metadata inspection patterns.
 * **Iced** — High-performance, razor-sharp x86/x64 disassembly and instruction decoding engine utilized for native binary analysis.
-* **Capstone & Capstone.NET** — Multi-architecture disassembly engine bindings leveraged for cross-platform support across ARM, ARMv7, ARM64, and alternative CPU targets.
+* **Capstone** — Multi-architecture disassembly engine bindings leveraged for cross-platform support across ARM, ARMv7, ARM64, and alternative CPU targets.
 * **uwdtool (uwdtool-master)** — Provided essential structural insights and reference logic for unpacking Unity WebGL data containers (`unitywebdata`).
 * **WDU** (SeriousCache/UABE) — Used for modeling and extracting Unity WebGL metadata container formats.
 * **Web Global Metadata Parser** — Clean reference parsing implementation for handling web-packaged `global-metadata.dat` files.
 * **Brotli (brotli-master)** — Google's reference compression library, studied for structural layout lookup while implementing high-speed extraction via .NET's built-in `System.IO.Compression.BrotliStream`.
 * **Avalonia UI** — The cross-platform XAML-based .NET UI framework powering Il2CppStudio’s modern, hardware-accelerated desktop interface.
+* **AsmArm64** - Still needs to test wether this or capstone is faster at arm64 disassembly.
 
 ## Getting Started & Prerequisites
 * **Runtime:** .NET 11 SDK (with .NET 8.0 fallback).
