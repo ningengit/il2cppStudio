@@ -5,7 +5,7 @@ Il2CppStudio is a high-performance C# decompiler and binary analysis tool built 
 The tool itself is vibe-coded (and I admit it!), so it may have certain bugs and quirks, but it mostly works just fine and operates at blazing speeds.
 
 ## Supported Platforms
-It supports (or will support) a wide range of platforms, including **WebGL, Android (APK/XAPK), Windows, Linux, and iOS**.
+It supports (or will support) a wide range of platforms, including **WebGL, Android (APK/XAPK), Windows, Linux, Nintendo Switch, and iOS**.
 
 ## A Comprehensive List of Repositories the AI Used
 
