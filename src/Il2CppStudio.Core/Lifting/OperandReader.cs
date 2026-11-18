@@ -21,9 +21,14 @@ public sealed class OperandReader(RegisterTracker regs, StructSlotTable slots, M
         _ => new NativeExpr(ins.ToString()),
     };
 
-    private static Expr Immediate(in Instruction ins, int operand)
+    private Expr Immediate(in Instruction ins, int operand)
     {
         var value = unchecked((long)ins.GetImmediate(operand));
+        if (ArgumentLocations.PointerSize == 4)
+        {
+            var va = unchecked((uint)value);
+            if (sym.Registration.Reader.IsMapped(va) && sym.TryGetUsage(va, out var u)) return UsageValue(u);
+        }
         var wide = ins.Op0Kind == OpKind.Register ? ins.Op0Register.IsGPR64() : ins.MemorySize.GetSize() == 8;
         return new ConstExpr(wide ? value : unchecked((int)value), wide ? ValueKind.I8 : ValueKind.I4);
     }
@@ -32,14 +37,17 @@ public sealed class OperandReader(RegisterTracker regs, StructSlotTable slots, M
     {
         var size = Math.Max(1, ins.MemorySize.GetSize());
         if (ins.IsIPRelativeMemoryOperand) return ReadGlobal(ins.IPRelativeMemoryAddress, ins.MemorySize);
+        if (ins.MemoryBase == Register.None && ins.MemoryIndex == Register.None && ins.MemoryDisplacement64 != 0)
+            return ReadGlobal(ArgumentLocations.PointerSize == 4 ? ins.MemoryDisplacement32 : ins.MemoryDisplacement64, ins.MemorySize);
         var disp = unchecked((long)ins.MemoryDisplacement64);
-        if (ins.MemoryBase == Register.RSP && ins.MemoryIndex == Register.None) return ReadStack(regs.SlotKey(disp), size);
+        if (ArgumentLocations.PointerSize == 4 && disp > int.MaxValue) disp = unchecked((int)ins.MemoryDisplacement32);
+        if (ins.MemoryBase is Register.RSP or Register.ESP && ins.MemoryIndex == Register.None) return ReadStack(regs.SlotKey(disp), size);
         var baseExpr = regs.Get(ins.MemoryBase);
         if (baseExpr is StackAddrPlaceholder p && ins.MemoryIndex == Register.None) return ReadStack(p.Key + disp, size);
         var index = ins.MemoryIndex == Register.None ? null : regs.Get(ins.MemoryIndex);
         if (index is null && disp == 0 && _gotValues.Contains(baseExpr)) return baseExpr;   // [GOT value] = the metadata item
         return mem.Load(baseExpr, index, ins.MemoryIndexScale, disp, size)
-               ?? new NativeExpr($"*({baseExpr.Describe()} + 0x{disp:X})", size == 4 ? ValueKind.I4 : ValueKind.I8);
+               ?? new NativeExpr($"*({baseExpr.Describe()} + 0x{disp:X})", size == 4 || ArgumentLocations.PointerSize == 4 && size != 8 ? ValueKind.I4 : ValueKind.I8);
     }
 
     /// <summary>Scalar slot value, field of a struct-typed slot, or an opaque stack read.</summary>
@@ -51,15 +59,33 @@ public sealed class OperandReader(RegisterTracker regs, StructSlotTable slots, M
             if (mem.TypeDefOf(local.VariableType) is var td and >= 0 && mem.StructField(holder, td, offset) is { } field) return field;
             return new StructChunkExpr(holder, (int)offset, size);
         }
-        return regs.GetSlot(key) ?? new NativeExpr($"stack[0x{key:X}]", size == 4 ? ValueKind.I4 : ValueKind.I8);
+        if (regs.GetSlot(key) is { } direct)
+        {
+            if (size == 8 && direct.Kind == ValueKind.R4 && regs.GetSlot(key + 4) is { Kind: ValueKind.R4 } hi)
+                return new PackedFloatsExpr(direct, hi, corlib.Single);
+            return direct;
+        }
+        for (var d = 1; d < 16; d++)
+        {
+            if (regs.GetSlot(key - d) is StructChunkExpr ch && d < ch.Size)
+            {
+                var td = mem.TypeDefOf(ch.Source.Type);
+                if (td >= 0 && mem.StructField(ch.Source, td, ch.Offset + d) is { } sf) return sf;
+                return new StructChunkExpr(ch.Source, ch.Offset + d, Math.Min(size, ch.Size - d));
+            }
+        }
+        return new NativeExpr($"stack[0x{key:X}]", size == 4 ? ValueKind.I4 : ValueKind.I8);
     }
 
     /// <summary>Address computed by <c>lea</c>.</summary>
     public Expr AddressOf(in Instruction ins)
     {
         if (ins.IsIPRelativeMemoryOperand) return ReadGlobal(ins.IPRelativeMemoryAddress, MemorySize.UInt64);
+        if (ins.MemoryBase == Register.None && ins.MemoryIndex == Register.None && ArgumentLocations.PointerSize == 4 && ins.MemoryDisplacement32 != 0)
+            return ReadGlobal(ins.MemoryDisplacement32, MemorySize.UInt32);
         var disp = unchecked((long)ins.MemoryDisplacement64);
-        if (ins.MemoryBase == Register.RSP && ins.MemoryIndex == Register.None) return new StackAddrPlaceholder(regs.SlotKey(disp));
+        if (ArgumentLocations.PointerSize == 4 && disp > int.MaxValue) disp = unchecked((int)ins.MemoryDisplacement32);
+        if (ins.MemoryBase is Register.RSP or Register.ESP && ins.MemoryIndex == Register.None) return new StackAddrPlaceholder(regs.SlotKey(disp));
         // Frame-pointer-relative addresses (rbp = rsp - N, then lea rcx,[rbp+d]) are stack slots too.
         if (ins.MemoryIndex == Register.None && ins.MemoryBase != Register.None && regs.Get(ins.MemoryBase) is StackAddrPlaceholder frame)
             return new StackAddrPlaceholder(frame.Key + disp);
@@ -87,7 +113,7 @@ public sealed class OperandReader(RegisterTracker regs, StructSlotTable slots, M
         if (sym.TryGetUsage(va, out var u)) return UsageValue(u);
         // Position-independent code (ELF/Clang): `mov rax, [rip+GOT]; mov rsi, [rax]`. The GOT slot holds the address
         // of the runtime-metadata global; both reads stand for the same metadata item, as `mov rsi, [rip+usage]` does.
-        if (size.GetSize() == 8 && reader.IsWritableData(va) && sym.TryGetUsage(reader.ReadPointer(va), out var gu))
+        if (size.GetSize() == ArgumentLocations.PointerSize && reader.IsWritableData(va) && sym.TryGetUsage(reader.ReadPointer(va), out var gu))
         {
             var viaGot = UsageValue(gu);
             _gotValues.Add(viaGot);

@@ -13,6 +13,8 @@ public sealed class Arm64TextDisassembler : ITextDisassembler
 
     public string Disassemble(ReadOnlySpan<byte> code, ulong va)
     {
+        if (code.Length < 4)
+            return $"; decoding stopped at 0x{va:X}: slice shorter than 4-byte A64 instruction ({code.Length} byte(s))";
         var options = new Arm64DisassemblerOptions
         {
             BaseAddress = (long)va,
@@ -21,7 +23,10 @@ public sealed class Arm64TextDisassembler : ITextDisassembler
             TryFormatLabel = FormatLabel,
         };
         var length = code.Length & ~3;   // A64 instructions are 4 bytes
-        return new Arm64Disassembler(options).Disassemble(code[..length]);
+        var text = new Arm64Disassembler(options).Disassemble(code[..length]);
+        var rem = code.Length - length;
+        if (rem > 0) text += $"{Environment.NewLine}; trailing {rem} unaligned byte(s) after 0x{va + (ulong)length:X} skipped";
+        return text;
     }
 
     private bool FormatLabel(long address, Span<char> destination, out int written)

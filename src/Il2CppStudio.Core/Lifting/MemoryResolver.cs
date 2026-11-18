@@ -17,7 +17,10 @@ public sealed class AddressExpr(Expr target) : Expr
         switch (target)
         {
             case LocalExpr l: ctx.IL.Add(CilOpCodes.Ldloca, l.Local); break;
+            case ArgExpr a when a.Type is ByReferenceTypeSignature: ctx.IL.Add(CilOpCodes.Ldarg, a.Parameter); break;
             case ArgExpr a: ctx.IL.Add(CilOpCodes.Ldarga, a.Parameter); break;
+            case ThisStructExpr: ctx.IL.Add(CilOpCodes.Ldarg_0); break;   // value-type `this` is already a managed pointer
+            case IndirectStructExpr i: i.Address.Emit(ctx); break;
             case FieldExpr f:
                 if (f.Instance is LocalExpr { Kind: ValueKind.Struct } sl) ctx.IL.Add(CilOpCodes.Ldloca, sl.Local);
                 else if (f.Instance is ArrayElementExpr sae && sae.Kind == ValueKind.Struct) new AddressExpr(sae).Emit(ctx);
@@ -57,14 +60,30 @@ public readonly record struct ResolvedField(int FieldIndex, int DeclaringTypeDef
 /// </summary>
 public sealed class MemoryResolver
 {
-    public const int StaticFieldsOffset = 0xB8;
-    public const int VTableOffset = 0x138;
+    public const int StaticFieldsOffset64 = 0xB8;
+    public const int VTableOffset64 = 0x138;
 
     /// <summary>Il2CppClass::element_class (after image, gc_desc, name, namespaze, byval_arg, this_arg) on 64-bit v24+.</summary>
-    public const int ElementClassOffset = 0x40;
-    public const int ArrayLengthOffset = 0x18;
-    public const int ArrayDataOffset = 0x20;
-    public const int StringLengthOffset = 0x10;
+    public const int ElementClassOffset64 = 0x40;
+    public const int ArrayLengthOffset64 = 0x18;
+    public const int ArrayDataOffset64 = 0x20;
+    public const int StringLengthOffset64 = 0x10;
+
+    private readonly int _ptr;
+
+    /// <summary>Pointer width of the image being lifted (8 for x64/ARM64, 4 for wasm32/ARMv7/x86).</summary>
+    public int PointerSize => _ptr;
+
+    // Il2CppClass/Il2CppObject/Il2CppArray/Il2CppString layouts differ with pointer width. The 32-bit offsets are the
+    // same field sequence with four-byte pointers (Il2CppType is 8 bytes, the class vtable starts at 0xB8).
+    public int StaticFieldsOffset => _ptr == 8 ? StaticFieldsOffset64 : 0x5C;
+    public int VTableOffset => _ptr == 8 ? VTableOffset64 : 0xB8;
+    public int VTableEntrySize => _ptr * 2;
+    public int ElementClassOffset => _ptr == 8 ? ElementClassOffset64 : 0x20;
+    public int ArrayLengthOffset => _ptr == 8 ? ArrayLengthOffset64 : 0x0C;
+    public int ArrayDataOffset => _ptr == 8 ? ArrayDataOffset64 : 0x10;
+    public int StringLengthOffset => _ptr == 8 ? StringLengthOffset64 : 0x08;
+    public int ObjectHeaderSize => _ptr * 2;
 
     private readonly GlobalMetadata _md;
     private readonly MetadataModel _model;
@@ -77,9 +96,10 @@ public sealed class MemoryResolver
     public Action<Expr, Expr>? OnFieldStored { get; set; }
 
     public MemoryResolver(GlobalMetadata md, MetadataModel model, Il2CppRegistration reg, TypeNameService names, StubAssemblyBuilder stubs,
-        ModuleDefinition module, Dictionary<string, int> typeDefByName)
+        ModuleDefinition module, Dictionary<string, int> typeDefByName, int? pointerSize = null)
     {
         _md = md; _model = model; _reg = reg; _names = names; _stubs = stubs; _module = module; _typeDefByName = typeDefByName;
+        _ptr = pointerSize ?? reg.Ptr;
     }
 
     public static Dictionary<string, int> BuildTypeIndex(MetadataModel model)
@@ -132,7 +152,7 @@ public sealed class MemoryResolver
                 if (isLiteral) continue;
                 var off = _reg.GetFieldOffset(current, k);
                 if (off < 0) continue;
-                if (!isStatic && def.IsValueType) off -= 16;
+                if (!isStatic && def.IsValueType) off -= ObjectHeaderSize;
                 list.Add(new ResolvedField(fi, current, off, fd.TypeIndex, isStatic));
             }
             if (def.ParentIndex < 0 || !_reg.TryGetType(def.ParentIndex, out var parent)) break;
@@ -196,8 +216,8 @@ public sealed class MemoryResolver
             case ValueKind.R4: return 4;
             case ValueKind.Struct:
                 var td = TypeDefOf(t);
-                return td >= 0 ? Math.Max(1, _reg.GetValueTypeSize(td)) : 8;
-            default: return 8;
+                return td >= 0 ? Math.Max(1, _reg.GetValueTypeSize(td)) : _ptr;
+            default: return _ptr;
         }
     }
 
@@ -230,18 +250,27 @@ public sealed class MemoryResolver
         if (baseExpr is AddressExpr addr && index is null && disp == 0 && addr.Target.Type is { } att && size <= Math.Max(4, ValueSize(att))
             && Expr.KindOf(att) is not ValueKind.Struct)
             return addr.Target;
-        if (baseExpr is AddressExpr addr2 && TypeDefOf(addr2.Target.Type) is var std and >= 0)
+        if (baseExpr is AddressExpr { Target: var addrTarget } && TypeDefOf(addrTarget.Type) is var std and >= 0)
         {
             if (index is not null) return null;
-            var field = StructField(addr2.Target, std, disp);
+            var field = StructField(addrTarget, std, disp);
             if (field is not null && (size <= ValueSize(field.Type!) || size <= 4)) return field;
-            return new StructChunkExpr(addr2.Target, (int)disp, size);
+            return new StructChunkExpr(addrTarget, (int)disp, size);
+        }
+        if (baseExpr is IndirectStructExpr indirect && index is null && TypeDefOf(indirect.Type) is var itd and >= 0)
+        {
+            var field = StructField(indirect, itd, disp);
+            if (field is not null && (size <= ValueSize(field.Type!) || size <= 4)) return field;
+            return new StructChunkExpr(indirect, (int)disp, size);
         }
 
         if (baseExpr is MarkerExpr m)
         {
             switch (m.Marker)
             {
+                case MarkerKind.TypeInfo when disp == 0 && index is null && size == _ptr:
+                    // The TypeInfo runtime-metadata global holds Il2CppClass* itself; [TypeInfo] is the klass pointer.
+                    return new MarkerExpr(MarkerKind.Klass, m.Index, $"{_names.TypeDefName(m.Index, true)}->klass", m, m.Usage);
                 case MarkerKind.TypeInfo when disp == StaticFieldsOffset && index is null:
                     return new MarkerExpr(MarkerKind.StaticFields, m.Index, $"{_names.TypeDefName(m.Index, true)}.static_fields");
                 case MarkerKind.StaticFields when index is null:
@@ -257,14 +286,14 @@ public sealed class MemoryResolver
                         return StructFieldOrChunk(new StaticFieldExpr(ofr, oft), oft, (int)(disp - outer.Offset), size);
                     }
                     return null;
-                case MarkerKind.Klass when index is null && disp == ElementClassOffset && size == 8:
+                case MarkerKind.Klass when index is null && disp == ElementClassOffset && size == _ptr:
                     // Il2CppClass::element_class - read by the array-store covariance check before stelem.ref.
                     return new MarkerExpr(MarkerKind.ElementClass, m.Index, $"{m.Describe()}.element_class", m.Base);
-                case MarkerKind.Klass when index is null && disp >= VTableOffset && (disp - VTableOffset) % 16 == 0:
-                    return new MarkerExpr(MarkerKind.VTableEntry, (int)((disp - VTableOffset) / 16), $"vtable[{(disp - VTableOffset) / 16}]", m.Base);
-                case MarkerKind.Klass when index is null && disp >= VTableOffset && (disp - VTableOffset) % 16 == 8:
-                    return new MarkerExpr(MarkerKind.MethodInfo, (int)((disp - VTableOffset) / 16), $"vtable[{(disp - VTableOffset) / 16}].method", m.Base);
-                case MarkerKind.VTableEntry when index is null && disp == 8:
+                case MarkerKind.Klass when index is null && disp >= VTableOffset && (disp - VTableOffset) % VTableEntrySize == 0:
+                    return new MarkerExpr(MarkerKind.VTableEntry, (int)((disp - VTableOffset) / VTableEntrySize), $"vtable[{(disp - VTableOffset) / VTableEntrySize}]", m.Base);
+                case MarkerKind.Klass when index is null && disp >= VTableOffset && (disp - VTableOffset) % VTableEntrySize == _ptr:
+                    return new MarkerExpr(MarkerKind.MethodInfo, (int)((disp - VTableOffset) / VTableEntrySize), $"vtable[{(disp - VTableOffset) / VTableEntrySize}].method", m.Base);
+                case MarkerKind.VTableEntry when index is null && disp == _ptr:
                     return new MarkerExpr(MarkerKind.MethodInfo, m.Index, $"{m.Describe()}.method", m.Base, m.Usage);
             }
             return null;
@@ -279,7 +308,7 @@ public sealed class MemoryResolver
         }
         if (kind != ValueKind.Ref || type is null) return null;
 
-        if (disp == 0 && index is null && size == 8)
+        if (disp == 0 && index is null && size == _ptr)
             return new MarkerExpr(MarkerKind.Klass, TypeDefOf(type), $"{baseExpr.Describe()}->klass", baseExpr);
 
         if (type is SzArrayTypeSignature arr)
@@ -373,6 +402,19 @@ public sealed class MemoryResolver
                 Expr.EmitAs(ctx, value, fe.Type!);
                 il.Add(CilOpCodes.Stfld, fe.Field);
                 NotifyStored(value, fe);
+                return true;
+            }
+            return false;
+        }
+
+        if (baseExpr is IndirectStructExpr ind && TypeDefOf(ind.Type) is var itd2 and >= 0 && index is null)
+        {
+            if (StructField(ind, itd2, disp) is FieldExpr fe2)
+            {
+                new AddressExpr(fe2.Instance).Emit(ctx);
+                Expr.EmitAs(ctx, value, fe2.Type!);
+                il.Add(CilOpCodes.Stfld, fe2.Field);
+                NotifyStored(value, fe2);
                 return true;
             }
             return false;

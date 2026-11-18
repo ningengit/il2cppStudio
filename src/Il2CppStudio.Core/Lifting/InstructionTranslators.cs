@@ -63,6 +63,21 @@ public sealed class InstructionTranslators(RegisterTracker regs, OperandReader o
             case Mnemonic.Cvtsi2sd or Mnemonic.Cvtss2sd: Write(ctx, ins, new ConvExpr(ops.Read(ins, 1), f.Double)); return true;
             case Mnemonic.Cvttss2si or Mnemonic.Cvttsd2si or Mnemonic.Cvtss2si or Mnemonic.Cvtsd2si:
                 Write(ctx, ins, new ConvExpr(ops.Read(ins, 1), ins.Op0Register.IsGPR64() ? f.Int64 : f.Int32)); return true;
+            case Mnemonic.Fld: regs.Set(Register.XMM0, ops.Read(ins, 0)); return true;
+            case Mnemonic.Fldz: regs.Set(Register.XMM0, new FloatExpr(0, true)); return true;
+            case Mnemonic.Fld1: regs.Set(Register.XMM0, new FloatExpr(1, true)); return true;
+            case Mnemonic.Fstp or Mnemonic.Fst when ins.Op0Kind == OpKind.Memory:
+                writer.Write(ctx, ins, regs.Get(Register.XMM0)); return true;
+            case Mnemonic.Fchs:
+                regs.Set(Register.XMM0, new UnaryExpr(CilOpCodes.Neg, regs.Get(Register.XMM0))); return true;
+            case Mnemonic.Fadd or Mnemonic.Faddp or Mnemonic.Fiadd when ins.OpCount == 1:
+                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Add, regs.Get(Register.XMM0), ops.Read(ins, 0), ValueKind.R4)); return true;
+            case Mnemonic.Fsub or Mnemonic.Fsubp or Mnemonic.Fisub when ins.OpCount == 1:
+                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Sub, regs.Get(Register.XMM0), ops.Read(ins, 0), ValueKind.R4)); return true;
+            case Mnemonic.Fmul or Mnemonic.Fmulp or Mnemonic.Fimul when ins.OpCount == 1:
+                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Mul, regs.Get(Register.XMM0), ops.Read(ins, 0), ValueKind.R4)); return true;
+            case Mnemonic.Fdiv or Mnemonic.Fdivp or Mnemonic.Fidiv when ins.OpCount == 1:
+                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Div, regs.Get(Register.XMM0), ops.Read(ins, 0), ValueKind.R4)); return true;
             default: return false;
         }
     }
@@ -70,20 +85,42 @@ public sealed class InstructionTranslators(RegisterTracker regs, OperandReader o
     /// <summary>push/pop/sub rsp/add rsp/mov reg,rsp: tracked for stack-slot canonicalization, no CIL.</summary>
     private bool TranslateFrame(in Instruction ins)
     {
-        var rspDest = ins.Op0Kind == OpKind.Register && ins.Op0Register == Register.RSP;
+        var rspDest = ins.Op0Kind == OpKind.Register && ins.Op0Register is Register.RSP or Register.ESP;
         switch (ins.Mnemonic)
         {
-            case Mnemonic.Push: regs.RspDelta += 8; return true;
-            case Mnemonic.Pop: regs.RspDelta -= 8; if (ins.Op0Kind == OpKind.Register) regs.Clobber(ins.Op0Register); return true;
-            case Mnemonic.Sub when rspDest && ins.Op1Kind != OpKind.Register: regs.RspDelta += (long)ins.GetImmediate(1); return true;
-            case Mnemonic.Add when rspDest && ins.Op1Kind != OpKind.Register: regs.RspDelta -= (long)ins.GetImmediate(1); return true;
-            case Mnemonic.Mov when ins.Op1Kind == OpKind.Register && ins.Op1Register == Register.RSP:
+            case Mnemonic.Push:
+            {
+                var pushed = ArgumentLocations.Abi == NativeAbi.Win32 ? ops.Read(ins, 0) : null;
+                regs.RspDelta += ArgumentLocations.PointerSize;
+                if (pushed is not null) regs.SetSlot(regs.SlotKey(0), pushed);
+                return true;
+            }
+            case Mnemonic.Pop:
+                if (ins.Op0Kind == OpKind.Register)
+                {
+                    if (ArgumentLocations.Abi == NativeAbi.Win32 && !IsCalleeSaved32(ins.Op0Register)
+                        && regs.GetSlot(regs.SlotKey(0)) is { } popped)
+                        regs.Set(ins.Op0Register, popped);
+                    else
+                        regs.Clobber(ins.Op0Register);
+                }
+                regs.RspDelta -= ArgumentLocations.PointerSize;
+                return true;
+            case Mnemonic.Sub when rspDest && ins.Op1Kind != OpKind.Register:
+                regs.RspDelta += unchecked((int)ins.GetImmediate(1)); return true;
+            case Mnemonic.Add when rspDest && ins.Op1Kind != OpKind.Register:
+                regs.RspDelta -= unchecked((int)ins.GetImmediate(1)); return true;
+            case Mnemonic.And when rspDest:
+                return true;   // dynamic stack realignment (and esp, -16) in Win32 prologues
+            case Mnemonic.Mov when ins.Op1Kind == OpKind.Register && ins.Op1Register is Register.RSP or Register.ESP:
                 regs.FrameCopy = ins.Op0Register; regs.FrameCopyDelta = regs.RspDelta;
                 regs.Set(ins.Op0Register, new StackAddrPlaceholder(-regs.RspDelta)); return true;   // [reg+d] → stack slot
             case Mnemonic.Mov or Mnemonic.Lea when rspDest: return true;   // epilogue restore
             default: return false;
         }
     }
+
+    private static bool IsCalleeSaved32(Register r) => r is Register.EBX or Register.ESI or Register.EDI or Register.EBP;
 
     private bool Binary(EmitContext ctx, in Instruction ins, CilOpCode op)
     {

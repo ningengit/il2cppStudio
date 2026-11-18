@@ -25,13 +25,19 @@ public sealed partial class Il2CppWorkspace
     /// <summary>Why method bodies are not lifted for this build (null when lifting is available or not yet attempted).</summary>
     public string? LiftingUnavailableReason { get; private set; }
 
-    /// <summary>x86-64 calling convention of the binary: System V for ELF (Linux), Win64 otherwise.</summary>
-    public Lifting.NativeAbi Abi => Binary is { Format: Core.Binary.BinaryFormat.Elf } ? Lifting.NativeAbi.SysV : Lifting.NativeAbi.Win64;
+    /// <summary>Calling convention of the binary: System V for ELF (Linux), Win32 for x86, Wasm32 for WebGL, Win64 otherwise.</summary>
+    public Lifting.NativeAbi Abi => Binary switch
+    {
+        { Format: Core.Binary.BinaryFormat.Elf } => Lifting.NativeAbi.SysV,
+        { Architecture: Core.Binary.CpuArchitecture.X86 } => Lifting.NativeAbi.Win32,
+        { Architecture: Core.Binary.CpuArchitecture.Wasm32 } => Lifting.NativeAbi.Wasm32,
+        _ => Lifting.NativeAbi.Win64,
+    };
 
     partial void InitializeNativePipeline()
     {
         // Registration tables (method addresses, field offsets, type signatures) are pointer data: format- and
-        // CPU-neutral for 32- and 64-bit images. Lifting needs Windows x86-64 code; text disassembly covers more CPUs.
+        // CPU-neutral for 32- and 64-bit images.
         if (Binary is null)
         {
             Names = new TypeNameService(Metadata, Model, null);
@@ -50,19 +56,33 @@ public sealed partial class Il2CppWorkspace
         AddressMap = new MethodAddressMap(Metadata, Model, Registration, Names, Binary.GetFunctionTable(), IsEnhanced ? Backup : null, Sink);
         TextDisassembler = TextDisassemblerFactory.For(Binary.Architecture);
         if (TextDisassembler is not null && Binary.Architecture != Core.Binary.CpuArchitecture.Wasm32) TextDisassembler.SymbolResolver = va => AddressMap.SymbolAt(va)?.DisplayName;
-        if (Binary.Architecture != Core.Binary.CpuArchitecture.X64)
+        if (Binary.Architecture is not (Core.Binary.CpuArchitecture.X64 or Core.Binary.CpuArchitecture.X86
+            or Core.Binary.CpuArchitecture.Wasm32 or Core.Binary.CpuArchitecture.Arm64 or Core.Binary.CpuArchitecture.Arm))
         {
-            LiftingUnavailableReason = $"{Binary.Architecture} machine code is shown as disassembly but not lifted to C# (x86-64 lifter only)";
+            LiftingUnavailableReason = $"{Binary.Architecture} machine code is shown as disassembly but not lifted to C# yet";
             Sink.Warn(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatUnsupported,
                 $"{Binary.Format} {Binary.Architecture}: method addresses, field offsets and signatures recovered; " +
                 $"disassembly: {TextDisassembler?.Name ?? "unavailable"}; method bodies are not lifted because {LiftingUnavailableReason}.", new() { File = Binary.Path });
             return;
         }
-        if (Abi == Lifting.NativeAbi.SysV)
+        if (Abi == Lifting.NativeAbi.SysV && Binary.Architecture == Core.Binary.CpuArchitecture.X64)
             Sink.Info(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatDetected,
-                "System V AMD64 calling convention: methods passing or returning structs of 16 bytes or less by value are not lifted yet (reported per method).", new() { File = Binary.Path });
+                "System V AMD64 calling convention enabled (with <= 16-byte struct eightbyte passing & return).", new() { File = Binary.Path });
+        else if (Abi == Lifting.NativeAbi.Win32)
+            Sink.Info(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatDetected,
+                "Win32 cdecl x86 calling convention enabled (with stack argument & x87 float lifting).", new() { File = Binary.Path });
+        else if (Abi == Lifting.NativeAbi.Wasm32)
+            Sink.Info(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatDetected,
+                "WebAssembly Wasm32 symbolic stack lifter enabled.", new() { File = Binary.Path });
+        else if (Binary.Architecture == Core.Binary.CpuArchitecture.Arm64)
+            Sink.Info(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatDetected,
+                "ARM64 AAPCS64 Unified IR lifter enabled (with HFA struct & ADRP+GOT resolution).", new() { File = Binary.Path });
+        else if (Binary.Architecture == Core.Binary.CpuArchitecture.Arm)
+            Sink.Info(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatDetected,
+                "ARMv7 AAPCS32 Unified IR lifter enabled (Capstone + PC-relative GOT resolution).", new() { File = Binary.Path });
         Symbolizer = new NativeSymbolizer(Metadata, Model, Registration, Names, AddressMap);
-        Disassembler = new X64Disassembler(Symbolizer);
+        if (Binary.Architecture is Core.Binary.CpuArchitecture.X64 or Core.Binary.CpuArchitecture.X86)
+            Disassembler = new X64Disassembler(Symbolizer);
     }
 
     partial void DisposeNativePipeline() => (TextDisassembler as IDisposable)?.Dispose();

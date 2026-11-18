@@ -70,9 +70,14 @@ public static class CrtMathDiscovery
                 }
             }
         }
-        foreach (var (otherVa, _) in map.Stats)
+        foreach (var (otherVa, stats) in map.Stats)
         {
             if (map.KindOf(otherVa) != RuntimeHelperKind.Unknown || map.ExportNames.ContainsKey(otherVa)) continue;
+            if (stats.FollowedByRad2Deg > 0 && stats.RcxSetJustBefore == 0)
+            {
+                map.ExportNames.TryAdd(otherVa, stats.Xmm1SetBefore > 0 ? "atan2f" : "acosf");
+                continue;
+            }
             var targetVa = otherVa;
             for (var hop = 0; hop < 3; hop++)
             {

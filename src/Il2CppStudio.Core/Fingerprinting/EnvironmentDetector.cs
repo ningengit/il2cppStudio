@@ -36,13 +36,21 @@ public static partial class EnvironmentDetector
     {
         string? version = null, source = null;
 
-        if (dataFolder is not null)
+        var candidateFolders = new List<string>();
+        if (dataFolder is not null) candidateFolders.Add(dataFolder);
+        candidateFolders.Add(gameRoot);
+        candidateFolders.Add(Path.Combine(gameRoot, "assets", "bin", "Data"));
+        candidateFolders.Add(Path.Combine(gameRoot, "romfs", "Data"));
+
+        foreach (var folder in candidateFolders.Distinct(StringComparer.OrdinalIgnoreCase))
         {
+            if (!Directory.Exists(folder)) continue;
             foreach (var name in new[] { "globalgamemanagers", "data.unity3d", "mainData" })
             {
-                var p = Path.Combine(dataFolder, name);
+                var p = Path.Combine(folder, name);
                 if (File.Exists(p) && ReadVersionFromSerializedFile(p) is { } v) { version = v; source = name; break; }
             }
+            if (version is not null) break;
         }
 
         if (version is null && OperatingSystem.IsWindows())
@@ -110,11 +118,27 @@ public static partial class EnvironmentDetector
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             var buf = new byte[Math.Min(1024, fs.Length)];
             fs.ReadExactly(buf);
+            if (TryReadUnityFsRevision(buf) is { } bundleVersion) return bundleVersion;
             var text = Encoding.ASCII.GetString(buf.Select(b => b is >= 0x20 and < 0x7F ? b : (byte)' ').ToArray());
             var m = UnityVersionRegex().Match(text);
             return m.Success ? m.Groups["v"].Value : null;
         }
         catch { return null; }
+    }
+
+    private static string? TryReadUnityFsRevision(ReadOnlySpan<byte> buf)
+    {
+        ReadOnlySpan<byte> sig = "UnityFS\0"u8;
+        if (buf.Length < 16 || !buf[..sig.Length].SequenceEqual(sig)) return null;
+        var pos = sig.Length + 4;
+        var playerEnd = buf[pos..].IndexOf((byte)0);
+        if (playerEnd < 0) return null;
+        pos += playerEnd + 1;
+        if (pos >= buf.Length) return null;
+        var revEnd = buf[pos..].IndexOf((byte)0);
+        var revSpan = revEnd >= 0 ? buf.Slice(pos, revEnd) : buf[pos..];
+        var m = UnityVersionRegex().Match(Encoding.ASCII.GetString(revSpan));
+        return m.Success ? m.Groups["v"].Value : null;
     }
 
     private static IReadOnlyList<string> ReadScriptingAssemblies(string? dataFolder, IDiagnosticSink sink)

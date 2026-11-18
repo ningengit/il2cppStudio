@@ -1,0 +1,1254 @@
+using AsmArm64;
+using AsmResolver.DotNet;
+using AsmResolver.DotNet.Code.Cil;
+using AsmResolver.DotNet.Signatures;
+using AsmResolver.PE.DotNet.Cil;
+using Il2CppStudio.Core.Analysis;
+using Il2CppStudio.Core.Diagnostics;
+using Il2CppStudio.Core.Metadata;
+using Il2CppStudio.Core.Registration;
+
+namespace Il2CppStudio.Core.Lifting.Arm64;
+
+internal sealed class Arm64BlockTranslator
+{
+    private readonly NativeSymbolizer _sym;
+    private readonly StubAssemblyBuilder _stubs;
+    private readonly ModuleDefinition _module;
+    private readonly MethodDefinition _method;
+    private readonly MethodShape _shape;
+    private readonly MemoryResolver _mem;
+    private readonly CilMethodBody _body;
+    private readonly CorLibTypeFactory _f;
+    private readonly Runtime.RuntimeHelperMap? _helpers;
+    private readonly Func<ulong, DiagnosticLocation> _loc;
+    private readonly IDiagnosticSink _sink;
+    private readonly List<string> _notes;
+    private readonly ulong _funcStart, _funcEnd;
+    private readonly Dictionary<int, Expr> _regs = [];
+    private readonly Dictionary<long, Expr> _slots = [];
+    private readonly Dictionary<(int Reg, string TypeName), CilLocalVariable> _spillLocals = [];
+    private readonly Dictionary<Arm64Block, Dictionary<int, Expr>> _exit = [];
+    private readonly Dictionary<Arm64Block, Dictionary<int, CilLocalVariable>> _entryLocals = [];
+    private readonly HashSet<Expr> _gotValues = new(ReferenceEqualityComparer.Instance);
+    private CilLocalVariable? _retBuf;
+    private long _spDelta;
+
+    private enum FlagKind { None, Compare, FloatCompare, Test }
+    private FlagKind _flagKind;
+    private Expr? _flagLeft, _flagRight;
+
+    public int Unsupported { get; private set; }
+    public int Unresolved { get; private set; }
+    public int Elided { get; private set; }
+
+    public Arm64BlockTranslator(
+        NativeSymbolizer sym, StubAssemblyBuilder stubs, ModuleDefinition module, MethodDefinition method,
+        MethodShape shape, MemoryResolver mem, CilMethodBody body, Runtime.RuntimeHelperMap? helpers,
+        Func<ulong, DiagnosticLocation> loc, IDiagnosticSink sink, List<string> notes, ulong funcStart, ulong funcEnd)
+    {
+        _sym = sym; _stubs = stubs; _module = module; _method = method; _shape = shape;
+        _mem = mem; _body = body; _f = module.CorLibTypeFactory; _helpers = helpers;
+        _loc = loc; _sink = sink; _notes = notes; _funcStart = funcStart; _funcEnd = funcEnd;
+    }
+
+    private CilLocalVariable NewLocal(TypeSignature type)
+    {
+        var l = new CilLocalVariable(type);
+        _body.LocalVariables.Add(l);
+        return l;
+    }
+
+    public void EnterBlock(Arm64Block block, bool isEntry)
+    {
+        _regs.Clear();
+        _flagKind = FlagKind.None;
+        _flagLeft = _flagRight = null;
+        if (isEntry)
+        {
+            InitializeEntry();
+            return;
+        }
+        var preds = block.Predecessors;
+        var allDone = preds.All(_exit.ContainsKey);
+        foreach (var r in block.LiveIn)
+        {
+            var values = preds.Where(_exit.ContainsKey).Select(p => _exit[p].GetValueOrDefault(r)).Where(v => v is not null).ToList();
+            if (values.Count > 0 && values[0] is { } first && IsRematerializable(first)
+                && (allDone || !RegisterTracker.IsStorable(first)) && values.All(v => SameValue(v!, first)))
+                _regs[r] = first;
+            else if (values.OfType<LocalExpr>().Select(l => l.Local).Distinct().ToList() is [var singleLocal])
+                _regs[r] = new LocalExpr(singleLocal);
+            else if (values.FirstOrDefault(v => RegisterTracker.IsStorable(v!)) is { } storable)
+                _regs[r] = new LocalExpr(SpillLocalFor(r, TypeFor(storable)));
+            else if (_spillLocals.Where(kv => kv.Key.Reg == r).Select(kv => kv.Value).LastOrDefault() is { } existing)
+                _regs[r] = new LocalExpr(existing);
+            else if (values.FirstOrDefault() is { } any && IsRematerializable(any))
+                _regs[r] = any;
+            if (_regs.TryGetValue(r, out var bound) && bound is LocalExpr bl)
+                (_entryLocals.TryGetValue(block, out var m) ? m : _entryLocals[block] = [])[r] = bl.Local;
+        }
+    }
+
+    private void InitializeEntry()
+    {
+        var xIdx = 0;
+        var vIdx = 0;
+        if (!IsHfa(_shape.ReturnType, out _, out _) && _shape.HasReturnBuffer)
+        {
+            _retBuf = NewLocal(_shape.ReturnType);
+            _regs[8] = new AddressExpr(new LocalExpr(_retBuf));
+        }
+        if (!_shape.IsStatic)
+        {
+            var thisType = _method.DeclaringType!.ToTypeSignature(_shape.DeclaringIsValueType);
+            _regs[xIdx++] = _shape.DeclaringIsValueType
+                ? new AddressExpr(new ThisStructExpr(thisType))
+                : new ArgExpr(_method.Parameters.ThisParameter!, thisType);
+        }
+        for (var i = 0; i < _shape.Parameters.Count && i < _method.Parameters.Count; i++)
+        {
+            var pt = _shape.Parameters[i];
+            var arg = new ArgExpr(_method.Parameters[i], pt);
+            if (pt is ByReferenceTypeSignature)
+            {
+                if (xIdx < 8) _regs[xIdx++] = arg;
+            }
+            else if (IsHfa(pt, out var count, out _) && vIdx + count <= 8)
+            {
+                var td = _mem.TypeDefOf(pt);
+                for (var c = 0; c < count; c++)
+                    _regs[32 + vIdx++] = (td >= 0 ? _mem.StructField(arg, td, c * 4) : null) ?? new StructChunkExpr(arg, c * 4, 4);
+            }
+            else if (MethodShape.IsFloat(pt))
+            {
+                if (vIdx < 8) _regs[32 + vIdx++] = arg;
+            }
+            else if (Expr.KindOf(pt) == ValueKind.Struct)
+            {
+                if (xIdx < 8) _regs[xIdx++] = _mem.ValueSize(pt) > 16 ? new AddressExpr(arg) : arg;
+            }
+            else
+            {
+                if (xIdx < 8) _regs[xIdx++] = arg;
+            }
+        }
+        if (xIdx < 8) _regs[xIdx] = new MarkerExpr(MarkerKind.MethodInfo, _shape.MethodIndex, "method");
+    }
+
+    public void TranslateBlock(EmitContext ctx, List<Arm64Insn> insns, Arm64Block b, Arm64Block? nextInEmit)
+    {
+        for (var i = b.Start; i < b.End; i++)
+        {
+            var item = insns[i];
+            var pc = item.Address;
+            var ins = item.Ins;
+            var isLast = i == b.End - 1;
+            var m = ins.Mnemonic;
+
+            if (isLast && b.Successors.Count == 0 && (m == Arm64Mnemonic.B && ins.OperandCount == 1))
+            {
+                // Tail call or external jump
+                var target = Arm64Lifter.BranchTarget(pc, ins, 0);
+                if (target < _funcStart || target >= _funcEnd)
+                {
+                    EmitCallTarget(ctx, target, pc);
+                    EmitReturn(ctx);
+                    return;
+                }
+            }
+
+            if (m == Arm64Mnemonic.RET)
+            {
+                EmitReturn(ctx);
+                return;
+            }
+
+            if (m == Arm64Mnemonic.B && ins.OperandCount == 1)
+            {
+                SpillLiveOut(ctx, b);
+                if (b.Successors.Count == 1 && b.Successors[0] != nextInEmit)
+                    ctx.IL.Add(CilOpCodes.Br, b.Successors[0].Label);
+                return;
+            }
+
+            if (isLast && TryEmitBranch(ctx, b, ins, pc, nextInEmit))
+                return;
+
+            // Elided trap branch inside a multi-instruction sequence (not ending the block): ignore
+            if (IsBranch(ins))
+            {
+                Elided++;
+                continue;
+            }
+
+            TranslateInstruction(ctx, pc, ins);
+        }
+        SpillLiveOut(ctx, b);
+        if (b.Successors.Count == 1 && b.Successors[0] != nextInEmit)
+            ctx.IL.Add(CilOpCodes.Br, b.Successors[0].Label);
+    }
+
+    private bool TryEmitBranch(EmitContext ctx, Arm64Block b, in Arm64Instruction ins, ulong pc, Arm64Block? nextInEmit)
+    {
+        var m = ins.Mnemonic;
+        if (!IsBranch(ins)) return false;
+
+        Arm64Block? fallthrough = b.Successors.Count >= 1 && b.Successors[^1] != null ? b.Successors.FirstOrDefault(s => s.Va == pc + 4) ?? (b.Successors.Count > 1 ? b.Successors[1] : null) : null;
+        ulong targetVa = m == Arm64Mnemonic.TBZ || m == Arm64Mnemonic.TBNZ
+            ? Arm64Lifter.BranchTarget(pc, ins, 2)
+            : Arm64Lifter.BranchTarget(pc, ins, 1);
+        Arm64Block? target = b.Successors.FirstOrDefault(s => s.Va == targetVa);
+
+        // Guard branches testing s_Il2CppMethodInitialized jump over init helpers when already initialized.
+        if (m is Arm64Mnemonic.TBNZ or Arm64Mnemonic.CBNZ or Arm64Mnemonic.TBZ or Arm64Mnemonic.CBZ)
+        {
+            var testReg = GetReg((Arm64RegisterOperand)ins.GetOperand(0));
+            if (testReg is MarkerExpr { Marker: MarkerKind.InitFlag })
+            {
+                Elided++;
+                SpillLiveOut(ctx, b);
+                if (m is Arm64Mnemonic.TBNZ or Arm64Mnemonic.CBNZ && target is not null && target != nextInEmit)
+                    ctx.IL.Add(CilOpCodes.Br, target.Label);
+                else if (m is Arm64Mnemonic.TBZ or Arm64Mnemonic.CBZ && fallthrough is not null && fallthrough != nextInEmit)
+                    ctx.IL.Add(CilOpCodes.Br, fallthrough.Label);
+                return true;
+            }
+        }
+
+        if (target is null)
+        {
+            // Conditional jump to a trap block was pruned from Successors.
+            Elided++;
+            SpillLiveOut(ctx, b);
+            if (fallthrough is not null && fallthrough != nextInEmit) ctx.IL.Add(CilOpCodes.Br, fallthrough.Label);
+            return true;
+        }
+
+        Expr? cond = m switch
+        {
+            Arm64Mnemonic.CBZ => new CompareExpr(Condition.Eq, GetReg((Arm64RegisterOperand)ins.GetOperand(0)), ZeroLike(GetReg((Arm64RegisterOperand)ins.GetOperand(0)))),
+            Arm64Mnemonic.CBNZ => new CompareExpr(Condition.Ne, GetReg((Arm64RegisterOperand)ins.GetOperand(0)), ZeroLike(GetReg((Arm64RegisterOperand)ins.GetOperand(0)))),
+            Arm64Mnemonic.TBZ => BitTestCompare(GetReg((Arm64RegisterOperand)ins.GetOperand(0)), (int)ImmOp(ins, 1), zero: true),
+            Arm64Mnemonic.TBNZ => BitTestCompare(GetReg((Arm64RegisterOperand)ins.GetOperand(0)), (int)ImmOp(ins, 1), zero: false),
+            Arm64Mnemonic.B when ins.OperandCount == 2 => BuildFlagCompare(((Arm64EnumOperand)ins.GetOperand(0)).AsConditional),
+            _ => null,
+        };
+
+        SpillLiveOut(ctx, b);
+        if (cond is null)
+        {
+            ctx.IL.Add(CilOpCodes.Br, target.Label);
+            return true;
+        }
+        cond.Emit(ctx);
+        ctx.IL.Add(CilOpCodes.Brtrue, target.Label);
+        if (fallthrough is not null && fallthrough != nextInEmit)
+            ctx.IL.Add(CilOpCodes.Br, fallthrough.Label);
+        return true;
+    }
+
+    private void TranslateInstruction(EmitContext ctx, ulong pc, in Arm64Instruction ins)
+    {
+        var m = ins.Mnemonic;
+        if (m is Arm64Mnemonic.NOP) return;
+
+        switch (m)
+        {
+            case Arm64Mnemonic.ADRP:
+            {
+                var rd = RegOp(ins, 0);
+                var lbl = (Arm64LabelOperand)ins.GetOperand(1);
+                var page = unchecked((long)(((pc & ~0xFFFUL) + (ulong)lbl.Offset)));
+                SetReg(rd, new ConstExpr(page, ValueKind.I8));
+                return;
+            }
+            case Arm64Mnemonic.ADR:
+            {
+                var rd = RegOp(ins, 0);
+                var lbl = (Arm64LabelOperand)ins.GetOperand(1);
+                SetReg(rd, new ConstExpr(unchecked((long)pc + lbl.Offset), ValueKind.I8));
+                return;
+            }
+            case Arm64Mnemonic.MOV or Arm64Mnemonic.MOVZ or Arm64Mnemonic.MOVN:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                if (dst.Value.Kind == Arm64RegisterKind.SP) return;
+                if (m == Arm64Mnemonic.MOV && ins.GetOperand(1).Kind == Arm64OperandKind.Register)
+                {
+                    var src = (Arm64RegisterOperand)ins.GetOperand(1);
+                    if (src.Value.Kind == Arm64RegisterKind.SP) { SetReg(RegOp(ins, 0), new StackAddrPlaceholder(-_spDelta)); return; }
+                    SetReg(RegOp(ins, 0), NarrowIfW(dst, GetReg(src)));
+                    return;
+                }
+                var imm = ImmOp(ins, 1);
+                if (m == Arm64Mnemonic.MOVN) imm = ~imm;
+                if (ins.OperandCount >= 3 && ins.GetOperand(2).Kind == Arm64OperandKind.Shift)
+                    imm <<= ((Arm64ShiftOperand)ins.GetOperand(2)).Amount;
+                SetReg(RegOp(ins, 0), new ConstExpr(imm, dst.Value.Kind == Arm64RegisterKind.W ? ValueKind.I4 : ValueKind.I8));
+                return;
+            }
+            case Arm64Mnemonic.MOVK:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                var imm = ImmOp(ins, 1) & 0xFFFF;
+                var shift = ins.OperandCount >= 3 && ins.GetOperand(2).Kind == Arm64OperandKind.Shift
+                    ? ((Arm64ShiftOperand)ins.GetOperand(2)).Amount : 0;
+                var cur = GetReg(dst);
+                if (cur is ConstExpr c)
+                {
+                    var mask = ~(0xFFFFL << shift);
+                    SetReg(Arm64Lifter.RegKey(dst), new ConstExpr((c.Value & mask) | (imm << shift), c.Kind));
+                }
+                else
+                    SetReg(Arm64Lifter.RegKey(dst), new BinaryExpr(CilOpCodes.Or, cur, new ConstExpr(imm << shift, cur.Kind == ValueKind.I8 ? ValueKind.I8 : ValueKind.I4), cur.Kind == ValueKind.I8 ? ValueKind.I8 : ValueKind.I4));
+                return;
+            }
+            case Arm64Mnemonic.FMOV:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                var srcOp = ins.GetOperand(1);
+                var isDouble = dst.Value.VKind == Arm64RegisterVKind.D;
+                if (srcOp.Kind == Arm64OperandKind.Immediate)
+                {
+                    var immOp = (Arm64ImmediateOperand)srcOp;
+                    SetReg(Arm64Lifter.RegKey(dst), new FloatExpr(immOp.IsFloat ? immOp.ValueAsFloat : immOp.Value, !isDouble));
+                    return;
+                }
+                if (srcOp.Kind == Arm64OperandKind.Register)
+                {
+                    var sv = GetReg((Arm64RegisterOperand)srcOp);
+                    if (dst.Value.Kind is Arm64RegisterKind.X or Arm64RegisterKind.W)
+                    {
+                        if (sv is FloatExpr fe)
+                            SetReg(Arm64Lifter.RegKey(dst), dst.Value.Kind == Arm64RegisterKind.X
+                                ? new ConstExpr(BitConverter.DoubleToInt64Bits(fe.Value), ValueKind.I8)
+                                : new ConstExpr(BitConverter.SingleToInt32Bits((float)fe.Value), ValueKind.I4));
+                        else
+                            SetReg(Arm64Lifter.RegKey(dst), sv);
+                    }
+                    else
+                    {
+                        if (sv is ConstExpr ce)
+                            SetReg(Arm64Lifter.RegKey(dst), isDouble
+                                ? new FloatExpr(BitConverter.Int64BitsToDouble(ce.Value), false)
+                                : new FloatExpr(BitConverter.Int32BitsToSingle(unchecked((int)ce.Value)), true));
+                        else
+                            SetReg(Arm64Lifter.RegKey(dst), sv);
+                    }
+                }
+                return;
+            }
+            case Arm64Mnemonic.SXTW or Arm64Mnemonic.SXTH or Arm64Mnemonic.UXTH or Arm64Mnemonic.SXTB or Arm64Mnemonic.UXTB:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                var src = GetReg((Arm64RegisterOperand)ins.GetOperand(1));
+                var target = dst.Value.Kind == Arm64RegisterKind.X ? _f.Int64 : _f.Int32;
+                SetReg(Arm64Lifter.RegKey(dst), new ConvExpr(src, target));
+                return;
+            }
+            case Arm64Mnemonic.ADD or Arm64Mnemonic.ADDS:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                var lhs = (Arm64RegisterOperand)ins.GetOperand(1);
+                if (dst.Value.Kind == Arm64RegisterKind.SP && lhs.Value.Kind == Arm64RegisterKind.SP)
+                {
+                    _spDelta -= ImmOp(ins, 2);
+                    return;
+                }
+                var leftVal = lhs.Value.Kind == Arm64RegisterKind.SP ? new StackAddrPlaceholder(-_spDelta) : GetReg(lhs);
+                if (ins.GetOperand(2).Kind == Arm64OperandKind.Immediate)
+                {
+                    var disp = ImmOp(ins, 2);
+                    if (ins.OperandCount >= 4 && ins.GetOperand(3).Kind == Arm64OperandKind.Shift)
+                        disp <<= ((Arm64ShiftOperand)ins.GetOperand(3)).Amount;
+                    if (leftVal is ConstExpr baseC && ResolveUsageAt(unchecked((ulong)(baseC.Value + disp))) is { } uExpr)
+                    { SetReg(Arm64Lifter.RegKey(dst), uExpr); return; }
+                    if (leftVal is StackAddrPlaceholder sp) { SetReg(Arm64Lifter.RegKey(dst), new StackAddrPlaceholder(sp.Key + disp)); return; }
+                    if (_mem.ResolveFieldAddress(leftVal, disp) is { } fa) { SetReg(Arm64Lifter.RegKey(dst), fa); return; }
+                    var k = dst.Value.Kind == Arm64RegisterKind.X ? ValueKind.I8 : ValueKind.I4;
+                    var res = new BinaryExpr(CilOpCodes.Add, leftVal, new ConstExpr(disp, k), k);
+                    SetReg(Arm64Lifter.RegKey(dst), res);
+                    if (m == Arm64Mnemonic.ADDS) SetCompareResult(res);
+                    return;
+                }
+                var rhs = ReadShifted(ins, 2);
+                var kind = dst.Value.Kind == Arm64RegisterKind.X ? ValueKind.I8 : ValueKind.I4;
+                var sum = new BinaryExpr(CilOpCodes.Add, leftVal, rhs, kind);
+                SetReg(Arm64Lifter.RegKey(dst), sum);
+                if (m == Arm64Mnemonic.ADDS) SetCompareResult(sum);
+                return;
+            }
+            case Arm64Mnemonic.SUB or Arm64Mnemonic.SUBS:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                var lhs = (Arm64RegisterOperand)ins.GetOperand(1);
+                if (dst.Value.Kind == Arm64RegisterKind.SP && lhs.Value.Kind == Arm64RegisterKind.SP)
+                {
+                    _spDelta += ImmOp(ins, 2);
+                    return;
+                }
+                if (dst.IsZeroRegister && m == Arm64Mnemonic.SUBS)
+                {
+                    _flagKind = FlagKind.Compare;
+                    _flagLeft = GetReg(lhs);
+                    _flagRight = ReadOpOrImm(ins, 2);
+                    return;
+                }
+                var leftVal = GetReg(lhs);
+                var rightVal = ReadShifted(ins, 2);
+                var kind = dst.Value.Kind == Arm64RegisterKind.X ? ValueKind.I8 : ValueKind.I4;
+                var diff = new BinaryExpr(CilOpCodes.Sub, leftVal, rightVal, kind);
+                SetReg(Arm64Lifter.RegKey(dst), diff);
+                if (m == Arm64Mnemonic.SUBS) SetCompareResult(diff);
+                return;
+            }
+            case Arm64Mnemonic.MUL or Arm64Mnemonic.SDIV or Arm64Mnemonic.UDIV
+                or Arm64Mnemonic.AND or Arm64Mnemonic.ANDS or Arm64Mnemonic.ORR or Arm64Mnemonic.EOR
+                or Arm64Mnemonic.LSL or Arm64Mnemonic.LSR or Arm64Mnemonic.ASR:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                if (dst.IsZeroRegister && m == Arm64Mnemonic.ANDS)
+                {
+                    _flagKind = FlagKind.Test;
+                    _flagLeft = GetReg((Arm64RegisterOperand)ins.GetOperand(1));
+                    _flagRight = ReadOpOrImm(ins, 2);
+                    return;
+                }
+                var l = GetReg((Arm64RegisterOperand)ins.GetOperand(1));
+                var r = ReadShifted(ins, 2);
+                var kind = dst.Value.Kind == Arm64RegisterKind.X ? ValueKind.I8 : ValueKind.I4;
+                var cil = m switch
+                {
+                    Arm64Mnemonic.MUL => CilOpCodes.Mul,
+                    Arm64Mnemonic.SDIV => CilOpCodes.Div,
+                    Arm64Mnemonic.UDIV => CilOpCodes.Div_Un,
+                    Arm64Mnemonic.AND or Arm64Mnemonic.ANDS => CilOpCodes.And,
+                    Arm64Mnemonic.ORR => CilOpCodes.Or,
+                    Arm64Mnemonic.EOR => CilOpCodes.Xor,
+                    Arm64Mnemonic.LSL => CilOpCodes.Shl,
+                    Arm64Mnemonic.ASR => CilOpCodes.Shr,
+                    _ => CilOpCodes.Shr_Un,
+                };
+                var res = new BinaryExpr(cil, l, r, kind);
+                SetReg(Arm64Lifter.RegKey(dst), res);
+                if (m == Arm64Mnemonic.ANDS) SetCompareResult(res);
+                return;
+            }
+            case Arm64Mnemonic.MADD or Arm64Mnemonic.MSUB:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                var rn = GetReg((Arm64RegisterOperand)ins.GetOperand(1));
+                var rm = GetReg((Arm64RegisterOperand)ins.GetOperand(2));
+                var ra = GetReg((Arm64RegisterOperand)ins.GetOperand(3));
+                var k = dst.Value.Kind == Arm64RegisterKind.X ? ValueKind.I8 : ValueKind.I4;
+                var prod = new BinaryExpr(CilOpCodes.Mul, rn, rm, k);
+                if (ins.GetOperand(3) is var op3 && op3.Kind == Arm64OperandKind.Register && ((Arm64RegisterOperand)op3).IsZeroRegister)
+                    SetReg(Arm64Lifter.RegKey(dst), m == Arm64Mnemonic.MSUB ? new UnaryExpr(CilOpCodes.Neg, prod) : prod);
+                else
+                    SetReg(Arm64Lifter.RegKey(dst), m == Arm64Mnemonic.MADD
+                        ? new BinaryExpr(CilOpCodes.Add, ra, prod, k)
+                        : new BinaryExpr(CilOpCodes.Sub, ra, prod, k));
+                return;
+            }
+            case Arm64Mnemonic.FADD or Arm64Mnemonic.FSUB or Arm64Mnemonic.FMUL or Arm64Mnemonic.FDIV:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                var kind = dst.Value.VKind == Arm64RegisterVKind.D ? ValueKind.R8 : ValueKind.R4;
+                var l = GetReg((Arm64RegisterOperand)ins.GetOperand(1));
+                var r = GetReg((Arm64RegisterOperand)ins.GetOperand(2));
+                var cil = m switch
+                {
+                    Arm64Mnemonic.FADD => CilOpCodes.Add,
+                    Arm64Mnemonic.FSUB => CilOpCodes.Sub,
+                    Arm64Mnemonic.FMUL => CilOpCodes.Mul,
+                    _ => CilOpCodes.Div,
+                };
+                SetReg(Arm64Lifter.RegKey(dst), new BinaryExpr(cil, l, r, kind));
+                return;
+            }
+            case Arm64Mnemonic.FMADD or Arm64Mnemonic.FMSUB:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                var kind = dst.Value.VKind == Arm64RegisterVKind.D ? ValueKind.R8 : ValueKind.R4;
+                var prod = new BinaryExpr(CilOpCodes.Mul, GetReg((Arm64RegisterOperand)ins.GetOperand(1)), GetReg((Arm64RegisterOperand)ins.GetOperand(2)), kind);
+                var ra = GetReg((Arm64RegisterOperand)ins.GetOperand(3));
+                SetReg(Arm64Lifter.RegKey(dst), m == Arm64Mnemonic.FMADD
+                    ? new BinaryExpr(CilOpCodes.Add, prod, ra, kind)
+                    : new BinaryExpr(CilOpCodes.Sub, ra, prod, kind));
+                return;
+            }
+            case Arm64Mnemonic.FNEG:
+                SetReg(RegOp(ins, 0), new UnaryExpr(CilOpCodes.Neg, GetReg((Arm64RegisterOperand)ins.GetOperand(1))));
+                return;
+            case Arm64Mnemonic.FABS:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                var t = dst.Value.VKind == Arm64RegisterVKind.D ? _f.Double : _f.Single;
+                SetReg(Arm64Lifter.RegKey(dst), new MathCallExpr("Abs", t, GetReg((Arm64RegisterOperand)ins.GetOperand(1))));
+                return;
+            }
+            case Arm64Mnemonic.FSQRT:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                var isD = dst.Value.VKind == Arm64RegisterVKind.D;
+                var arg = GetReg((Arm64RegisterOperand)ins.GetOperand(1));
+                Expr sqrt = new MathCallExpr("Sqrt", _f.Double, isD ? arg : new ConvExpr(arg, _f.Double));
+                SetReg(Arm64Lifter.RegKey(dst), isD ? sqrt : new ConvExpr(sqrt, _f.Single));
+                return;
+            }
+            case Arm64Mnemonic.SCVTF or Arm64Mnemonic.UCVTF or Arm64Mnemonic.FCVTZS or Arm64Mnemonic.FCVTZU or Arm64Mnemonic.FCVT:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                var target = m is Arm64Mnemonic.FCVTZS or Arm64Mnemonic.FCVTZU
+                    ? (dst.Value.Kind == Arm64RegisterKind.X ? _f.Int64 : _f.Int32)
+                    : (dst.Value.VKind == Arm64RegisterVKind.D ? _f.Double : _f.Single);
+                SetReg(Arm64Lifter.RegKey(dst), new ConvExpr(GetReg((Arm64RegisterOperand)ins.GetOperand(1)), target));
+                return;
+            }
+            case Arm64Mnemonic.CMP:
+                _flagKind = FlagKind.Compare;
+                _flagLeft = GetReg((Arm64RegisterOperand)ins.GetOperand(0));
+                _flagRight = ReadShifted(ins, 1);
+                return;
+            case Arm64Mnemonic.CMN:
+                _flagKind = FlagKind.Compare;
+                _flagLeft = GetReg((Arm64RegisterOperand)ins.GetOperand(0));
+                var cr = ReadShifted(ins, 1);
+                _flagRight = cr is ConstExpr cc ? new ConstExpr(-cc.Value, cc.Kind) : new UnaryExpr(CilOpCodes.Neg, cr);
+                return;
+            case Arm64Mnemonic.TST:
+                _flagKind = FlagKind.Test;
+                _flagLeft = GetReg((Arm64RegisterOperand)ins.GetOperand(0));
+                _flagRight = ReadOpOrImm(ins, 1);
+                return;
+            case Arm64Mnemonic.FCMP or Arm64Mnemonic.FCMPE:
+                _flagKind = FlagKind.FloatCompare;
+                _flagLeft = GetReg((Arm64RegisterOperand)ins.GetOperand(0));
+                _flagRight = ReadOpOrImm(ins, 1);
+                return;
+            case Arm64Mnemonic.CSET:
+            {
+                var dst = RegOp(ins, 0);
+                var cond = ((Arm64EnumOperand)ins.GetOperand(1)).AsConditional;
+                SetReg(dst, (Expr?)BuildFlagCompare(cond) ?? new ConstExpr(0, ValueKind.I4));
+                return;
+            }
+            case Arm64Mnemonic.CSEL or Arm64Mnemonic.CSINC or Arm64Mnemonic.CSINV or Arm64Mnemonic.CSNEG:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                var cond = ((Arm64EnumOperand)ins.GetOperand(3)).AsConditional;
+                var condExpr = BuildFlagCompare(cond);
+                var vTrue = GetReg((Arm64RegisterOperand)ins.GetOperand(1));
+                var vFalse = GetReg((Arm64RegisterOperand)ins.GetOperand(2));
+                if (m == Arm64Mnemonic.CSINC && vFalse is ConstExpr fc) vFalse = new ConstExpr(fc.Value + 1, fc.Kind);
+                else if (m == Arm64Mnemonic.CSINV && vFalse is ConstExpr fc2) vFalse = new ConstExpr(~fc2.Value, fc2.Kind);
+                else if (m == Arm64Mnemonic.CSNEG && vFalse is ConstExpr fc3) vFalse = new ConstExpr(-fc3.Value, fc3.Kind);
+                if (condExpr is null) { SetReg(Arm64Lifter.RegKey(dst), vTrue); return; }
+                var type = vTrue.Type ?? vFalse.Type ?? (dst.Value.Kind == Arm64RegisterKind.X ? _f.Int64 : _f.Int32);
+                var local = NewLocal(type);
+                var elseLabel = new CilInstructionLabel();
+                var endLabel = new CilInstructionLabel();
+                condExpr.Emit(ctx);
+                ctx.IL.Add(CilOpCodes.Brfalse, elseLabel);
+                Expr.EmitAs(ctx, vTrue, type);
+                ctx.IL.Add(CilOpCodes.Stloc, local);
+                ctx.IL.Add(CilOpCodes.Br, endLabel);
+                elseLabel.Instruction = ctx.IL.Add(CilOpCodes.Nop);
+                Expr.EmitAs(ctx, vFalse, type);
+                ctx.IL.Add(CilOpCodes.Stloc, local);
+                endLabel.Instruction = ctx.IL.Add(CilOpCodes.Nop);
+                SetReg(Arm64Lifter.RegKey(dst), new LocalExpr(local));
+                return;
+            }
+            case Arm64Mnemonic.LDR or Arm64Mnemonic.LDRB or Arm64Mnemonic.LDRH or Arm64Mnemonic.LDRSB or Arm64Mnemonic.LDRSH or Arm64Mnemonic.LDRSW or Arm64Mnemonic.LDUR:
+            {
+                var dst = (Arm64RegisterOperand)ins.GetOperand(0);
+                var size = LoadStoreSize(m, dst);
+                if (ins.GetOperand(1).Kind == Arm64OperandKind.Label)
+                {
+                    var litVa = Arm64Lifter.BranchTarget(pc, ins, 1);
+                    SetReg(Arm64Lifter.RegKey(dst), ReadGlobal(litVa, size, dst.Value.Kind >= Arm64RegisterKind.VScalar));
+                    return;
+                }
+                var memOp = (Arm64MemoryOperand)ins.GetOperand(1);
+                var postImm = ins.OperandCount >= 3 && ins.GetOperand(2).Kind == Arm64OperandKind.Immediate ? ImmOp(ins, 2) : 0;
+                var val = LoadMem(memOp.Accessor, size, dst.Value.Kind >= Arm64RegisterKind.VScalar, dst);
+                if (!IsSpCalleeSave(memOp.Accessor, dst)) SetReg(Arm64Lifter.RegKey(dst), val);
+                if (memOp.Accessor.BaseRegister.Kind == Arm64RegisterKind.SP)
+                {
+                    if (memOp.Accessor.IsPreIncrement) _spDelta -= memOp.Accessor.Immediate;
+                    else if (postImm != 0) _spDelta -= postImm;
+                }
+                return;
+            }
+            case Arm64Mnemonic.LDP:
+            {
+                var r1 = (Arm64RegisterOperand)ins.GetOperand(0);
+                var r2 = (Arm64RegisterOperand)ins.GetOperand(1);
+                var memOp = (Arm64MemoryOperand)ins.GetOperand(2);
+                var postImm = ins.OperandCount >= 4 && ins.GetOperand(3).Kind == Arm64OperandKind.Immediate ? ImmOp(ins, 3) : 0;
+                var size = LoadStoreSize(Arm64Mnemonic.LDR, r1);
+                if (!IsSpCalleeSave(memOp.Accessor, r1))
+                    SetReg(Arm64Lifter.RegKey(r1), LoadMem(memOp.Accessor, size, r1.Value.Kind >= Arm64RegisterKind.VScalar, r1));
+                if (!IsSpCalleeSave(memOp.Accessor, r2))
+                    SetReg(Arm64Lifter.RegKey(r2), LoadMem(memOp.Accessor, size, r2.Value.Kind >= Arm64RegisterKind.VScalar, r2, extraDisp: size));
+                if (memOp.Accessor.BaseRegister.Kind == Arm64RegisterKind.SP)
+                {
+                    if (memOp.Accessor.IsPreIncrement) _spDelta -= memOp.Accessor.Immediate;
+                    else if (postImm != 0) _spDelta -= postImm;
+                }
+                return;
+            }
+            case Arm64Mnemonic.STR or Arm64Mnemonic.STRB or Arm64Mnemonic.STRH or Arm64Mnemonic.STUR:
+            {
+                var src = (Arm64RegisterOperand)ins.GetOperand(0);
+                var memOp = (Arm64MemoryOperand)ins.GetOperand(1);
+                var postImm = ins.OperandCount >= 3 && ins.GetOperand(2).Kind == Arm64OperandKind.Immediate ? ImmOp(ins, 2) : 0;
+                if (memOp.Accessor.BaseRegister.Kind == Arm64RegisterKind.SP && memOp.Accessor.IsPreIncrement)
+                    _spDelta -= memOp.Accessor.Immediate;
+                if (!IsSpCalleeSave(memOp.Accessor, src))
+                    StoreMem(ctx, ins, memOp.Accessor, LoadStoreSize(m, src), GetReg(src));
+                if (memOp.Accessor.BaseRegister.Kind == Arm64RegisterKind.SP && postImm != 0)
+                    _spDelta -= postImm;
+                return;
+            }
+            case Arm64Mnemonic.STP:
+            {
+                var r1 = (Arm64RegisterOperand)ins.GetOperand(0);
+                var r2 = (Arm64RegisterOperand)ins.GetOperand(1);
+                var memOp = (Arm64MemoryOperand)ins.GetOperand(2);
+                var postImm = ins.OperandCount >= 4 && ins.GetOperand(3).Kind == Arm64OperandKind.Immediate ? ImmOp(ins, 3) : 0;
+                if (memOp.Accessor.BaseRegister.Kind == Arm64RegisterKind.SP && memOp.Accessor.IsPreIncrement)
+                    _spDelta -= memOp.Accessor.Immediate;
+                var size = LoadStoreSize(Arm64Mnemonic.STR, r1);
+                if (!IsSpCalleeSave(memOp.Accessor, r1)) StoreMem(ctx, ins, memOp.Accessor, size, GetReg(r1));
+                if (!IsSpCalleeSave(memOp.Accessor, r2)) StoreMem(ctx, ins, memOp.Accessor, size, GetReg(r2), extraDisp: size);
+                if (memOp.Accessor.BaseRegister.Kind == Arm64RegisterKind.SP && postImm != 0)
+                    _spDelta -= postImm;
+                return;
+            }
+            case Arm64Mnemonic.BL:
+            {
+                var target = Arm64Lifter.BranchTarget(pc, ins, 0);
+                EmitCallTarget(ctx, target, pc);
+                return;
+            }
+            case Arm64Mnemonic.BLR:
+            {
+                var targetExpr = GetReg((Arm64RegisterOperand)ins.GetOperand(0));
+                if (targetExpr is MarkerExpr { Marker: MarkerKind.VTableEntry, Base: { } obj } mkt)
+                {
+                    var td = _mem.TypeDefOf(obj.Type);
+                    if (td >= 0 && VTableResolver.Resolve(_sym.Metadata, td, mkt.Index) is { } vt && EmitManagedCall(ctx, vt.MethodIndex, vt.SpecIndex, obj))
+                        return;
+                }
+                Unresolved++;
+                ctx.IL.Add(CilOpCodes.Ldstr, $"arm64_indirect@{pc - _sym.Registration.Reader.ImageBase:X}");
+                EmitFourCallNativeArgs(ctx);
+                ctx.IL.Add(CilOpCodes.Call, ctx.Intrinsics.CallNative);
+                var tmp = NewLocal(_f.Int64);
+                ctx.IL.Add(CilOpCodes.Stloc, tmp);
+                ClobberVolatiles();
+                _regs[0] = new LocalExpr(tmp);
+                return;
+            }
+            default:
+                // Non-critical barrier / hint instructions ignored cleanly; others noted.
+                if (m is not (Arm64Mnemonic.DMB or Arm64Mnemonic.DSB or Arm64Mnemonic.ISB or Arm64Mnemonic.PRFM or Arm64Mnemonic.HINT or Arm64Mnemonic.BTI))
+                {
+                    Unsupported++;
+                    _notes.Add($"unsupported instruction at 0x{pc - _sym.Registration.Reader.ImageBase:X}: {ins}");
+                }
+                return;
+        }
+    }
+
+    private Expr LoadMem(in Arm64MemoryAccessorAny acc, int size, bool isFloat, in Arm64RegisterOperand dst, int extraDisp = 0)
+    {
+        var bk = Arm64Lifter.RawRegKey(acc.BaseRegister);
+        var disp = (long)acc.Immediate + extraDisp;
+        if (bk == 99 && !acc.HasIndexRegister)
+        {
+            var key = disp - _spDelta;
+            if (_slots.TryGetValue(key, out var slotVal)) return slotVal;
+            return new NativeExpr($"stack[0x{key:X}]", isFloat ? ValueKind.R4 : (size == 4 ? ValueKind.I4 : ValueKind.I8));
+        }
+        var baseExpr = bk < 0 ? new ConstExpr(0, ValueKind.I8) : GetRegRaw(bk);
+        if (baseExpr is ConstExpr cb && !acc.HasIndexRegister)
+            return ReadGlobal(unchecked((ulong)(cb.Value + disp)), size, isFloat);
+        if (baseExpr is StackAddrPlaceholder sp && !acc.HasIndexRegister)
+            return _slots.GetValueOrDefault(sp.Key + disp) ?? new NativeExpr($"stack[0x{sp.Key + disp:X}]", size == 4 ? ValueKind.I4 : ValueKind.I8);
+        if (_gotValues.Contains(baseExpr) && !acc.HasIndexRegister && disp == 0)
+            return baseExpr;
+
+        Expr? indexExpr = acc.HasIndexRegister ? GetRegRaw(Arm64Lifter.RawRegKey(acc.IndexRegister)) : null;
+        int scale = acc.HasExtend && acc.Extend.Amount > 0 ? 1 << acc.Extend.Amount : 1;
+        return _mem.Load(baseExpr, indexExpr, scale, disp, size)
+               ?? new NativeExpr($"*({baseExpr.Describe()}+0x{disp:X})", isFloat ? (size == 8 ? ValueKind.R8 : ValueKind.R4) : (size == 4 ? ValueKind.I4 : ValueKind.I8));
+    }
+
+    private void StoreMem(EmitContext ctx, in Arm64Instruction ins, in Arm64MemoryAccessorAny acc, int size, Expr value, int extraDisp = 0)
+    {
+        var bk = Arm64Lifter.RawRegKey(acc.BaseRegister);
+        var disp = (long)acc.Immediate + extraDisp;
+        if (bk == 99 && !acc.HasIndexRegister)
+        {
+            _slots[disp - _spDelta] = value;
+            return;
+        }
+        var baseExpr = bk < 0 ? new ConstExpr(0, ValueKind.I8) : GetRegRaw(bk);
+        if (baseExpr is ConstExpr) return;   // guard byte in .bss (s_Il2CppMethodInitialized)
+        if (baseExpr is StackAddrPlaceholder sp && !acc.HasIndexRegister) { _slots[sp.Key + disp] = value; return; }
+        Expr? indexExpr = acc.HasIndexRegister ? GetRegRaw(Arm64Lifter.RawRegKey(acc.IndexRegister)) : null;
+        int scale = acc.HasExtend && acc.Extend.Amount > 0 ? 1 << acc.Extend.Amount : 1;
+        if (_mem.Store(ctx, baseExpr, indexExpr, scale, disp, size, value)) return;
+        Unsupported++;
+        ctx.IL.Add(CilOpCodes.Ldstr, $"{ins} ; value = {value.Describe()}");
+        ctx.IL.Add(CilOpCodes.Call, ctx.Intrinsics.Stmt);
+    }
+
+    private Expr ReadGlobal(ulong va, int size, bool isFloat)
+    {
+        if (ResolveUsageAt(va) is { } u) return u;
+        var reader = _sym.Registration.Reader;
+        if (size == 8 && reader.IsWritableData(va))
+        {
+            var ptr = reader.ReadPointer(va);
+            if (ResolveUsageAt(ptr) is { } gu)
+            {
+                _gotValues.Add(gu);
+                return gu;
+            }
+        }
+        if (!reader.IsWritableData(va) && reader.IsMapped(va))
+        {
+            if (isFloat && size == 4) return new FloatExpr(BitConverter.Int32BitsToSingle((int)reader.ReadU32(va)), true);
+            if (isFloat && size == 8) return new FloatExpr(BitConverter.Int64BitsToDouble((long)reader.ReadU64(va)), false);
+            if (size == 4) return new ConstExpr(reader.ReadI32(va), ValueKind.I4);
+            if (size == 8) return new ConstExpr((long)reader.ReadU64(va), ValueKind.I8);
+        }
+        if (size == 1 && reader.IsWritableData(va))
+            return new MarkerExpr(MarkerKind.InitFlag, -1, $"arm64_init_{va:X}");
+        return new NativeExpr($"global_{va - reader.ImageBase:X}", isFloat ? (size == 8 ? ValueKind.R8 : ValueKind.R4) : (size == 4 ? ValueKind.I4 : ValueKind.I8));
+    }
+
+    private Expr? ResolveUsageAt(ulong va) => _sym.TryGetUsage(va, out var u) ? UsageValue(u) : null;
+
+    private Expr UsageValue(MetadataUsage u) => u.Kind switch
+    {
+        MetadataUsageKind.StringLiteral => new StringExpr(_sym.Metadata.GetStringLiteral(u.Index), _f.String),
+        MetadataUsageKind.TypeInfo or MetadataUsageKind.Il2CppType => new MarkerExpr(
+            u.Kind == MetadataUsageKind.TypeInfo ? MarkerKind.TypeInfo : MarkerKind.Il2CppType,
+            _sym.Registration.TryGetType(u.Index, out var t) ? _sym.Names.ResolveTypeDefIndex(t) : -1, _sym.DescribeUsage(u), usage: u),
+        MetadataUsageKind.FieldInfo or MetadataUsageKind.FieldRva => new MarkerExpr(MarkerKind.FieldInfo, u.Index, _sym.DescribeUsage(u), usage: u),
+        _ => new MarkerExpr(MarkerKind.MethodInfo, u.Index, _sym.DescribeUsage(u), usage: u),
+    };
+
+    private void EmitCallTarget(EmitContext ctx, ulong targetVa, ulong pc)
+    {
+        if (_sym.Map.SymbolAt(targetVa) is not null)
+        {
+            var x0 = GetRegRaw(0);
+            var recvTd = x0 switch
+            {
+                NewObjExpr n => _mem.TypeDefOf(n.Type),
+                AddressExpr a => _mem.TypeDefOf(a.Target.Type),
+                _ => _mem.TypeDefOf(x0.Type),
+            };
+            var s = IcfResolver.Choose(_sym.Map.CandidatesAt(targetVa), recvTd, _sym.Metadata, _sym.Registration, _sym.Names, ctx.Log,
+                receiverIsNewObject: x0 is NewObjExpr { IsMaterialized: false });
+            if (EmitManagedCall(ctx, s.MethodIndex, s.MethodSpecIndex, null)) return;
+        }
+
+        // Runtime helpers via anchor map or heuristic argument shape
+        if (_helpers is not null)
+        {
+            var kind = _helpers.KindOf(targetVa);
+            if (kind is Runtime.RuntimeHelperKind.WriteBarrier or Runtime.RuntimeHelperKind.MetadataInit or Runtime.RuntimeHelperKind.ClassInit or Runtime.RuntimeHelperKind.ScopeCleanup)
+            {
+                Elided++;
+                var a0 = GetRegRaw(0);
+                ClobberVolatiles();
+                if (kind == Runtime.RuntimeHelperKind.MetadataInit && a0 is MarkerExpr or StringExpr) _regs[0] = a0;
+                return;
+            }
+            if (kind == Runtime.RuntimeHelperKind.ObjectNew && GetRegRaw(0) is MarkerExpr { Marker: MarkerKind.TypeInfo, Usage: { Kind: MetadataUsageKind.TypeInfo } ou } && _stubs.ToSig(_module, ou.Index) is { } ot)
+            {
+                Elided++;
+                ClobberVolatiles();
+                _regs[0] = new NewObjExpr(ot, _stubs.GetTypeDef(ou.Index), new RegisterTracker(_body, _f));
+                return;
+            }
+            if (_helpers.ExportNames.TryGetValue(targetVa, out var exp) && BuildArm64Math(exp) is { } mathExpr)
+            {
+                var res = NewLocal(mathExpr.Type!);
+                mathExpr.Emit(ctx);
+                ctx.IL.Add(CilOpCodes.Stloc, res);
+                ClobberVolatiles();
+                _regs[32] = new LocalExpr(res);
+                return;
+            }
+        }
+        if (GetRegRaw(0) is MarkerExpr { Marker: MarkerKind.TypeInfo, Usage: { Kind: MetadataUsageKind.TypeInfo } u }
+            && _stubs.ToSig(_module, u.Index) is { } sig && !_regs.ContainsKey(1))
+        {
+            // Heuristic: il2cpp_codegen_object_new / metadata_init taking only TypeInfo in X0
+            Elided++;
+            ClobberVolatiles();
+            _regs[0] = new NewObjExpr(sig, _stubs.GetTypeDef(((MarkerExpr)GetRegRaw(0)) is var _ ? u.Index : -1), new RegisterTracker(_body, _f));
+            return;
+        }
+        if (GetRegRaw(0) is MarkerExpr { Marker: MarkerKind.MethodInfo or MarkerKind.Il2CppType or MarkerKind.StaticFields })
+        {
+            Elided++;
+            ClobberVolatiles();
+            return;
+        }
+
+        Unresolved++;
+        var name = _helpers?.ExportNames.GetValueOrDefault(targetVa) ?? $"sub_{targetVa - _sym.Registration.Reader.ImageBase:X}";
+        ctx.IL.Add(CilOpCodes.Ldstr, name);
+        EmitFourCallNativeArgs(ctx);
+        ctx.IL.Add(CilOpCodes.Call, ctx.Intrinsics.CallNative);
+        var tmp = NewLocal(_f.Int64);
+        ctx.IL.Add(CilOpCodes.Stloc, tmp);
+        ClobberVolatiles();
+        _regs[0] = new LocalExpr(tmp);
+        _ = pc;
+    }
+
+    private Expr? BuildArm64Math(string name)
+    {
+        if (!Runtime.CrtMath.IsKnown(name)) return null;
+        var args = Runtime.CrtMath.ArgCount(name);
+        var single = name.EndsWith('f');
+        var list = new Expr[args];
+        for (var i = 0; i < args; i++) list[i] = single ? new ConvExpr(GetRegRaw(32 + i), _f.Double) : GetRegRaw(32 + i);
+        var mname = name.TrimEnd('f') switch
+        {
+            "sqrt" => "Sqrt", "sin" => "Sin", "cos" => "Cos", "tan" => "Tan",
+            "asin" => "Asin", "acos" => "Acos", "atan" => "Atan", "atan2" => "Atan2",
+            "pow" => "Pow", "exp" => "Exp", "log" => "Log", "log10" => "Log10",
+            "floor" => "Floor", "ceil" => "Ceiling", "fabs" => "Abs", "fmod" => "IEEERemainder",
+            var o => char.ToUpperInvariant(o[0]) + o[1..],
+        };
+        Expr call = new MathCallExpr(mname, _f.Double, list);
+        return single ? new ConvExpr(call, _f.Single) : call;
+    }
+
+    private bool EmitManagedCall(EmitContext ctx, int methodIndex, int specIndex, Expr? explicitThis)
+    {
+        if (methodIndex < 0 && specIndex >= 0 && specIndex < _sym.Registration.MethodSpecs.Count)
+            methodIndex = _sym.Registration.MethodSpecs[specIndex].MethodDefinitionIndex;
+        if ((uint)methodIndex >= (uint)_sym.Metadata.Methods.Length) return false;
+
+        var baseShape = MethodShape.Create(_sym.Metadata, _sym.Registration, _stubs, _mem, _module, methodIndex, specIndex);
+        // Check exact instantiation MethodInfo* in X[intArgCount]
+        var miX = (!baseShape.IsStatic ? 1 : 0) + baseShape.Parameters.Count(p => !IsHfa(p, out _, out _) && !MethodShape.IsFloat(p));
+        if (miX < 8 && GetRegRaw(miX) is MarkerExpr { Marker: MarkerKind.MethodInfo, Usage: { Kind: MetadataUsageKind.MethodRef } mu }
+            && (uint)mu.Index < (uint)_sym.Registration.MethodSpecs.Count && _sym.Registration.MethodSpecs[mu.Index].MethodDefinitionIndex == methodIndex)
+            specIndex = mu.Index;
+
+        var target = _stubs.MethodRefFor(_module, methodIndex, specIndex);
+        if (target is null) return false;
+        var shape = MethodShape.Create(_sym.Metadata, _sym.Registration, _stubs, _mem, _module, methodIndex, specIndex);
+
+        var xIdx = 0;
+        var vIdx = 0;
+        Expr? thisVal = shape.IsStatic ? null : explicitThis ?? (xIdx < 8 ? GetRegRaw(xIdx++) : new NativeExpr("this"));
+        if (thisVal is NewObjExpr { IsMaterialized: false } pending && _sym.Metadata.GetString(_sym.Metadata.Methods[methodIndex].NameIndex) == ".ctor")
+        {
+            for (var i = 0; i < shape.Parameters.Count; i++) EmitCallParam(ctx, shape.Parameters[i], ref xIdx, ref vIdx);
+            ctx.IL.Add(CilOpCodes.Newobj, DelegateCtorFor(pending, target) ?? target);
+            ClobberVolatiles();
+            var obj = NewLocal(pending.Type);
+            ctx.IL.Add(CilOpCodes.Stloc, obj);
+            var localExpr = new LocalExpr(obj);
+            foreach (var k in _regs.Where(e => ReferenceEquals(e.Value, pending)).Select(e => e.Key).ToList()) _regs[k] = localExpr;
+            return true;
+        }
+
+        if (thisVal is not null)
+        {
+            var declSig = _stubs.TypeRefFor(_module, _sym.Metadata.Methods[methodIndex].DeclaringType)?.ToTypeSignature(shape.DeclaringIsValueType);
+            if (shape.DeclaringIsValueType) new AddressExpr(thisVal).Emit(ctx);
+            else if (thisVal is ConstExpr { Value: 0 }) ctx.IL.Add(CilOpCodes.Ldnull);
+            else if (declSig is not null) Expr.EmitAs(ctx, thisVal, declSig);
+            else thisVal.Emit(ctx);
+        }
+        for (var i = 0; i < shape.Parameters.Count; i++) EmitCallParam(ctx, shape.Parameters[i], ref xIdx, ref vIdx);
+
+        ctx.IL.Add(!shape.IsStatic && !shape.DeclaringIsValueType ? CilOpCodes.Callvirt : CilOpCodes.Call, target);
+        ClobberVolatiles();
+
+        var rk = Expr.KindOf(shape.ReturnType);
+        if (rk == ValueKind.Void) return true;
+        var res = NewLocal(shape.ReturnType);
+        ctx.IL.Add(CilOpCodes.Stloc, res);
+        var resExpr = new LocalExpr(res);
+        if (IsHfa(shape.ReturnType, out var rCount, out _))
+        {
+            var td = _mem.TypeDefOf(shape.ReturnType);
+            for (var c = 0; c < rCount; c++)
+                _regs[32 + c] = (td >= 0 ? _mem.StructField(resExpr, td, c * 4) : null) ?? new StructChunkExpr(resExpr, c * 4, 4);
+            return true;
+        }
+        if (rk == ValueKind.Struct && !IsHfa(shape.ReturnType, out _, out _) && _mem.ValueSize(shape.ReturnType) > 16)
+        {
+            _regs[0] = new AddressExpr(resExpr);
+            return true;
+        }
+        _regs[MethodShape.IsFloat(shape.ReturnType) ? 32 : 0] = resExpr;
+        return true;
+    }
+
+    private void EmitCallParam(EmitContext ctx, TypeSignature pt, ref int xIdx, ref int vIdx)
+    {
+        if (pt is ByReferenceTypeSignature)
+        {
+            var e = xIdx < 8 ? GetRegRaw(xIdx++) : new NativeExpr("byref");
+            e.Emit(ctx);
+            return;
+        }
+        if (IsHfa(pt, out var count, out var isD) && vIdx + count <= 8)
+        {
+            var lanes = new Expr[count];
+            for (var c = 0; c < count; c++) lanes[c] = GetRegRaw(32 + vIdx++);
+            EmitStructFromLanes(ctx, pt, lanes, isD ? 8 : 4);
+            return;
+        }
+        if (MethodShape.IsFloat(pt))
+        {
+            var e = vIdx < 8 ? GetRegRaw(32 + vIdx++) : new FloatExpr(0, true);
+            Expr.EmitAs(ctx, e, pt);
+            return;
+        }
+        var x = xIdx < 8 ? GetRegRaw(xIdx++) : new ConstExpr(0, ValueKind.I8);
+        if (Expr.KindOf(pt) == ValueKind.Native && x is MarkerExpr { Marker: MarkerKind.MethodInfo, Usage: { } u } && FunctionPointer(u) is { } fn)
+        {
+            ctx.IL.Add(CilOpCodes.Ldftn, fn);
+            return;
+        }
+        if (pt.FullName == "System.RuntimeTypeHandle" && x is MarkerExpr { Marker: MarkerKind.Il2CppType, Usage: { Kind: MetadataUsageKind.Il2CppType } tu }
+            && _stubs.ToSig(_module, tu.Index) is { } ts)
+        {
+            ctx.IL.Add(CilOpCodes.Ldtoken, ts.ToTypeDefOrRef());
+            return;
+        }
+        Expr.EmitAs(ctx, x, pt);
+    }
+
+    private void EmitStructFromLanes(EmitContext ctx, TypeSignature type, Expr[] lanes, int elemSize)
+    {
+        // Fast path: all lanes come from consecutive fields of the same struct local/arg
+        Expr? wholeSource = null;
+        var allMatch = true;
+        for (var i = 0; i < lanes.Length; i++)
+        {
+            var src = lanes[i] switch
+            {
+                FieldExpr fe when i == 0 => fe.Instance,
+                FieldExpr fe => fe.Instance,
+                StructChunkExpr sc when sc.Offset == i * elemSize => sc.Source,
+                _ => null,
+            };
+            if (src is null || src.Type is null || !SignatureComparer.Default.Equals(src.Type, type)) { allMatch = false; break; }
+            if (wholeSource is null) wholeSource = src;
+            else if (!SameValue(wholeSource, src)) { allMatch = false; break; }
+        }
+        if (allMatch && wholeSource is not null) { wholeSource.Emit(ctx); return; }
+
+        var local = NewLocal(type);
+        var target = new LocalExpr(local);
+        var td = _mem.TypeDefOf(type);
+        if (td >= 0)
+        {
+            for (var i = 0; i < lanes.Length; i++)
+            {
+                if (_mem.StructField(target, td, i * elemSize) is not FieldExpr fe) continue;
+                new AddressExpr(fe.Instance).Emit(ctx);
+                Expr.EmitAs(ctx, lanes[i], fe.Type!);
+                ctx.IL.Add(CilOpCodes.Stfld, fe.Field);
+            }
+        }
+        ctx.IL.Add(CilOpCodes.Ldloc, local);
+    }
+
+    private void EmitReturn(EmitContext ctx)
+    {
+        var ret = _shape.ReturnType;
+        var k = Expr.KindOf(ret);
+        if (k == ValueKind.Void) { ctx.IL.Add(CilOpCodes.Ret); return; }
+        if (IsHfa(ret, out var count, out var isD))
+        {
+            var lanes = Enumerable.Range(0, count).Select(i => GetRegRaw(32 + i)).ToArray();
+            EmitStructFromLanes(ctx, ret, lanes, isD ? 8 : 4);
+            ctx.IL.Add(CilOpCodes.Ret);
+            return;
+        }
+        if (_retBuf is not null && !IsHfa(ret, out _, out _) && _shape.HasReturnBuffer)
+        {
+            ctx.IL.Add(CilOpCodes.Ldloc, _retBuf);
+            ctx.IL.Add(CilOpCodes.Ret);
+            return;
+        }
+        Expr.EmitAs(ctx, GetRegRaw(MethodShape.IsFloat(ret) ? 32 : 0), ret);
+        ctx.IL.Add(CilOpCodes.Ret);
+    }
+
+    public void EmitDefaultReturn(EmitContext ctx)
+    {
+        var k = Expr.KindOf(_shape.ReturnType);
+        switch (k)
+        {
+            case ValueKind.Void: break;
+            case ValueKind.I4: ctx.IL.Add(CilOpCodes.Ldc_I4_0); break;
+            case ValueKind.I8: ctx.IL.Add(CilOpCodes.Ldc_I8, 0L); break;
+            case ValueKind.R4: ctx.IL.Add(CilOpCodes.Ldc_R4, 0f); break;
+            case ValueKind.R8: ctx.IL.Add(CilOpCodes.Ldc_R8, 0d); break;
+            case ValueKind.Ref: ctx.IL.Add(CilOpCodes.Ldnull); break;
+            default: ctx.IL.Add(CilOpCodes.Ldloc, NewLocal(_shape.ReturnType)); break;
+        }
+        ctx.IL.Add(CilOpCodes.Ret);
+    }
+
+    private void EmitFourCallNativeArgs(EmitContext ctx)
+    {
+        for (var i = 0; i < 4; i++)
+        {
+            if (_regs.TryGetValue(i, out var e) && !e.IsMarker) Expr.EmitAs(ctx, e, _f.Int64);
+            else ctx.IL.Add(CilOpCodes.Ldc_I8, 0L);
+        }
+    }
+
+    private void ClobberVolatiles()
+    {
+        for (var r = 0; r <= 18; r++) _regs.Remove(r);
+        for (var r = 32; r <= 39; r++) _regs.Remove(r);
+        for (var r = 48; r <= 63; r++) _regs.Remove(r);
+    }
+
+    private IMethodDescriptor? DelegateCtorFor(NewObjExpr obj, IMethodDescriptor resolved)
+    {
+        if (resolved.Signature is not MethodSignature { ParameterTypes.Count: 2 } sig
+            || sig.ParameterTypes[0].ElementType != AsmResolver.PE.DotNet.Metadata.Tables.ElementType.Object
+            || sig.ParameterTypes[1].ElementType != AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I) return null;
+        if (resolved.DeclaringType is { } dt && dt.FullName == obj.Type.FullName) return null;
+        return new MemberReference(obj.Type.ToTypeDefOrRef(), ".ctor", sig);
+    }
+
+    private IMethodDescriptor? FunctionPointer(MetadataUsage u) => u.Kind switch
+    {
+        MetadataUsageKind.MethodDef => _stubs.MethodRefFor(_module, u.Index),
+        MetadataUsageKind.MethodRef when (uint)u.Index < (uint)_sym.Registration.MethodSpecs.Count =>
+            _stubs.MethodRefFor(_module, _sym.Registration.MethodSpecs[u.Index].MethodDefinitionIndex, u.Index),
+        _ => null,
+    };
+
+    private bool IsHfa(TypeSignature type, out int count, out bool isDouble)
+    {
+        count = 0; isDouble = false;
+        if (type is ByReferenceTypeSignature || Expr.KindOf(type) != ValueKind.Struct) return false;
+        var td = _mem.TypeDefOf(type);
+        if (td < 0) return false;
+        var fields = _mem.FieldsOf(td).Where(f => !f.IsStatic).OrderBy(f => f.Offset).ToList();
+        if (fields.Count is 0 or > 4) return false;
+        var firstKind = Expr.KindOf(_stubs.ToSig(_module, fields[0].TypeIndex));
+        if (firstKind is not (ValueKind.R4 or ValueKind.R8)) return false;
+        foreach (var f in fields)
+            if (Expr.KindOf(_stubs.ToSig(_module, f.TypeIndex)) != firstKind) return false;
+        count = fields.Count;
+        isDouble = firstKind == ValueKind.R8;
+        return true;
+    }
+
+    private CompareExpr? BuildFlagCompare(Arm64ConditionalKind c)
+    {
+        if (_flagKind == FlagKind.None || _flagLeft is null) return null;
+        var right = _flagRight ?? ZeroLike(_flagLeft);
+        if (_flagKind == FlagKind.Test)
+        {
+            Expr tested = _flagLeft;
+            if (!(_flagRight is ConstExpr { Value: -1 } || SameValue(_flagLeft, right)))
+                tested = new BinaryExpr(CilOpCodes.And, _flagLeft, right, _flagLeft.Kind == ValueKind.I8 ? ValueKind.I8 : ValueKind.I4);
+            return c switch
+            {
+                Arm64ConditionalKind.EQ => new CompareExpr(Condition.Eq, tested, ZeroLike(tested)),
+                Arm64ConditionalKind.NE => new CompareExpr(Condition.Ne, tested, ZeroLike(tested)),
+                _ => null,
+            };
+        }
+        if (_flagKind == FlagKind.FloatCompare)
+        {
+            return c switch
+            {
+                Arm64ConditionalKind.EQ => new CompareExpr(Condition.Eq, _flagLeft, right),
+                Arm64ConditionalKind.NE => new CompareExpr(Condition.Ne, _flagLeft, right),
+                Arm64ConditionalKind.GT or Arm64ConditionalKind.HI => new CompareExpr(Condition.Gt, _flagLeft, right),
+                Arm64ConditionalKind.GE or Arm64ConditionalKind.HS or Arm64ConditionalKind.PL => new CompareExpr(Condition.Ge, _flagLeft, right),
+                Arm64ConditionalKind.LT or Arm64ConditionalKind.LO or Arm64ConditionalKind.MI => new CompareExpr(Condition.Lt, _flagLeft, right),
+                Arm64ConditionalKind.LE or Arm64ConditionalKind.LS => new CompareExpr(Condition.Le, _flagLeft, right),
+                _ => null,
+            };
+        }
+        return c switch
+        {
+            Arm64ConditionalKind.EQ => new CompareExpr(Condition.Eq, _flagLeft, right),
+            Arm64ConditionalKind.NE => new CompareExpr(Condition.Ne, _flagLeft, right),
+            Arm64ConditionalKind.LT or Arm64ConditionalKind.MI => new CompareExpr(Condition.Lt, _flagLeft, right),
+            Arm64ConditionalKind.LE => new CompareExpr(Condition.Le, _flagLeft, right),
+            Arm64ConditionalKind.GT => new CompareExpr(Condition.Gt, _flagLeft, right),
+            Arm64ConditionalKind.GE or Arm64ConditionalKind.PL => new CompareExpr(Condition.Ge, _flagLeft, right),
+            Arm64ConditionalKind.LO => new CompareExpr(Condition.LtUn, _flagLeft, right),
+            Arm64ConditionalKind.LS => new CompareExpr(Condition.LeUn, _flagLeft, right),
+            Arm64ConditionalKind.HI => new CompareExpr(Condition.GtUn, _flagLeft, right),
+            Arm64ConditionalKind.HS => new CompareExpr(Condition.GeUn, _flagLeft, right),
+            _ => null,
+        };
+    }
+
+    private void SetCompareResult(Expr res) { _flagKind = FlagKind.Compare; _flagLeft = res; _flagRight = ZeroLike(res); }
+
+    private static Expr BitTestCompare(Expr val, int bit, bool zero)
+    {
+        if (bit == 0 && (val.Type?.ElementType == AsmResolver.PE.DotNet.Metadata.Tables.ElementType.Boolean || val.Kind == ValueKind.I4))
+            return new CompareExpr(zero ? Condition.Eq : Condition.Ne, val, new ConstExpr(0, ValueKind.I4));
+        var k = val.Kind == ValueKind.I8 ? ValueKind.I8 : ValueKind.I4;
+        var masked = new BinaryExpr(CilOpCodes.And, val, new ConstExpr(1L << bit, k), k);
+        return new CompareExpr(zero ? Condition.Eq : Condition.Ne, masked, new ConstExpr(0, k));
+    }
+
+    private void SpillLiveOut(EmitContext ctx, Arm64Block block)
+    {
+        var exit = _exit[block] = [];
+        foreach (var r in block.LiveOut)
+        {
+            if (!_regs.TryGetValue(r, out var e)) continue;
+            exit[r] = e;
+            if (!RegisterTracker.IsStorable(e)) continue;
+            var local = block.Successors.Select(s => _entryLocals.GetValueOrDefault(s)?.GetValueOrDefault(r)).FirstOrDefault(l => l is not null)
+                        ?? SpillLocalFor(r, TypeFor(e));
+            if (e is LocalExpr le && le.Local == local) continue;
+            Expr.EmitAs(ctx, e, local.VariableType);
+            ctx.IL.Add(CilOpCodes.Stloc, local);
+            if (!IsRematerializable(e)) exit[r] = _regs[r] = new LocalExpr(local);
+        }
+    }
+
+    private CilLocalVariable SpillLocalFor(int r, TypeSignature t)
+    {
+        var key = (r, t.FullName);
+        if (_spillLocals.TryGetValue(key, out var existing)) return existing;
+        var l = NewLocal(t);
+        _spillLocals[key] = l;
+        return l;
+    }
+
+    private TypeSignature TypeFor(Expr e) => e.Type ?? e.Kind switch
+    {
+        ValueKind.I4 => _f.Int32,
+        ValueKind.R4 => _f.Single,
+        ValueKind.R8 => _f.Double,
+        ValueKind.Ref => _f.Object,
+        ValueKind.Native => _f.IntPtr,
+        _ => _f.Int64,
+    };
+
+    private static bool IsRematerializable(Expr e) =>
+        e is AddressExpr or StackAddrPlaceholder or MarkerExpr or ConstExpr or FloatExpr or StringExpr or ArgExpr or StructChunkExpr { Source: LocalExpr };
+
+    private static bool SameValue(Expr a, Expr b) => ReferenceEquals(a, b) || (a, b) switch
+    {
+        (LocalExpr x, LocalExpr y) => x.Local == y.Local,
+        (ArgExpr x, ArgExpr y) => x.Parameter == y.Parameter,
+        (ConstExpr x, ConstExpr y) => x.Value == y.Value && x.Kind == y.Kind,
+        (MarkerExpr x, MarkerExpr y) => x.Marker == y.Marker && x.Index == y.Index,
+        _ => false,
+    };
+
+    private Expr GetReg(in Arm64RegisterOperand rop)
+    {
+        if (rop.IsZeroRegister) return new ConstExpr(0, rop.Value.Kind == Arm64RegisterKind.W ? ValueKind.I4 : ValueKind.I8);
+        return NarrowIfW(rop, GetRegRaw(Arm64Lifter.RegKey(rop)));
+    }
+
+    private Expr GetRegRaw(int key)
+    {
+        if (key < 0) return new ConstExpr(0, ValueKind.I8);
+        if (_regs.TryGetValue(key, out var e)) return e;
+        return new NativeExpr(key >= 32 ? $"v{key - 32}" : $"x{key}");
+    }
+
+    private Expr NarrowIfW(in Arm64RegisterOperand rop, Expr e)
+    {
+        if (rop.Value.Kind != Arm64RegisterKind.W || e.Kind != ValueKind.I8 || e is StructChunkExpr) return e;
+        if (e is ConstExpr c) return new ConstExpr(unchecked((int)c.Value), ValueKind.I4, c.FromFloatBits);
+        return new ConvExpr(e, _f.Int32);
+    }
+
+    private void SetReg(int key, Expr value) { if (key >= 0 && key != 99) _regs[key] = value; }
+
+    private Expr ReadOpOrImm(in Arm64Instruction ins, int idx)
+    {
+        var op = ins.GetOperand(idx);
+        if (op.Kind == Arm64OperandKind.Register) return GetReg((Arm64RegisterOperand)op);
+        if (op.Kind == Arm64OperandKind.Immediate)
+        {
+            var imm = (Arm64ImmediateOperand)op;
+            return imm.IsFloat ? new FloatExpr(imm.ValueAsFloat, true) : new ConstExpr(imm.Value, ValueKind.I4);
+        }
+        return new ConstExpr(0, ValueKind.I4);
+    }
+
+    private Expr ReadShifted(in Arm64Instruction ins, int idx)
+    {
+        var baseVal = ReadOpOrImm(ins, idx);
+        if (ins.OperandCount > idx + 1)
+        {
+            var extra = ins.GetOperand(idx + 1);
+            if (extra.Kind == Arm64OperandKind.Shift)
+            {
+                var sh = (Arm64ShiftOperand)extra;
+                if (sh.Amount > 0)
+                {
+                    if (baseVal is ConstExpr c)
+                        return new ConstExpr(sh.ShiftKind == Arm64ShiftKind.LSL ? c.Value << sh.Amount : c.Value >> sh.Amount, c.Kind);
+                    var k = baseVal.Kind == ValueKind.I8 ? ValueKind.I8 : ValueKind.I4;
+                    return new BinaryExpr(sh.ShiftKind == Arm64ShiftKind.LSL ? CilOpCodes.Shl : CilOpCodes.Shr_Un, baseVal, new ConstExpr(sh.Amount, ValueKind.I4), k);
+                }
+            }
+        }
+        return baseVal;
+    }
+
+    private static int RegOp(in Arm64Instruction ins, int idx) => Arm64Lifter.RegKey((Arm64RegisterOperand)ins.GetOperand(idx));
+    private static long ImmOp(in Arm64Instruction ins, int idx) => ((Arm64ImmediateOperand)ins.GetOperand(idx)).Value;
+    private static Expr ZeroLike(Expr e) => e.Kind is ValueKind.R4 or ValueKind.R8 ? new FloatExpr(0, e.Kind == ValueKind.R4) : new ConstExpr(0, e.Kind == ValueKind.I8 ? ValueKind.I8 : ValueKind.I4);
+    private static bool IsBranch(in Arm64Instruction ins) => ins.Mnemonic is Arm64Mnemonic.B or Arm64Mnemonic.CBZ or Arm64Mnemonic.CBNZ or Arm64Mnemonic.TBZ or Arm64Mnemonic.TBNZ or Arm64Mnemonic.BR;
+
+    private static int LoadStoreSize(Arm64Mnemonic m, in Arm64RegisterOperand rop) => m switch
+    {
+        Arm64Mnemonic.LDRB or Arm64Mnemonic.LDRSB or Arm64Mnemonic.STRB => 1,
+        Arm64Mnemonic.LDRH or Arm64Mnemonic.LDRSH or Arm64Mnemonic.STRH => 2,
+        Arm64Mnemonic.LDRSW => 4,
+        _ when rop.Value.Kind == Arm64RegisterKind.W => 4,
+        _ when rop.Value.Kind >= Arm64RegisterKind.VScalar => rop.Value.VKind switch
+        {
+            Arm64RegisterVKind.B => 1,
+            Arm64RegisterVKind.H => 2,
+            Arm64RegisterVKind.S => 4,
+            Arm64RegisterVKind.Q => 16,
+            _ => 8,
+        },
+        _ => 8,
+    };
+
+    private static bool IsSpCalleeSave(in Arm64MemoryAccessorAny acc, in Arm64RegisterOperand reg)
+    {
+        if (acc.BaseRegister.Kind != Arm64RegisterKind.SP || acc.HasIndexRegister) return false;
+        if (reg.Value.Kind is Arm64RegisterKind.X or Arm64RegisterKind.W) return reg.Value.Index is >= 19 and <= 30;
+        if (reg.Value.Kind >= Arm64RegisterKind.VScalar) return reg.Value.Index is >= 8 and <= 15;
+        return false;
+    }
+}

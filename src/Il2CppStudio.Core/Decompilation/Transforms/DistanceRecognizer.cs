@@ -61,7 +61,12 @@ public static class DistanceRecognizer
             }
             if (!ok || a is null || !components.SetEquals(["x", "y", "z"])) continue;
 
-            sqrt.ReplaceWith(new InvocationExpression(new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Vector3")), "Distance"), a.Clone(), b!.Clone()));
+            var useMagnitude = sqrt.Ancestors.OfType<MethodDeclaration>().FirstOrDefault() is { } md
+                && md.Descendants.OfType<MemberReferenceExpression>().Any(m => m.MemberName == "magnitude");
+            Expression distExpr = useMagnitude
+                ? new MemberReferenceExpression(new ParenthesizedExpression(new BinaryOperatorExpression(a.Clone(), BinaryOperatorType.Subtract, b!.Clone())), "magnitude")
+                : new InvocationExpression(new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Vector3")), "Distance"), a.Clone(), b!.Clone());
+            sqrt.ReplaceWith(distExpr);
             foreach (var h in helpers) h.Remove();
         }
         FoldVectorEquality(tree);

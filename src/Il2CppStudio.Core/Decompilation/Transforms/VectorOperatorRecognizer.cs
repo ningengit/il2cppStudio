@@ -21,7 +21,7 @@ public static class VectorOperatorRecognizer
         {
             if (create.Type is not SimpleType { Identifier: "Vector3" or "Vector2" } st) continue;
             var lanes = st.Identifier == "Vector3" ? Lanes[1] : Lanes[0];
-            var args = create.Arguments.ToList();
+            var args = create.Arguments.Select(a => NormalizeDoubled(a.Clone(), st.Identifier)).ToList();
             if (args.Count != lanes.Length) continue;
             var template = args[0];
             var ok = true;
@@ -32,6 +32,29 @@ public static class VectorOperatorRecognizer
             create.ReplaceWith(vectorExpr);
         }
         InlineVectorTemps(tree);
+    }
+
+    private static Expression NormalizeDoubled(Expression expr, string vectorType)
+    {
+        foreach (var add in expr.DescendantsAndSelf.OfType<BinaryOperatorExpression>().Where(b => b.Operator == BinaryOperatorType.Add).Reverse().ToList())
+        {
+            if (add.Parent is null && add != expr) continue;
+            if (add.Left is MemberReferenceExpression l && add.Right is MemberReferenceExpression r
+                && l.MemberName == r.MemberName && IsVector(l.Target, vectorType) && l.Target.ToString() == r.Target.ToString())
+            {
+                var mult = new BinaryOperatorExpression(l.Detach(), BinaryOperatorType.Multiply, new PrimitiveExpression(2f));
+                if (add == expr) expr = mult; else add.ReplaceWith(mult);
+            }
+            else if (add.Left is BinaryOperatorExpression { Operator: BinaryOperatorType.Add } inner
+                && inner.Right is MemberReferenceExpression il && add.Right is MemberReferenceExpression rr
+                && il.MemberName == rr.MemberName && IsVector(il.Target, vectorType) && il.Target.ToString() == rr.Target.ToString())
+            {
+                il.ReplaceWith(new BinaryOperatorExpression(il.Clone(), BinaryOperatorType.Multiply, new PrimitiveExpression(2f)));
+                var det = inner.Detach();
+                if (add == expr) expr = det; else add.ReplaceWith(det);
+            }
+        }
+        return expr;
     }
 
     private enum OperandKind { Scalar, Vector, Invalid }

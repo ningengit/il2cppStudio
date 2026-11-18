@@ -21,8 +21,16 @@ public sealed class CallEmitter(
         Register.R10, Register.R11, Register.XMM0, Register.XMM1, Register.XMM2, Register.XMM3, Register.XMM4, Register.XMM5, Register.XMM6,
         Register.XMM7, Register.XMM8, Register.XMM9, Register.XMM10, Register.XMM11, Register.XMM12, Register.XMM13, Register.XMM14, Register.XMM15];
 
+    private static readonly Register[] Win32Volatile = [Register.RAX, Register.RCX, Register.RDX,
+        Register.XMM0, Register.XMM1, Register.XMM2, Register.XMM3, Register.XMM4, Register.XMM5, Register.XMM6, Register.XMM7];
+
     /// <summary>Registers a call clobbers under the active calling convention.</summary>
-    public static Register[] Volatile => ArgumentLocations.Abi == NativeAbi.SysV ? SysVVolatile : Win64Volatile;
+    public static Register[] Volatile => ArgumentLocations.Abi switch
+    {
+        NativeAbi.SysV => SysVVolatile,
+        NativeAbi.Win32 => Win32Volatile,
+        _ => Win64Volatile,
+    };
 
     /// <summary>Emits the call; returns false if the target cannot be referenced (caller falls back).</summary>
     public bool Emit(EmitContext ctx, int methodIndex, int specIndex, Expr? explicitThis)
@@ -34,7 +42,9 @@ public sealed class CallEmitter(
         if (target is null) return false;
         var shape = MethodShape.Create(md, reg, stubs, mem, module, methodIndex, specIndex);
         shape.EnsureAbiSupported(mem);
-        ArgumentLocations.Layout(shape.FloatLayout(mem));
+        ArgumentLocations.Layout(shape.FloatLayout(mem),
+            ArgumentLocations.Abi == NativeAbi.SysV ? shape.SysVLayout(mem) : null,
+            ArgumentLocations.Abi == NativeAbi.Win32 ? shape.Win32Layout(mem) : null);
 
         var retPtr = shape.HasReturnBuffer ? ArgumentLocations.Read(regs, 0, false) : null;
         var thisValue = shape.IsStatic ? null : explicitThis ?? ArgumentLocations.Read(regs, shape.ThisPosition, false);
@@ -110,6 +120,25 @@ public sealed class CallEmitter(
             Expr.EmitAs(ctx, value, type);
             return;
         }
+        if (ArgumentLocations.Abi == NativeAbi.SysV && type is not ByReferenceTypeSignature && Expr.KindOf(type) == ValueKind.Struct)
+        {
+            var spec = MethodShape.ClassifySysVEightbytes(type, mem);
+            var argSlots = ArgumentLocations.LocateAll(position, spec);
+            var chunks = argSlots.Select(s => ArgumentLocations.ReadSlot(regs, s, position)).ToList();
+            if (chunks.Count == 1 && chunks[0] is StackAddrPlaceholder sp && spec.StackOnly)
+                binder.BindValue(ctx, sp, type).Emit(ctx);
+            else
+                EmitStructFromChunks(ctx, type, chunks, mem, regs);
+            return;
+        }
+        if (ArgumentLocations.Abi == NativeAbi.Win32 && type is not ByReferenceTypeSignature && Expr.KindOf(type) == ValueKind.Struct)
+        {
+            var argSlots = ArgumentLocations.LocateAll(position);
+            var wordIdx = argSlots.Count > 0 ? argSlots[0].StackIndex : position;
+            var bound = binder.BindValue(ctx, new StackAddrPlaceholder(regs.SlotKey(4L * wordIdx)), type);
+            Expr.EmitAs(ctx, bound, type);
+            return;
+        }
         var v = ArgumentLocations.Read(regs, position, MethodShape.IsFloat(type));
         if (v is StructChunkExpr { Offset: 0 } c && Expr.KindOf(type) == ValueKind.Struct) v = c.Source;
         // Windows x64 passes 8-byte structs in a GPR: a Vector2 built with unpcklps arrives as two packed floats.
@@ -146,22 +175,36 @@ public sealed class CallEmitter(
     /// </summary>
     private int ExactInstantiation(int methodIndex, int specIndex)
     {
-        var def = md.Methods[methodIndex];
-        var position = ((def.Flags & 0x10) != 0 ? 0 : 1) + def.ParameterCount;
-        if (MethodShape.NeedsReturnBuffer(stubs.ToSig(module, def.ReturnType), mem)) position++;
+        var baseShape = MethodShape.Create(md, reg, stubs, mem, module, methodIndex, specIndex);
+        ArgumentLocations.Layout(baseShape.FloatLayout(mem),
+            ArgumentLocations.Abi == NativeAbi.SysV ? baseShape.SysVLayout(mem) : null,
+            ArgumentLocations.Abi == NativeAbi.Win32 ? baseShape.Win32Layout(mem) : null);
+        var position = baseShape.FirstParameterPosition + baseShape.Parameters.Count;
         if (ArgumentLocations.Read(regs, position, false) is MarkerExpr { Marker: MarkerKind.MethodInfo, Usage: { Kind: Registration.MetadataUsageKind.MethodRef } u }
             && (uint)u.Index < (uint)reg.MethodSpecs.Count && reg.MethodSpecs[u.Index].MethodDefinitionIndex == methodIndex)
             return u.Index;
         return specIndex;
     }
 
-    /// <summary>Static type of the value in RCX (the receiver of an instance call), as a typedef index, or -1.</summary>
-    public int ReceiverTypeDef() => regs.Get(ArgumentLocations.FirstIntRegister) switch
+    /// <summary>Static type of the receiver of an instance call, as a typedef index, or -1.</summary>
+    public int ReceiverTypeDef()
     {
-        NewObjExpr n => mem.TypeDefOf(n.Type),
-        AddressExpr a => mem.TypeDefOf(a.Target.Type),
-        var e => mem.TypeDefOf(e.Type),
-    };
+        var expr = ArgumentLocations.Abi == NativeAbi.Win32 ? Win32ThisCandidate() : regs.Get(ArgumentLocations.FirstIntRegister);
+        return expr switch
+        {
+            NewObjExpr n => mem.TypeDefOf(n.Type),
+            AddressExpr a => mem.TypeDefOf(a.Target.Type),
+            var e => mem.TypeDefOf(e.Type),
+        };
+    }
+
+    internal Expr Win32ThisCandidate()
+    {
+        var s0 = regs.GetSlot(regs.SlotKey(0));
+        if (s0 is StackAddrPlaceholder or AddressExpr or null && regs.GetSlot(regs.SlotKey(4)) is { } s1)
+            return s1;
+        return s0 ?? new NativeExpr("win32_this");
+    }
 
     /// <summary>
     /// MSVC folds every delegate constructor (all are <c>(object target, IntPtr method)</c>) into one function, so the
@@ -196,7 +239,9 @@ public sealed class CallEmitter(
             {
                 case StackAddrPlaceholder p:
                 {
-                    var local = slots.GetOrCreate(p.Key, ret, mem.ValueSize(ret));
+                    var retSize = mem.ValueSize(ret);
+                    for (var k = p.Key; k < p.Key + retSize; k++) regs.ClearSlot(k);
+                    var local = slots.GetOrCreate(p.Key, ret, retSize);
                     ctx.IL.Add(CilOpCodes.Stloc, local);
                     regs.Set(Register.RAX, new AddressExpr(new LocalExpr(local)));
                     return;
@@ -216,6 +261,72 @@ public sealed class CallEmitter(
         }
         var result = regs.NewLocal(ret);
         ctx.IL.Add(CilOpCodes.Stloc, result);
+        if (ArgumentLocations.Abi == NativeAbi.SysV && Expr.KindOf(ret) == ValueKind.Struct)
+        {
+            var retRegs = MethodShape.SysVReturnRegs(ret, mem);
+            var classes = MethodShape.ClassifySysVEightbytes(ret, mem).Classes;
+            var localExpr = new LocalExpr(result);
+            for (var c = 0; c < retRegs.Length; c++)
+                regs.Set(retRegs[c], MethodShape.SysVChunkExpr(localExpr, ret, c, classes[c], mem, module.CorLibTypeFactory));
+            return;
+        }
         regs.Set(MethodShape.IsFloat(ret) ? Register.XMM0 : Register.RAX, new LocalExpr(result));
+    }
+
+    internal static void EmitStructFromChunks(EmitContext ctx, TypeSignature type, IReadOnlyList<Expr> chunks, MemoryResolver mem, RegisterTracker regs)
+    {
+        if (chunks.Count > 0 && chunks[0] is StructChunkExpr { Offset: 0 } c0
+            && c0.Source.Type is { } st && SignatureComparer.Default.Equals(st, type))
+        {
+            c0.Source.Emit(ctx);
+            return;
+        }
+        if (chunks.Count > 0 && chunks[0] is PackedFloatsExpr { WholeSource: { } ws }
+            && ws.Type is { } wt && SignatureComparer.Default.Equals(wt, type))
+        {
+            ws.Emit(ctx);
+            return;
+        }
+        if (chunks.Count == 1 && chunks[0] is PackedFloatsExpr p0 && type.FullName == "UnityEngine.Vector2")
+        {
+            var single = ctx.Module.CorLibTypeFactory.Single;
+            Expr.EmitAs(ctx, p0.Lane0, single);
+            Expr.EmitAs(ctx, p0.Lane1, single);
+            var ctor = new MemberReference(type.ToTypeDefOrRef(), ".ctor",
+                MethodSignature.CreateInstance(ctx.Module.CorLibTypeFactory.Void, [single, single]));
+            ctx.IL.Add(CilOpCodes.Newobj, ctor);
+            return;
+        }
+        if (chunks.Count == 1 && chunks[0].Type is { } ct && SignatureComparer.Default.Equals(ct, type))
+        {
+            chunks[0].Emit(ctx);
+            return;
+        }
+        var size = mem.ValueSize(type);
+        var local = regs.NewLocal(type);
+        var addr = new AddressExpr(new LocalExpr(local));
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            var off = i * 8;
+            if (off >= size) break;
+            var cSize = Math.Min(8, size - off);
+            var ch = chunks[i];
+            if (ch is PackedFloatsExpr pf)
+            {
+                mem.Store(ctx, addr, null, 0, off, 4, pf.Lane0);
+                if (off + 4 < size) mem.Store(ctx, addr, null, 0, off + 4, 4, pf.Lane1);
+            }
+            else if (ch is VectorConstExpr vc)
+            {
+                var lanes = Math.Min(4, (cSize + 3) / 4);
+                for (var lane = 0; lane < lanes; lane++) mem.Store(ctx, addr, null, 0, off + lane * 4, 4, vc.Lane(lane));
+            }
+            else if (!mem.Store(ctx, addr, null, 0, off, cSize, ch) && ch is ConstExpr ce && cSize >= 8 && off + 4 < size)
+            {
+                mem.Store(ctx, addr, null, 0, off, 4, new ConstExpr(unchecked((int)ce.Value), ValueKind.I4));
+                mem.Store(ctx, addr, null, 0, off + 4, 4, new ConstExpr(unchecked((int)(ce.Value >> 32)), ValueKind.I4));
+            }
+        }
+        ctx.IL.Add(CilOpCodes.Ldloc, local);
     }
 }

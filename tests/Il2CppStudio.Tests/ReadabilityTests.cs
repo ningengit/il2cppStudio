@@ -26,7 +26,7 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
     public void Simd_VectorCollapse_And_NamedConstants()
     {
         var cam = Render("CameraScript");
-        Assert.Contains("offset = new Vector3(position.x - position2.x", cam);
+        Assert.Contains("offset = transform.position - player.transform.position;", cam);
         Assert.DoesNotContain("unpcklps", cam);
         Assert.Contains("RenderSettings.ambientLight = Color.red;", Render("NearExitTriggerScript"));
         Assert.Contains("itemSelect.anchoredPosition = new Vector2(", Render("GameControllerScript"));

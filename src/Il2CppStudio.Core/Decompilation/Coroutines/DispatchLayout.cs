@@ -114,8 +114,17 @@ public static class DispatchLayout
             var uses = group.Key.Descendants.OfType<IdentifierExpression>().Where(id => aliases.Contains(id.Identifier)).ToList();
             if (uses.Count == 0) continue;
             if (group.Count() != 1) return false;
+            var writtenAliases = new HashSet<string>(StringComparer.Ordinal);
             foreach (var u in uses)
             {
+                if (u.Parent is AssignmentExpression a && a.Left == u
+                    || u.Parent is DirectionExpression
+                    || u.Parent is UnaryOperatorExpression { Operator: UnaryOperatorType.Increment or UnaryOperatorType.Decrement or UnaryOperatorType.PostIncrement or UnaryOperatorType.PostDecrement })
+                {
+                    writtenAliases.Add(u.Identifier);
+                    continue;
+                }
+                if (writtenAliases.Contains(u.Identifier)) continue;
                 var constant = new PrimitiveExpression((int)group.First().Key);
                 u.ReplaceWith(constant);
                 ConstantFolder.FoldUpwards(constant);

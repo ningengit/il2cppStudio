@@ -63,10 +63,13 @@ public sealed class DecompilerService
                 ErrorLog.Add(_stubs.ImageName(image), "CoroutineNotReconstructed", type, null, reason, "State machine class kept as decompiled."));
             Transforms.EmptyIfRemover.Apply(tree);
             Transforms.IdenticalBranchFolder.Apply(tree);
+            Transforms.RedundantCastRemover.Apply(tree);
             Transforms.DistanceRecognizer.Apply(tree);
+            Transforms.ComparisonNormalizer.Apply(tree);
             Transforms.BankersRoundRecognizer.Apply(tree);
             Transforms.StringEqualitySugar.Apply(tree);
             Transforms.BoolNormalizer.Apply(tree);
+            Transforms.UnityInlineRecognizer.Apply(tree);
             Transforms.VectorComponentCollapse.Apply(tree);
             Transforms.UnityInlineRecognizer.Apply(tree);
             Transforms.VectorOperatorRecognizer.Apply(tree);
@@ -75,6 +78,12 @@ public sealed class DecompilerService
             foreach (var body in tree.Descendants.OfType<ICSharpCode.Decompiler.CSharp.Syntax.MethodDeclaration>().Select(m => m.Body).Where(b => !b.IsNull).ToList())
                 Coroutines.TempInliner.Run(body);
             Transforms.WhileConditionRestorer.Apply(tree);
+            Transforms.UnityInlineRecognizer.Apply(tree);
+            Transforms.VectorComponentCollapse.Apply(tree);
+            Transforms.UnityInlineRecognizer.Apply(tree);
+            Transforms.VectorOperatorRecognizer.Apply(tree);
+            Transforms.BoolNormalizer.Apply(tree);
+            Transforms.ComparisonNormalizer.Apply(tree);
             Transforms.LoopShapeRestorer.Apply(tree);
         Transforms.ForeachRestorer.Apply(tree);
         Transforms.LoopShapeRestorer.NameLoopCounters(tree);

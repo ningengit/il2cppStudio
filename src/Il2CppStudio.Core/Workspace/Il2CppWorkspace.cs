@@ -3,6 +3,7 @@ using Il2CppStudio.Core.Binary;
 using Il2CppStudio.Core.Diagnostics;
 using Il2CppStudio.Core.Fingerprinting;
 using Il2CppStudio.Core.Metadata;
+using Il2CppStudio.Core.Plugins;
 
 namespace Il2CppStudio.Core.Workspace;
 
@@ -70,6 +71,8 @@ public sealed partial class Il2CppWorkspace : IDisposable
                 pe = WasmBinaryImage.Load(wasmPath, sink);
             else if (files.BinaryPath is { } so && ElfBinaryImage.IsElf(so))
                 pe = ElfBinaryImage.Load(so, sink);
+            else if (files.BinaryPath is { } pluginBin && ConsoleBinaryPluginRegistry.TryOpen(pluginBin, sink) is { } pluginImg)
+                pe = pluginImg;
             else if (files.BinaryPath is not null)
                 sink.Warn(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatUnsupported,
                     "Unrecognized native binary format; metadata-only features remain available.", new() { File = files.BinaryPath });

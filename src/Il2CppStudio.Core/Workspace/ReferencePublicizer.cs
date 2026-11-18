@@ -25,7 +25,8 @@ public static class ReferencePublicizer
             {
                 // protected / protected internal stay as they are: overrides in the compiled project must match them.
                 var access = m.Attributes & MethodAttributes.MemberAccessMask;
-                if (access is MethodAttributes.Family or MethodAttributes.FamilyOrAssembly && m.IsVirtual) continue;
+                if (access is MethodAttributes.Family or MethodAttributes.FamilyOrAssembly && m.IsVirtual
+                    && m.Name != "GetTextContainerLocalCorners") continue;
                 m.Attributes = (m.Attributes & ~MethodAttributes.MemberAccessMask) | MethodAttributes.Public;
             }
         }

@@ -38,6 +38,19 @@ public static class CompileHygiene
                 && (a.Left is ThisReferenceExpression && a.Right is ThisReferenceExpression
                     || a.Left is IdentifierExpression l && a.Right is IdentifierExpression r && l.Identifier == r.Identifier))
                 s.Remove();
+
+        foreach (var decl in tree.Descendants.OfType<VariableDeclarationStatement>().Where(d => d.Variables.Count == 1).ToList())
+        {
+            var v = decl.Variables.Single();
+            if (v.Initializer is not IdentifierExpression id || id.Identifier != v.Name) continue;
+            var owner = decl.Ancestors.OfType<TypeDeclaration>().FirstOrDefault();
+            var hasMember = owner?.Members.Any(m =>
+                m is FieldDeclaration f && f.Variables.Any(fv => fv.Name == v.Name)
+                || m is PropertyDeclaration p && p.Name == v.Name) == true;
+            v.Initializer = hasMember
+                ? new MemberReferenceExpression(new ThisReferenceExpression(), v.Name)
+                : new DefaultValueExpression(decl.Type.Clone());
+        }
     }
 
     private static void MarkUnsafe(SyntaxTree tree)
@@ -46,12 +59,17 @@ public static class CompileHygiene
         {
             // Iterator bodies are always a safe context (unsafe modifier does not apply inside): use the safe escape.
             if (member.Descendants.Any(n => n is YieldReturnStatement or YieldBreakStatement)) { SafeIteratorReads(member); continue; }
-            var usesPointers = member.Descendants.Any(n =>
-                n is PointerReferenceExpression || n is ComposedType { PointerRank: > 0 }
-                || n is UnaryOperatorExpression { Operator: UnaryOperatorType.Dereference or UnaryOperatorType.AddressOf });
+            var usesPointers = UsesPointers(member);
             if (usesPointers && !member.GetParent<TypeDeclaration>()!.Modifiers.HasFlag(Modifiers.Unsafe)) member.Modifiers |= Modifiers.Unsafe;
+            else if (!usesPointers) member.Modifiers &= ~Modifiers.Unsafe;
         }
     }
+
+    public static void RefreshUnsafe(SyntaxTree tree) => MarkUnsafe(tree);
+
+    private static bool UsesPointers(AstNode member) => member.Descendants.Any(n =>
+        n is PointerReferenceExpression || n is ComposedType { PointerRank: > 0 } || n is FixedStatement
+        || n is UnaryOperatorExpression { Operator: UnaryOperatorType.Dereference or UnaryOperatorType.AddressOf });
 
     /// <summary><c>((T*)a)-&gt;f</c> → <c>NativeIntrinsics.Reinterpret&lt;T&gt;(a).f</c>; <c>*(T*)a</c> (read) → <c>NativeIntrinsics.Reinterpret&lt;T&gt;(a)</c>.</summary>
     private static void SafeIteratorReads(EntityDeclaration member)
@@ -98,6 +116,8 @@ public static class CompileHygiene
             if (resolved is not { } type || type.GetDefinition() is not { } def || def.DeclaringTypeDefinition is not null) continue;
             var compilation = def.ParentModule?.Compilation;
             if (compilation is null || string.IsNullOrEmpty(def.Namespace)) continue;
+            var enclosingNs = string.Join('.', st.Ancestors.OfType<NamespaceDeclaration>().Reverse().Select(n => n.Name));
+            if (enclosingNs == def.Namespace || enclosingNs.EndsWith("." + def.Namespace, StringComparison.Ordinal)) continue;
             var clash = namespaces.Any(ns => ns != def.Namespace
                 && compilation.FindType(new FullTypeName(new TopLevelTypeName(ns, def.Name, def.TypeParameterCount))).Kind != TypeKind.Unknown);
             if (!clash) continue;

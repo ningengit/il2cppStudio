@@ -17,16 +17,27 @@ public sealed class WasmTextDisassembler : ITextDisassembler
 
     public string Disassemble(ReadOnlySpan<byte> code, ulong functionIndex)
     {
+        if (code.Length == 0)
+            return $"; function {functionIndex}: decoding stopped (empty body)";
         var body = code.ToArray();
         var p = 0;
-        var groups = ReadU32(body, ref p);
-        var locals = new StringBuilder();
-        for (var i = 0; i < groups; i++) { var n = ReadU32(body, ref p); var t = body[p++]; locals.Append($"{n}x{ValType(t)} "); }
         var sb = new StringBuilder();
-        sb.AppendLine($"; function {functionIndex}, locals: {(locals.Length == 0 ? "none" : locals.ToString().Trim())}");
+        try
+        {
+            var groups = ReadU32(body, ref p);
+            var locals = new StringBuilder();
+            for (var i = 0; i < groups; i++) { var n = ReadU32(body, ref p); var t = body[p++]; locals.Append($"{n}x{ValType(t)} "); }
+            sb.AppendLine($"; function {functionIndex}, locals: {(locals.Length == 0 ? "none" : locals.ToString().Trim())}");
+        }
+        catch (Exception ex)
+        {
+            return sb.AppendLine($"; function {functionIndex}: decoding failed in local declarations ({ex.Message})").ToString();
+        }
         List<WasmInstruction> insns;
         try { insns = WasmDisassembler.Disassembler.Disassemble(body[p..], (uint)p); }
         catch (Exception ex) { return sb.AppendLine($"; decoding failed: {ex.Message}").ToString(); }
+        if (insns.Count == 0 && p < body.Length)
+            sb.AppendLine($"; decoding stopped at offset 0x{p:X} (no instructions decoded from {body.Length - p} byte(s))");
         var depth = 1;
         foreach (var ins in insns)
         {

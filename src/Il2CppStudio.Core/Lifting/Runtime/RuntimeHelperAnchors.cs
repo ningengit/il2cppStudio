@@ -55,7 +55,7 @@ public static class RuntimeHelperAnchors
     {
         var mem = reader.SliceMemory(va, 32);
         if (mem.IsEmpty) return null;
-        var decoder = Decoder.Create(64, new MemoryCodeReader(mem), va);
+        var decoder = Decoder.Create(reader.PointerSize == 8 ? 64 : 32, new MemoryCodeReader(mem), va);
         for (var i = 0; i < 4; i++)
         {
             decoder.Decode(out var ins);
@@ -65,7 +65,8 @@ public static class RuntimeHelperAnchors
                 case Mnemonic.Jmp when ins.Op0Kind is OpKind.NearBranch64 or OpKind.NearBranch32:
                 case Mnemonic.Call when ins.Op0Kind is OpKind.NearBranch64 or OpKind.NearBranch32 && i > 0:
                     return ins.NearBranchTarget;
-                case Mnemonic.Sub when ins.Op0Register == Register.RSP:
+                case Mnemonic.Sub when ins.Op0Register is Register.RSP or Register.ESP:
+                case Mnemonic.Push or Mnemonic.Pop:
                 case Mnemonic.Mov or Mnemonic.Xor when ins.Op0Kind == OpKind.Register && ins.Op1Kind == OpKind.Register:
                     continue;
                 default:

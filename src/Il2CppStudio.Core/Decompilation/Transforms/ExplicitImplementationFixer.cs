@@ -29,11 +29,23 @@ public static class ExplicitImplementationFixer
         {
             if (access.Parent is null || Split(access.MemberName) is not var (iface, name)) continue;
             var target = access.Target is ThisReferenceExpression or BaseReferenceExpression ? new ThisReferenceExpression() : access.Target.Detach();
+            if (ContainsOpenTypeParam(iface))
+            {
+                while (target is CastExpression or ParenthesizedExpression)
+                    target = target is CastExpression c ? c.Expression.Detach() : ((ParenthesizedExpression)target).Expression.Detach();
+                access.Target = target;
+                access.MemberName = name;
+                continue;
+            }
             access.Target = new ParenthesizedExpression(new CastExpression(new SimpleType(iface), target));
             access.MemberName = name;
         }
         FixStateMachines(tree);
     }
+
+    private static bool ContainsOpenTypeParam(string iface) =>
+        iface.Contains("<TKey", StringComparison.Ordinal) || iface.Contains("TValue>", StringComparison.Ordinal)
+        || iface.Contains("<T>", StringComparison.Ordinal);
 
     /// <summary>
     /// Compiler-generated state machines implement <c>IEnumerator.MoveNext</c> / <c>IAsyncStateMachine.MoveNext</c> and

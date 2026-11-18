@@ -79,9 +79,12 @@ public static class SelfAliasAndTailSink
             if (body.Descendants.OfType<DirectionExpression>().Any(d => d.Expression is IdentifierExpression id && id.Identifier == v.Name)) continue;
 
             foreach (var w in writes) (w.Parent as ExpressionStatement)?.Remove();
+            var localNames = body.Descendants.OfType<VariableInitializer>().Select(vi => vi.Name)
+                .Concat(body.Parent is MethodDeclaration md ? md.Parameters.Select(p => p.Name) : [])
+                .ToHashSet(StringComparer.Ordinal);
             foreach (var u in body.Descendants.OfType<IdentifierExpression>().Where(i => i.Identifier == v.Name).ToList())
             {
-                if (u.Parent is MemberReferenceExpression m && m.Target == u)
+                if (u.Parent is MemberReferenceExpression m && m.Target == u && !localNames.Contains(m.MemberName))
                     m.ReplaceWith(new IdentifierExpression(m.MemberName));
                 else u.ReplaceWith(new ThisReferenceExpression());
             }

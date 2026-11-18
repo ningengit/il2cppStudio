@@ -29,9 +29,22 @@ public static class CrossTypeAccessScanner
                 };
                 if (owner is null || !isPrivate || Encloses(owner, type)) continue;
                 tokens.Add(token);
+                if (owner.DeclaringType is { } outer && ParseCoroutineMethod(owner.Name) is { } factoryName
+                    && outer.Methods.FirstOrDefault(m => m.Name == factoryName) is { } factoryMethod)
+                    tokens.Add(factoryMethod.MetadataToken.ToUInt32());
             }
         }
         return tokens;
+    }
+
+    private static string? ParseCoroutineMethod(string stateMachineName)
+    {
+        if (stateMachineName.StartsWith('<'))
+        {
+            var end = stateMachineName.IndexOf(">d__", StringComparison.Ordinal);
+            return end > 1 ? stateMachineName[1..end] : null;
+        }
+        return null;
     }
 
     /// <summary>True when <paramref name="caller"/> is <paramref name="owner"/> or nested inside it (private access is legal).</summary>

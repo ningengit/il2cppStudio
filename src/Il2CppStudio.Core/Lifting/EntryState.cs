@@ -29,13 +29,14 @@ public sealed class EntryState(MethodDefinition method, MethodShape shape, Regis
     public void Initialize()
     {
         shape.EnsureAbiSupported(mem);
-        ArgumentLocations.Layout(shape.FloatLayout(mem));
+        ArgumentLocations.Layout(shape.FloatLayout(mem),
+            ArgumentLocations.Abi == NativeAbi.SysV ? shape.SysVLayout(mem) : null,
+            ArgumentLocations.Abi == NativeAbi.Win32 ? shape.Win32Layout(mem) : null);
         var position = 0;
         if (shape.HasReturnBuffer)
         {
             ReturnBuffer ??= regs.NewLocal(shape.ReturnType);
-            regs.Set(ArgumentLocations.FirstIntRegister, new AddressExpr(new LocalExpr(ReturnBuffer)));
-            position++;
+            ArgumentLocations.Assign(regs, position++, new AddressExpr(new LocalExpr(ReturnBuffer)), isFloat: false);
         }
         if (!shape.IsStatic)
         {
@@ -49,8 +50,30 @@ public sealed class EntryState(MethodDefinition method, MethodShape shape, Regis
         {
             var type = shape.Parameters[i];
             Expr arg = new ArgExpr(method.Parameters[i], type);
-            if (MethodShape.PassedByPointer(type, mem)) arg = new AddressExpr(arg);
-            Assign(position++, arg, MethodShape.IsFloat(type));
+            if (MethodShape.PassedByPointer(type, mem))
+                Assign(position++, new AddressExpr(arg), isFloat: false);
+            else if (ArgumentLocations.Abi == NativeAbi.SysV && type is not ByReferenceTypeSignature && Expr.KindOf(type) == ValueKind.Struct)
+            {
+                var slots = ArgumentLocations.LocateAll(position++);
+                var f = method.DeclaringModule!.CorLibTypeFactory;
+                for (var c = 0; c < slots.Count; c++)
+                    ArgumentLocations.AssignSlot(regs, slots[c], MethodShape.SysVChunkExpr(arg, type, c, slots[c].IsFloat, mem, f));
+            }
+            else if (ArgumentLocations.Abi == NativeAbi.Win32 && type is not ByReferenceTypeSignature && Expr.KindOf(type) == ValueKind.Struct)
+            {
+                var slots = ArgumentLocations.LocateAll(position++);
+                var baseKey = slots.Count > 0 ? ArgumentLocations.IncomingStackKey(slots[0].StackIndex) : 4;
+                regs.SetSlot(baseKey, arg);
+                var td = mem.TypeDefOf(type);
+                if (td >= 0)
+                {
+                    foreach (var f in mem.FieldsOf(td).Where(fl => !fl.IsStatic))
+                        if (mem.StructField(arg, td, f.Offset) is { } sf)
+                            regs.SetSlot(baseKey + f.Offset, sf);
+                }
+            }
+            else
+                Assign(position++, arg, MethodShape.IsFloat(type));
         }
         // The trailing `const MethodInfo*` argument is runtime plumbing.
         var mi = new MarkerExpr(MarkerKind.MethodInfo, shape.MethodIndex, "method");

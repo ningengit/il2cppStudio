@@ -15,6 +15,7 @@ public sealed partial class CapstoneArmDisassembler : ITextDisassembler, IDispos
     private readonly nint _handle;
     private readonly nint _armHandle;
     private readonly int _bytesField;
+    private readonly Lock _decodeGate = new();
 
     public string Name => $"ARMv7 (Capstone {_major}, {_lastMode})";
     public Func<ulong, string?>? SymbolResolver { get; set; }
@@ -36,16 +37,55 @@ public sealed partial class CapstoneArmDisassembler : ITextDisassembler, IDispos
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException) { return null; }
     }
 
+    public readonly record struct Arm32Insn(ulong Address, int Size, string Mnemonic, string Operands);
+
     /// <summary>
     /// The instruction set is not recorded once the Thumb bit is cleared from the method pointer, so both decoders run
     /// and the one that decodes further (Thumb-2 or A32) wins.
     /// </summary>
     public string Disassemble(ReadOnlySpan<byte> code, ulong va)
     {
-        var thumb = Decode(_handle, code, va, out var thumbBytes);
-        var arm = Decode(_armHandle, code, va, out var armBytes);
-        _lastMode = armBytes > thumbBytes ? "A32" : "Thumb-2";
-        return armBytes > thumbBytes ? arm : thumb;
+        lock (_decodeGate)
+        {
+            var thumb = Decode(_handle, code, va, out var thumbBytes);
+            var arm = Decode(_armHandle, code, va, out var armBytes);
+            _lastMode = armBytes > thumbBytes ? "A32" : "Thumb-2";
+            return armBytes > thumbBytes ? arm : thumb;
+        }
+    }
+
+    public IReadOnlyList<Arm32Insn> DisassembleInstructions(ReadOnlySpan<byte> code, ulong va, out bool isThumb)
+    {
+        lock (_decodeGate)
+        {
+            var thumbInsns = DecodeList(_handle, code, va, out var thumbBytes);
+            var armInsns = DecodeList(_armHandle, code, va, out var armBytes);
+            isThumb = thumbBytes >= armBytes;
+            _lastMode = isThumb ? "Thumb-2" : "A32";
+            return isThumb ? thumbInsns : armInsns;
+        }
+    }
+
+    private List<Arm32Insn> DecodeList(nint handle, ReadOnlySpan<byte> code, ulong va, out int decodedBytes)
+    {
+        var bytes = code.ToArray();
+        var count = (int)cs_disasm(handle, bytes, (nuint)bytes.Length, va, 0, out var insns);
+        var list = new List<Arm32Insn>(Math.Max(1, count));
+        var mnemonicOff = 18 + _bytesField;
+        var opOff = mnemonicOff + 32;
+        var stride = Align(opOff + 160, 8) + 8;
+        for (var i = 0; i < count; i++)
+        {
+            var p = insns + i * stride;
+            var address = (ulong)Marshal.ReadInt64(p, 8);
+            var size = Marshal.ReadInt16(p, 16);
+            var mnemonic = Marshal.PtrToStringAnsi(p + mnemonicOff) ?? "";
+            var ops = Marshal.PtrToStringAnsi(p + opOff) ?? "";
+            list.Add(new Arm32Insn(address, size, mnemonic, ops));
+        }
+        decodedBytes = count == 0 ? 0 : (int)((ulong)Marshal.ReadInt64(insns + (count - 1) * stride, 8) - va);
+        if (count > 0) cs_free(insns, (nuint)count);
+        return list;
     }
 
     private string Decode(nint handle, ReadOnlySpan<byte> code, ulong va, out int decodedBytes)

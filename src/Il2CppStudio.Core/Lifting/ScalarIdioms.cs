@@ -35,6 +35,24 @@ public sealed class ScalarIdioms(RegisterTracker regs, OperandReader ops, Operan
                 return TryDivide(ins);
             case Mnemonic.Unpcklps when ins.Op0Kind == OpKind.Register && ins.Op1Kind == OpKind.Register:
                 writer.Write(ctx, ins, new PackedFloatsExpr(Lane0(ops.Read(ins, 0)), Lane0(ops.Read(ins, 1)), f.Single)); return true;
+            case Mnemonic.Shufps when ins.OpCount >= 3 && (ins.GetImmediate(ins.OpCount - 1) & 0x3) == 1 && ops.Read(ins, 1) is PackedFloatsExpr sp1:
+                writer.Write(ctx, ins, sp1.Lane1); return true;
+            case Mnemonic.Movshdup when ops.Read(ins, 1) is PackedFloatsExpr sp2:
+                writer.Write(ctx, ins, sp2.Lane1); return true;
+            case Mnemonic.Addps or Mnemonic.Subps or Mnemonic.Mulps or Mnemonic.Divps or Mnemonic.Vaddps or Mnemonic.Vsubps or Mnemonic.Vmulps or Mnemonic.Vdivps:
+                var (a0, a1) = Split2(ops.Read(ins, ins.OpCount == 3 ? 1 : 0));
+                var (b0, b1) = Split2(ops.Read(ins, ins.OpCount - 1));
+                if (a0 is not null && a1 is not null && b0 is not null && b1 is not null)
+                {
+                    var bop = ins.Mnemonic is Mnemonic.Addps or Mnemonic.Vaddps ? CilOpCodes.Add
+                        : ins.Mnemonic is Mnemonic.Subps or Mnemonic.Vsubps ? CilOpCodes.Sub
+                        : ins.Mnemonic is Mnemonic.Mulps or Mnemonic.Vmulps ? CilOpCodes.Mul : CilOpCodes.Div;
+                    writer.Write(ctx, ins, new PackedFloatsExpr(new BinaryExpr(bop, a0, b0, ValueKind.R4), new BinaryExpr(bop, a1, b1, ValueKind.R4), f.Single));
+                    return true;
+                }
+                return false;
+            case Mnemonic.Movlps or Mnemonic.Movhps:
+                writer.Write(ctx, ins, ops.Read(ins, 1)); return true;
             case Mnemonic.Cvtps2pd:
                 writer.Write(ctx, ins, new ConvExpr(ops.Read(ins, 1), f.Double)); return true;
             case Mnemonic.Cvtpd2ps:
@@ -79,6 +97,15 @@ public sealed class ScalarIdioms(RegisterTracker regs, OperandReader ops, Operan
     }
 
     private static Expr Lane0(Expr e) => e is PackedFloatsExpr p ? p.Lane0 : e;
+
+    private (Expr?, Expr?) Split2(Expr e) => e switch
+    {
+        PackedFloatsExpr p => (p.Lane0, p.Lane1),
+        VectorConstExpr vc when vc.Lanes.Count >= 2 => (vc.Lane(0), vc.Lane(1)),
+        FloatExpr { Value: 0 } => (new FloatExpr(0, true), new FloatExpr(0, true)),
+        ConstExpr { Value: 0 } => (new FloatExpr(0, true), new FloatExpr(0, true)),
+        _ => (null, null),
+    };
 
     private bool IsFloatSignMask(in Instruction ins)
     {

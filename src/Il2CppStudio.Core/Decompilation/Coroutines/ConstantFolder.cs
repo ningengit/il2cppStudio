@@ -12,6 +12,7 @@ public static class ConstantFolder
     {
         for (AstNode? node = start.Parent; node is Expression e;)
         {
+            if (e.Parent is AssignmentExpression a && a.Left == e || e.Parent is DirectionExpression) return;
             var folded = Fold(e);
             if (folded is null) return;
             e.ReplaceWith(folded);

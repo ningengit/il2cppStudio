@@ -20,7 +20,7 @@ public sealed record LiftResult(int MethodIndex, bool Success, int NativeInstruc
 /// components (registers, operands, translators, calls, entry/return) and emits one CIL block per native block.
 /// </summary>
 public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs, X64Disassembler disasm, IDiagnosticSink sink,
-    Runtime.RuntimeHelperMap? helpers = null, NativeAbi abi = NativeAbi.Win64)
+    Runtime.RuntimeHelperMap? helpers = null, NativeAbi abi = NativeAbi.Win64) : IMethodLifter
 {
     private readonly Dictionary<string, int> _typeIndex = MemoryResolver.BuildTypeIndex(sym.Model);
 
@@ -58,9 +58,10 @@ public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs
             var returnReg = Expr.KindOf(shape.ReturnType) == ValueKind.Void || shape.HasReturnBuffer
                 ? Register.None
                 : MethodShape.IsFloat(shape.ReturnType) ? Register.XMM0 : Register.RAX;
-            var graph = new BlockGraph(fn.Instructions, sym.Registration, helpers is null ? null : helpers.KindOf, returnReg, ins => CallRegisters(ins, stub.Module, mem));
+            var returnRegs = abi == NativeAbi.SysV ? MethodShape.SysVReturnRegs(shape.ReturnType, mem) : null;
+            var graph = new BlockGraph(fn.Instructions, sym.Registration, helpers is null ? null : helpers.KindOf, returnReg, ins => CallRegisters(ins, stub.Module, mem), returnRegs);
             var entry = new EntryState(method, shape, regs, mem);
-            var returns = new ReturnEmitter(shape, regs, entry);
+            var returns = new ReturnEmitter(shape, regs, entry, mem);
             var loads = new LoadMaterializer(graph, regs, branch);
             mem.OnFieldStored = (val, fieldExpr) => { regs.ReplaceAll(val, fieldExpr); branch.ReplaceExpr(val, fieldExpr); };
             var blocks = new BlockLifter(graph, regs, arith, branch, calls, returns, b => IsInitPath(graph, b), loads, helpers is null ? null : helpers.KindOf);
@@ -109,19 +110,32 @@ public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs
             if ((uint)mi < (uint)sym.Metadata.Methods.Length)
             {
                 var sh = MethodShape.Create(sym.Metadata, sym.Registration, stubs, mem, module, mi, s.MethodSpecIndex);
-                var regs = new List<Register>();
-                for (var p = 0; p < sh.FirstParameterPosition; p++)
-                    if (ArgumentLocations.IntRegister(p) is var r && r != Register.None) regs.Add(r);
-                for (var i = 0; i < sh.Parameters.Count; i++)
+                if (abi == NativeAbi.SysV)
                 {
-                    var pos = sh.FirstParameterPosition + i;
-                    var isFloat = sh.Parameters[i] is not AsmResolver.DotNet.Signatures.ByReferenceTypeSignature
-                        && !MethodShape.PassedByPointer(sh.Parameters[i], mem) && MethodShape.IsFloat(sh.Parameters[i]);
-                    var r = isFloat ? ArgumentLocations.FloatRegister(pos) : ArgumentLocations.IntRegister(pos);
-                    if (r != Register.None) regs.Add(r);
+                    ArgumentLocations.Layout(sh.FloatLayout(mem), sh.SysVLayout(mem));
+                    var total = sh.FirstParameterPosition + sh.Parameters.Count + 1;
+                    var regs = new List<Register>();
+                    for (var p = 0; p < total; p++)
+                        foreach (var sl in ArgumentLocations.LocateAll(p))
+                            if (sl.Reg != Register.None) regs.Add(sl.Reg);
+                    return [.. regs];
                 }
-                if (ArgumentLocations.IntRegister(sh.FirstParameterPosition + sh.Parameters.Count) is var mr && mr != Register.None) regs.Add(mr);
-                return [.. regs];
+                else
+                {
+                    var regs = new List<Register>();
+                    for (var p = 0; p < sh.FirstParameterPosition; p++)
+                        if (ArgumentLocations.IntRegister(p) is var r && r != Register.None) regs.Add(r);
+                    for (var i = 0; i < sh.Parameters.Count; i++)
+                    {
+                        var pos = sh.FirstParameterPosition + i;
+                        var isFloat = sh.Parameters[i] is not AsmResolver.DotNet.Signatures.ByReferenceTypeSignature
+                            && !MethodShape.PassedByPointer(sh.Parameters[i], mem) && MethodShape.IsFloat(sh.Parameters[i]);
+                        var r = isFloat ? ArgumentLocations.FloatRegister(pos) : ArgumentLocations.IntRegister(pos);
+                        if (r != Register.None) regs.Add(r);
+                    }
+                    if (ArgumentLocations.IntRegister(sh.FirstParameterPosition + sh.Parameters.Count) is var mr && mr != Register.None) regs.Add(mr);
+                    return [.. regs];
+                }
             }
         }
         if (helpers is not null)

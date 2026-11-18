@@ -1,5 +1,6 @@
 using Il2CppStudio.Core.Binary;
 using Il2CppStudio.Core.Diagnostics;
+using Il2CppStudio.Core.Plugins;
 
 namespace Il2CppStudio.Core.Workspace;
 
@@ -7,7 +8,7 @@ public sealed record GameFiles(string Root, string? BinaryPath, string? Metadata
 
 /// <summary>
 /// Locates the IL2CPP binary, global-metadata.dat and (optionally) the build backup folder from a game
-/// root, a *_Data folder, or a direct file path. Windows layout first; Android/Linux names also accepted.
+/// root, a *_Data folder, an APK/XAPK archive, or a direct file path.
 /// </summary>
 public static class GameFolderLocator
 {
@@ -19,11 +20,32 @@ public static class GameFolderLocator
 
         if (File.Exists(path))
         {
+            if (ApkExtractor.IsApkPath(path))
+            {
+                return ApkExtractor.Extract(path, sink) is { } extractedApk
+                    ? Locate(extractedApk, sink)
+                    : new GameFiles(path, null, null, null, null);
+            }
+
             var name = Path.GetFileName(path);
             if (name.Equals("global-metadata.dat", StringComparison.OrdinalIgnoreCase))
                 return new GameFiles(Path.GetDirectoryName(path)!, null, path, null, null);
-            if (BinaryNames.Contains(name, StringComparer.OrdinalIgnoreCase))
-                return Locate(Path.GetDirectoryName(path)!, sink) with { BinaryPath = path };
+
+            if (BinaryNames.Contains(name, StringComparer.OrdinalIgnoreCase) || ConsoleBinaryPluginRegistry.CanOpen(path))
+            {
+                var root = FindAncestorGameRoot(Path.GetDirectoryName(path)!);
+                return Locate(root, sink) with { BinaryPath = path };
+            }
+
+            if (WasmFiles.IsWasmPath(path) || IsWebDataPath(path))
+            {
+                var dir = Path.GetDirectoryName(path)!;
+                var root = Path.GetFileName(dir).Equals("Build", StringComparison.OrdinalIgnoreCase)
+                    ? (Directory.GetParent(dir)?.FullName ?? dir)
+                    : dir;
+                var located = Locate(root, sink);
+                return WasmFiles.IsWasmPath(path) ? located with { BinaryPath = path } : located;
+            }
         }
 
         if (!Directory.Exists(path))
@@ -34,6 +56,8 @@ public static class GameFolderLocator
 
         string? binary = BinaryNames.Select(n => Path.Combine(path, n)).FirstOrDefault(File.Exists);
         binary ??= PreferAbi(Directory.EnumerateFiles(path, "libil2cpp.so", SearchOption.AllDirectories));
+        binary ??= new[] { Path.Combine(path, "main"), Path.Combine(path, "exefs", "main") }
+            .FirstOrDefault(p => File.Exists(p) && ConsoleBinaryPluginRegistry.CanOpen(p));
 
         // WebGL: no native binary; metadata lives inside the (optionally brotli/gzip-compressed) UnityWebData container.
         string? wasm = null;
@@ -57,14 +81,14 @@ public static class GameFolderLocator
                 $"{metadataCandidates.Count} global-metadata.dat files found; using '{metadataCandidates[0]}'.", new() { File = path });
         var metadata = metadataCandidates.FirstOrDefault();
 
-        var dataFolder = Directory.EnumerateDirectories(path, "*_Data").FirstOrDefault();
+        var dataFolder = FindDataFolder(path, searchRoot, metadata);
         var backup = Directory.EnumerateDirectories(path, "*BackUpThisFolder_ButDontShipItWithYourGame").FirstOrDefault();
 
         if (binary is null && wasm is not null)
         {
             binary = wasm;   // WebGL: the WebAssembly module carries the registration data (linear-memory data segments) and the code
             sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.BinaryNotFound,
-                $"WebGL build: using WebAssembly module '{Path.GetFileName(wasm)}' (registration + disassembly; method bodies are not lifted).", new() { File = path });
+                $"WebGL build: using WebAssembly module '{Path.GetFileName(wasm)}'.", new() { File = path });
         }
         else if (binary is null)
             sink.Warn(DiagnosticCategory.Workspace, DiagnosticCodes.BinaryNotFound,
@@ -74,6 +98,52 @@ public static class GameFolderLocator
 
         return new GameFiles(path, binary, metadata, dataFolder, backup);
     }
+
+    private static string? FindDataFolder(string path, string searchRoot, string? metadata)
+    {
+        if (Directory.EnumerateDirectories(path, "*_Data").FirstOrDefault() is { } pcData)
+            return pcData;
+        var androidData = Path.Combine(path, "assets", "bin", "Data");
+        if (Directory.Exists(androidData))
+            return androidData;
+        var switchData = Path.Combine(path, "romfs", "Data");
+        if (Directory.Exists(switchData))
+            return switchData;
+        if (searchRoot != path)
+            return searchRoot;
+        if (metadata is not null)
+        {
+            for (var d = Path.GetDirectoryName(metadata); d is not null; d = Directory.GetParent(d)?.FullName)
+            {
+                if (File.Exists(Path.Combine(d, "data.unity3d")) || File.Exists(Path.Combine(d, "globalgamemanagers")))
+                    return d;
+                if (string.Equals(d, path, StringComparison.OrdinalIgnoreCase))
+                    break;
+            }
+        }
+        return null;
+    }
+
+    private static string FindAncestorGameRoot(string dir)
+    {
+        var cur = dir;
+        for (var i = 0; i < 3 && cur is not null; i++)
+        {
+            if (Directory.EnumerateDirectories(cur, "*_Data").Any()
+                || Directory.Exists(Path.Combine(cur, "assets", "bin", "Data"))
+                || Directory.Exists(Path.Combine(cur, "romfs", "Data"))
+                || Directory.EnumerateFiles(cur, "global-metadata.dat", SearchOption.AllDirectories).Any())
+                return cur;
+            cur = Directory.GetParent(cur)?.FullName;
+        }
+        return dir;
+    }
+
+    private static bool IsWebDataPath(string path) =>
+        path.EndsWith(".data", StringComparison.OrdinalIgnoreCase)
+        || path.EndsWith(".data.br", StringComparison.OrdinalIgnoreCase)
+        || path.EndsWith(".data.gz", StringComparison.OrdinalIgnoreCase)
+        || path.EndsWith(".data.unityweb", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Android multi-ABI: prefer 64-bit (arm64-v8a, x86_64) over 32-bit libraries.</summary>
     private static string? PreferAbi(IEnumerable<string> libs) =>

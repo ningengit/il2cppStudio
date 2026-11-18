@@ -8,10 +8,11 @@ namespace Il2CppStudio.Core.Lifting;
 /// As a scalar it is lane 0 (exactly what a 4-byte read of the register sees); 8-byte stores are split by
 /// <see cref="OperandWriter"/> into two float stores at +0 and +4.
 /// </summary>
-public sealed class PackedFloatsExpr(Expr lane0, Expr lane1, TypeSignature single) : Expr
+public sealed class PackedFloatsExpr(Expr lane0, Expr lane1, TypeSignature single, Expr? wholeSource = null) : Expr
 {
     public Expr Lane0 => lane0;
     public Expr Lane1 => lane1;
+    public Expr? WholeSource => wholeSource;
     public override ValueKind Kind => ValueKind.R4;
     public override TypeSignature Type => single;
     public override string Describe() => $"pack({lane0.Describe()}, {lane1.Describe()})";

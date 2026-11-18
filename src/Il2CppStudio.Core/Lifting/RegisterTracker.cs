@@ -67,7 +67,7 @@ public sealed class RegisterTracker(CilMethodBody body, CorLibTypeFactory corlib
     /// <summary>Applies sub-register semantics: reading a 32-bit register of a 64-bit integer yields an int32 view.</summary>
     private Expr Narrow(Register r, Expr e)
     {
-        if (!r.IsGPR() || r.IsGPR64() || e.Kind is ValueKind.I4 or ValueKind.Ref or ValueKind.R4 or ValueKind.R8) return e;
+        if (!r.IsGPR() || r.IsGPR64() || e.Kind != ValueKind.I8 || e is StructChunkExpr or PackedFloatsExpr) return e;
         if (e is ConstExpr c) return new ConstExpr(r.IsGPR32() ? (int)c.Value : r.IsGPR16() ? (short)c.Value : (sbyte)c.Value, ValueKind.I4, c.FromFloatBits);
         return new ConvExpr(e, corlib.Int32);
     }
@@ -99,7 +99,7 @@ public sealed class RegisterTracker(CilMethodBody body, CorLibTypeFactory corlib
     public void EnterBlock(NativeBlock block, bool isEntry)
     {
         if (!isEntry) _regs.Clear();
-        _slots.Clear();
+        if (ArgumentLocations.Abi != NativeAbi.Win32) _slots.Clear();
         var preds = block.Predecessors;
         var allDone = preds.All(_exit.ContainsKey);
         foreach (var r in block.LiveIn)

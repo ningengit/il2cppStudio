@@ -27,9 +27,10 @@ public sealed class CallDispatcher(NativeSymbolizer sym, CallEmitter emitter, Re
             var target = ins.NearBranchTarget;
             if (sym.Map.SymbolAt(target) is not null)
             {
+                var recv = ArgumentLocations.Abi == NativeAbi.Win32 ? emitter.Win32ThisCandidate() : regs.Get(ArgumentLocations.IntArg(0));
                 var s = IcfResolver.Choose(sym.Map.CandidatesAt(target), emitter.ReceiverTypeDef(), sym.Metadata, sym.Registration, sym.Names, ctx.Log,
-                    receiverIsNewObject: regs.Get(ArgumentLocations.IntArg(0)) is NewObjExpr { IsMaterialized: false }
-                                         || InConstructor && regs.Get(ArgumentLocations.IntArg(0)) is ArgExpr { Parameter.Index: -1 });
+                    receiverIsNewObject: recv is NewObjExpr { IsMaterialized: false }
+                                         || InConstructor && recv is ArgExpr { Parameter.Index: -1 });
                 if (emitter.Emit(ctx, s.MethodIndex, s.MethodSpecIndex, null)) return false;
             }
             return HandleUnknown(ctx, target, ins.IP, resultNullTested);
@@ -37,13 +38,19 @@ public sealed class CallDispatcher(NativeSymbolizer sym, CallEmitter emitter, Re
 
         if (ins.Op0Kind == OpKind.Memory && !ins.IsIPRelativeMemoryOperand && ins.MemoryIndex == Register.None)
         {
-            var baseExpr = memoryBase(ins.MemoryBase, (long)ins.MemoryDisplacement64);
+            var baseExpr = memoryBase(ins.MemoryBase, ArgumentLocations.PointerSize == 4 && ins.MemoryDisplacement64 > int.MaxValue
+                ? unchecked((int)ins.MemoryDisplacement32)
+                : (long)ins.MemoryDisplacement64);
             if (baseExpr is MarkerExpr { Marker: MarkerKind.Klass } klass && klass.Base is { } obj)
             {
-                var disp = (long)ins.MemoryDisplacement64;
-                if (disp >= MemoryResolver.VTableOffset && (disp - MemoryResolver.VTableOffset) % 16 == 0)
+                var disp = ArgumentLocations.PointerSize == 4 && ins.MemoryDisplacement64 > int.MaxValue
+                    ? unchecked((int)ins.MemoryDisplacement32)
+                    : (long)ins.MemoryDisplacement64;
+                var vtOff = sym.Registration.Ptr == 8 ? MemoryResolver.VTableOffset64 : 0xB8;
+                var vtSize = sym.Registration.Ptr * 2;
+                if (disp >= vtOff && (disp - vtOff) % vtSize == 0)
                 {
-                    var slot = (int)((disp - MemoryResolver.VTableOffset) / 16);
+                    var slot = (int)((disp - vtOff) / vtSize);
                     var td = klass.Index;
                     if (VTableResolver.Resolve(sym.Metadata, td, slot) is { } t && emitter.Emit(ctx, t.MethodIndex, t.SpecIndex, obj)) return false;
                     Report(DiagnosticCodes.UnresolvedVTableCall, $"vtable slot {slot} of {sym.Names.TypeDefName(td, true)} could not be resolved.", ins.IP);
@@ -80,7 +87,7 @@ public sealed class CallDispatcher(NativeSymbolizer sym, CallEmitter emitter, Re
         }
         // Legacy heuristic (no helper map available): a call taking a runtime-metadata marker is treated as
         // metadata/class initialization. With a helper map this is NOT applied: it would also swallow object_new.
-        if (helpers is null && regs.TryGet(ArgumentLocations.IntArg(0), out var rcx) && rcx is MarkerExpr { Marker: MarkerKind.TypeInfo or MarkerKind.StaticFields or MarkerKind.MethodInfo or MarkerKind.Il2CppType })
+        if (helpers is null && ArgumentLocations.TryReadHelperArg(regs, 0, out var rcx) && rcx is MarkerExpr { Marker: MarkerKind.TypeInfo or MarkerKind.StaticFields or MarkerKind.MethodInfo or MarkerKind.Il2CppType })
         {
             Elided++;
             regs.ClobberVolatiles(CallEmitter.Volatile);
@@ -101,13 +108,13 @@ public sealed class CallDispatcher(NativeSymbolizer sym, CallEmitter emitter, Re
         return false;
     }
 
-    /// <summary>long CallNative(name, rcx, rdx, r8, r9) → RAX.</summary>
+    /// <summary>long CallNative(name, a0, a1, a2, a3) → RAX.</summary>
     private void EmitNative(EmitContext ctx, string name)
     {
         ctx.IL.Add(CilOpCodes.Ldstr, name);
-        foreach (var r in new[] { ArgumentLocations.IntArg(0), ArgumentLocations.IntArg(1), ArgumentLocations.IntArg(2), ArgumentLocations.IntArg(3) })
+        for (var i = 0; i < 4; i++)
         {
-            if (regs.TryGet(r, out var e) && !e.IsMarker) Expr.EmitAs(ctx, e, ctx.Module.CorLibTypeFactory.Int64);
+            if (ArgumentLocations.TryReadHelperArg(regs, i, out var e) && !e.IsMarker) Expr.EmitAs(ctx, e, ctx.Module.CorLibTypeFactory.Int64);
             else ctx.IL.Add(CilOpCodes.Ldc_I8, 0L);
         }
         ctx.IL.Add(CilOpCodes.Call, ctx.Intrinsics.CallNative);

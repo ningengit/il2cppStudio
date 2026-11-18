@@ -13,6 +13,7 @@ public static class BoolNormalizer
     public static void Apply(SyntaxTree tree)
     {
         BoolLocalPromoter.Apply(tree);
+        PropagateKnownEquality(tree);
         for (var pass = 0; pass < 4; pass++)
         {
             var changed = false;
@@ -63,6 +64,33 @@ public static class BoolNormalizer
         BinaryOperatorExpression { Operator: BinaryOperatorType.InEquality } b => new BinaryOperatorExpression(b.Left.Clone(), BinaryOperatorType.Equality, b.Right.Clone()),
         _ => new UnaryOperatorExpression(UnaryOperatorType.Not, e.Clone()),
     };
+
+    private static void PropagateKnownEquality(SyntaxTree tree)
+    {
+        foreach (var ifs in tree.Descendants.OfType<IfElseStatement>().ToList())
+        {
+            if (ifs.Condition is not BinaryOperatorExpression { Operator: BinaryOperatorType.Equality, Left: IdentifierExpression id, Right: PrimitiveExpression { Value: int k } })
+                continue;
+            var name = id.Identifier;
+            if (ifs.TrueStatement.Descendants.Any(n =>
+                n is AssignmentExpression a && a.Left is IdentifierExpression w && w.Identifier == name
+                || n is DirectionExpression d && d.Expression is IdentifierExpression wd && wd.Identifier == name
+                || n is UnaryOperatorExpression { Operator: UnaryOperatorType.Increment or UnaryOperatorType.Decrement or UnaryOperatorType.PostIncrement or UnaryOperatorType.PostDecrement } u
+                   && u.Expression is IdentifierExpression wu && wu.Identifier == name))
+                continue;
+
+            foreach (var cmp in ifs.TrueStatement.Descendants.OfType<BinaryOperatorExpression>().ToList())
+            {
+                if (cmp.Parent is null || cmp.Operator is not (BinaryOperatorType.Equality or BinaryOperatorType.InEquality) || !IsZero(cmp.Right)) continue;
+                var inner = cmp.Left;
+                while (inner is CastExpression or ParenthesizedExpression)
+                    inner = inner is CastExpression c ? c.Expression : ((ParenthesizedExpression)inner).Expression;
+                if (inner is not IdentifierExpression r || r.Identifier != name) continue;
+                var val = cmp.Operator == BinaryOperatorType.InEquality ? k != 0 : k == 0;
+                cmp.ReplaceWith(new PrimitiveExpression(val));
+            }
+        }
+    }
 
     public static bool IsZero(Expression e) => e is PrimitiveExpression { Value: 0 or 0u or 0L or (byte)0 or false };
     public static bool IsOne(Expression e) => e is PrimitiveExpression { Value: 1 or 1u or 1L or (byte)1 or true };

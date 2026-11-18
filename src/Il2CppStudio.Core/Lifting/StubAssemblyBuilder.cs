@@ -123,15 +123,21 @@ public sealed class StubAssemblyBuilder
     public MethodDefinition? GetMethodDef(int methodIndex)
     {
         if ((uint)methodIndex >= (uint)_methodDefs.Length) return null;
-        if (_methodDefs[methodIndex] is null && ImageOfType(_md.Methods[methodIndex].DeclaringType) is >= 0 and var img) GetModule(img);
-        return _methodDefs[methodIndex];
+        lock (_gate)
+        {
+            if (_methodDefs[methodIndex] is null && ImageOfType(_md.Methods[methodIndex].DeclaringType) is >= 0 and var img) GetModule(img);
+            return _methodDefs[methodIndex];
+        }
     }
 
     public TypeDefinition? GetTypeDef(int typeIndex)
     {
         if ((uint)typeIndex >= (uint)_typeDefs.Length) return null;
-        if (_typeDefs[typeIndex] is null && ImageOfType(typeIndex) is >= 0 and var img) GetModule(img);
-        return _typeDefs[typeIndex];
+        lock (_gate)
+        {
+            if (_typeDefs[typeIndex] is null && ImageOfType(typeIndex) is >= 0 and var img) GetModule(img);
+            return _typeDefs[typeIndex];
+        }
     }
 
     public FieldDefinition? GetFieldDef(int fieldIndex) => (uint)fieldIndex < (uint)_fieldDefs.Length ? _fieldDefs[fieldIndex] : null;
@@ -473,26 +479,29 @@ public sealed class StubAssemblyBuilder
     public ITypeDefOrRef? TypeRefFor(ModuleDefinition ctx, int typeDefIndex)
     {
         if ((uint)typeDefIndex >= (uint)_typeDefs.Length) return null;
-        if (_typeDefs[typeDefIndex] is { } td && td.DeclaringModule == ctx) return td;
-        if (_typeRefCache.TryGetValue((ctx, typeDefIndex), out var cached)) return cached;
+        lock (_gate)
+        {
+            if (_typeDefs[typeDefIndex] is { } td && td.DeclaringModule == ctx) return td;
+            if (_typeRefCache.TryGetValue((ctx, typeDefIndex), out var cached)) return cached;
 
-        var tm = _model.Types[typeDefIndex];
-        IResolutionScope scope;
-        if (tm.DeclaringType is { } parent)
-        {
-            if (TypeRefFor(ctx, parent.Index) is not TypeReference parentRef)
-                return _typeDefs[typeDefIndex] is { } local && local.DeclaringModule == ctx ? local : null;
-            scope = parentRef;
+            var tm = _model.Types[typeDefIndex];
+            IResolutionScope scope;
+            if (tm.DeclaringType is { } parent)
+            {
+                if (TypeRefFor(ctx, parent.Index) is not TypeReference parentRef)
+                    return _typeDefs[typeDefIndex] is { } local && local.DeclaringModule == ctx ? local : null;
+                scope = parentRef;
+            }
+            else
+            {
+                var image = ImageOfType(typeDefIndex);
+                if (image < 0) return null;
+                scope = AssemblyRefFor(ctx, image);
+            }
+            var tr = new TypeReference(ctx, scope, tm.DeclaringType is null ? tm.Namespace : null, tm.Name);
+            _typeRefCache[(ctx, typeDefIndex)] = tr;
+            return tr;
         }
-        else
-        {
-            var image = ImageOfType(typeDefIndex);
-            if (image < 0) return null;
-            scope = AssemblyRefFor(ctx, image);
-        }
-        var tr = new TypeReference(ctx, scope, tm.DeclaringType is null ? tm.Namespace : null, tm.Name);
-        _typeRefCache[(ctx, typeDefIndex)] = tr;
-        return tr;
     }
 
     private AssemblyReference AssemblyRefFor(ModuleDefinition ctx, int imageIndex)

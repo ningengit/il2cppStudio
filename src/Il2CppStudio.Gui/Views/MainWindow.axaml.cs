@@ -80,6 +80,24 @@ public sealed partial class MainWindow : Window, IUiServices
         return result.Count > 0 ? result[0].TryGetLocalPath() : null;
     }
 
+    public async Task<string?> PickFileAsync(string title)
+    {
+        var result = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = title,
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("IL2CPP Packages & Binaries")
+                {
+                    Patterns = ["*.apk", "*.xapk", "GameAssembly.dll", "GameAssembly.so", "libil2cpp.so", "*.wasm", "*.wasm.br", "*.wasm.gz", "*.wasm.unityweb", "main", "global-metadata.dat"]
+                },
+                FilePickerFileTypes.All
+            ],
+        });
+        return result.Count > 0 ? result[0].TryGetLocalPath() : null;
+    }
+
     public async Task<string?> SaveFileAsync(string title, string suggestedName, string extension)
     {
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions

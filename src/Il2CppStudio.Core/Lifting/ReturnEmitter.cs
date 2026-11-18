@@ -4,7 +4,7 @@ using Iced.Intel;
 namespace Il2CppStudio.Core.Lifting;
 
 /// <summary>Emits the CIL return for a native <c>ret</c>: RAX / XMM0 / the hidden return-buffer local, or void.</summary>
-public sealed class ReturnEmitter(MethodShape shape, RegisterTracker regs, EntryState entry)
+public sealed class ReturnEmitter(MethodShape shape, RegisterTracker regs, EntryState entry, MemoryResolver? mem = null)
 {
     public void Emit(EmitContext ctx)
     {
@@ -16,6 +16,17 @@ public sealed class ReturnEmitter(MethodShape shape, RegisterTracker regs, Entry
             ctx.IL.Add(CilOpCodes.Ldloc, buffer);
             ctx.IL.Add(CilOpCodes.Ret);
             return;
+        }
+        if (ArgumentLocations.Abi == NativeAbi.SysV && kind == ValueKind.Struct && mem is not null)
+        {
+            var retRegs = MethodShape.SysVReturnRegs(type, mem);
+            if (retRegs.Length > 0)
+            {
+                var chunks = retRegs.Select(r => regs.Get(r)).ToList();
+                CallEmitter.EmitStructFromChunks(ctx, type, chunks, mem, regs);
+                ctx.IL.Add(CilOpCodes.Ret);
+                return;
+            }
         }
         var value = regs.Get(MethodShape.IsFloat(type) ? Register.XMM0 : Register.RAX);
         // bool returns arrive in AL; narrow before converting.

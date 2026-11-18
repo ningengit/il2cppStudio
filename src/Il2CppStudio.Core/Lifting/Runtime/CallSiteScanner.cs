@@ -8,7 +8,7 @@ namespace Il2CppStudio.Core.Lifting.Runtime;
 /// <summary>Per-target call-site statistics gathered by <see cref="CallSiteScanner"/>.</summary>
 public sealed class CallSiteStats
 {
-    public int Sites, WriteBarrierShape, FollowedByInt3, FollowedByTrap, RcxSetJustBefore, RdxFromTypeInfo, RcxLeaUsage, RaxUsedAfter, FollowedByIndirectCallAtRax, RcxLeaStack, RcxFromTypeInfo;
+    public int Sites, WriteBarrierShape, FollowedByInt3, FollowedByTrap, RcxSetJustBefore, RdxFromTypeInfo, RcxLeaUsage, RaxUsedAfter, FollowedByIndirectCallAtRax, RcxLeaStack, RcxFromTypeInfo, Xmm0SetBefore, Xmm1SetBefore, FollowedByRad2Deg;
     public readonly ConcurrentDictionary<ulong, int> NextCalls = new();
     public void Inc(ref int field) => Interlocked.Increment(ref field);
 }
@@ -44,30 +44,59 @@ public static class CallSiteScanner
         // Cold trap blocks chain several no-return calls back to back (call A; call B; int3).
         // Clang emits no int3 after a no-return call: the next bytes are another trap call or nop padding.
         if (i + 1 >= ins.Count || ins[i + 1].Mnemonic is Mnemonic.Int3 or Mnemonic.Call or Mnemonic.Nop or Mnemonic.Ud2) s.Inc(ref s.FollowedByTrap);
-        if (i > 0 && ins[i - 1].Op0Kind == OpKind.Register && ins[i - 1].Op0Register.GetFullRegister() == a0) s.Inc(ref s.RcxSetJustBefore);
+        if (a0 != Register.None)
+        {
+            if (i > 0 && ins[i - 1].Op0Kind == OpKind.Register && ins[i - 1].Op0Register.GetFullRegister() == a0) s.Inc(ref s.RcxSetJustBefore);
 
-        // Write barrier: `mov [B+D], r` and `lea rcx, [B+D]` among the preceding instructions.
-        Instruction? lea = null;
-        for (var k = i - 1; k >= Math.Max(0, i - 4); k--)
-            if (ins[k].Mnemonic == Mnemonic.Lea && ins[k].Op0Register == a0 && !ins[k].IsIPRelativeMemoryOperand) { lea = ins[k]; break; }
-        if (lea is { } l)
-            for (var k = i - 1; k >= Math.Max(0, i - 5); k--)
-                if (ins[k].Mnemonic == Mnemonic.Mov && ins[k].Op0Kind == OpKind.Memory && ins[k].MemoryBase == l.MemoryBase && ins[k].MemorySize.GetSize() == 8
-                    && ins[k].MemoryIndex == l.MemoryIndex && ins[k].MemoryDisplacement64 == l.MemoryDisplacement64 + LeaAdjust(ins, i, a0)) { s.Inc(ref s.WriteBarrierShape); break; }
+            // Write barrier: `mov [B+D], r` and `lea rcx, [B+D]` among the preceding instructions.
+            Instruction? lea = null;
+            for (var k = i - 1; k >= Math.Max(0, i - 4); k--)
+                if (ins[k].Mnemonic == Mnemonic.Lea && ins[k].Op0Register == a0 && !ins[k].IsIPRelativeMemoryOperand) { lea = ins[k]; break; }
+            if (lea is { } l)
+                for (var k = i - 1; k >= Math.Max(0, i - 5); k--)
+                    if (ins[k].Mnemonic == Mnemonic.Mov && ins[k].Op0Kind == OpKind.Memory && ins[k].MemoryBase == l.MemoryBase && ins[k].MemorySize.GetSize() == 8
+                        && ins[k].MemoryIndex == l.MemoryIndex && ins[k].MemoryDisplacement64 == l.MemoryDisplacement64 + LeaAdjust(ins, i, a0)) { s.Inc(ref s.WriteBarrierShape); break; }
 
-        if (SourceUsage(ins, i, a1, sym) is { Kind: MetadataUsageKind.TypeInfo }) s.Inc(ref s.RdxFromTypeInfo);
-        if (SourceUsage(ins, i, a0, sym) is { Kind: MetadataUsageKind.TypeInfo }) s.Inc(ref s.RcxFromTypeInfo);
-        if (i > 0 && ins[i - 1].Mnemonic == Mnemonic.Lea && ins[i - 1].Op0Register == a0 && ins[i - 1].MemoryBase == Register.RSP)
-            s.Inc(ref s.RcxLeaStack);
-        for (var k = i - 1; k >= Math.Max(0, i - 3); k--)
-            if (ins[k].Op0Register == a0 && ins[k].IsIPRelativeMemoryOperand
-                && (ins[k].Mnemonic == Mnemonic.Lea && sym.TryGetUsage(ins[k].IPRelativeMemoryAddress, out _)
-                    || ins[k].Mnemonic == Mnemonic.Mov && sym.TryGetUsage(sym.Registration.Reader.ReadPointer(ins[k].IPRelativeMemoryAddress), out _)))   // PIC: GOT slot → usage
-            { s.Inc(ref s.RcxLeaUsage); break; }
+            if (SourceUsage(ins, i, a1, sym) is { Kind: MetadataUsageKind.TypeInfo }) s.Inc(ref s.RdxFromTypeInfo);
+            if (SourceUsage(ins, i, a0, sym) is { Kind: MetadataUsageKind.TypeInfo }) s.Inc(ref s.RcxFromTypeInfo);
+            if (i > 0 && ins[i - 1].Mnemonic == Mnemonic.Lea && ins[i - 1].Op0Register == a0 && ins[i - 1].MemoryBase == Register.RSP)
+                s.Inc(ref s.RcxLeaStack);
+            for (var k = i - 1; k >= Math.Max(0, i - 3); k--)
+                if (ins[k].Op0Register == a0 && ins[k].IsIPRelativeMemoryOperand
+                    && (ins[k].Mnemonic == Mnemonic.Lea && sym.TryGetUsage(ins[k].IPRelativeMemoryAddress, out _)
+                        || ins[k].Mnemonic == Mnemonic.Mov && sym.TryGetUsage(sym.Registration.Reader.ReadPointer(ins[k].IPRelativeMemoryAddress), out _)))   // PIC: GOT slot → usage
+                { s.Inc(ref s.RcxLeaUsage); break; }
+        }
+        else if (i > 0 && ins[i - 1].Mnemonic == Mnemonic.Push)
+        {
+            s.Inc(ref s.RcxSetJustBefore);
+            if (ins[i - 1].Op0Kind == OpKind.Memory && ins[i - 1].MemoryBase == Register.None && ins[i - 1].MemoryIndex == Register.None
+                && sym.TryGetUsage(ins[i - 1].MemoryDisplacement32, out var pu))
+            {
+                s.Inc(ref s.RcxLeaUsage);
+                if (pu.Kind == MetadataUsageKind.TypeInfo) s.Inc(ref s.RcxFromTypeInfo);
+            }
+        }
+
+        var xmm0Seen = false;
+        var xmm1Seen = false;
+        for (var k = i - 1; k >= Math.Max(0, i - 6); k--)
+        {
+            if (ins[k].Op0Kind != OpKind.Register) continue;
+            var full = ins[k].Op0Register.GetFullRegister();
+            if (!xmm0Seen && full == Register.ZMM0) { s.Inc(ref s.Xmm0SetBefore); xmm0Seen = true; }
+            if (!xmm1Seen && full == Register.ZMM1) { s.Inc(ref s.Xmm1SetBefore); xmm1Seen = true; }
+        }
 
         var raxSeen = false;
         for (var k = i + 1; k < Math.Min(ins.Count, i + 10); k++)
         {
+            if (k < i + 5 && ins[k].Mnemonic is Mnemonic.Mulss or Mnemonic.Vmulss && ins[k].IsIPRelativeMemoryOperand)
+            {
+                var fb = sym.Registration.Reader.Slice(ins[k].IPRelativeMemoryAddress, 4);
+                if (fb.Length == 4 && System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(fb) == 0x42652EE1u)
+                    s.Inc(ref s.FollowedByRad2Deg);
+            }
             if (!raxSeen && (ins[k].Op1Kind == OpKind.Register && ins[k].Op1Register.GetFullRegister() == Register.RAX
                 || ins[k].Mnemonic == Mnemonic.Test && ins[k].Op0Register.GetFullRegister() == Register.RAX)) { s.Inc(ref s.RaxUsedAfter); raxSeen = true; }
             if (ins[k].Mnemonic == Mnemonic.Call)

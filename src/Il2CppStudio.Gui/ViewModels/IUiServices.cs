@@ -4,6 +4,7 @@ namespace Il2CppStudio.Gui.ViewModels;
 public interface IUiServices
 {
     Task<string?> PickFolderAsync(string title);
+    Task<string?> PickFileAsync(string title);
     Task<string?> SaveFileAsync(string title, string suggestedName, string extension);
     Task SetClipboardAsync(string text);
     Task ShowBootConfigDialogAsync(BootConfigViewModel vm);

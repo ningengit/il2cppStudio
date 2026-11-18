@@ -33,8 +33,10 @@ public sealed class OperandWriter(RegisterTracker regs, StructSlotTable slots, M
 
     private void WriteAt(EmitContext ctx, in Instruction ins, long extra, int size, Expr value)
     {
-        var disp = unchecked((long)ins.MemoryDisplacement64) + extra;
-        long? key = ins.MemoryBase == Register.RSP && ins.MemoryIndex == Register.None ? regs.SlotKey(disp)
+        var rawDisp = unchecked((long)ins.MemoryDisplacement64);
+        if (ArgumentLocations.PointerSize == 4 && rawDisp > int.MaxValue) rawDisp = unchecked((int)ins.MemoryDisplacement32);
+        var disp = rawDisp + extra;
+        long? key = ins.MemoryBase is Register.RSP or Register.ESP && ins.MemoryIndex == Register.None ? regs.SlotKey(disp)
             : !ins.IsIPRelativeMemoryOperand && ins.MemoryIndex == Register.None && regs.Get(ins.MemoryBase) is StackAddrPlaceholder p ? p.Key + disp
             : null;
         if (key is { } k)

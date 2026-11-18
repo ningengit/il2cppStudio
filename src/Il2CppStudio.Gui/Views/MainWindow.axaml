@@ -14,6 +14,7 @@
     <Menu DockPanel.Dock="Top">
       <MenuItem Header="_File">
         <MenuItem Header="_Load Folder…" Command="{Binding LoadFolderCommand}" InputGesture="Ctrl+O" />
+        <MenuItem Header="Load _File…" Command="{Binding LoadFileCommand}" InputGesture="Ctrl+Shift+O" />
         <MenuItem Header="_Export All…" Command="{Binding ExportAllCommand}" InputGesture="Ctrl+E" />
         <Separator />
         <MenuItem Header="E_xit" Click="OnExit" />

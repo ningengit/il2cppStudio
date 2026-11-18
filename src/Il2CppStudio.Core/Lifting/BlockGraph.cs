@@ -38,15 +38,15 @@ public sealed class BlockGraph
     private readonly Dictionary<ulong, int> _indexOfVa = [];
     private readonly Dictionary<ulong, NativeBlock> _blockAt = [];
     private readonly Func<ulong, Runtime.RuntimeHelperKind> _helperKind;
-    private readonly Register _returnReg;
+    private readonly Register[] _returnRegs;
     private readonly Func<Instruction, Register[]> _callReads;
 
     public BlockGraph(IReadOnlyList<Instruction> instructions, Il2CppRegistration reg, Func<ulong, Runtime.RuntimeHelperKind>? helperKind = null,
-        Register returnReg = Register.RAX, Func<Instruction, Register[]>? callReads = null)
+        Register returnReg = Register.RAX, Func<Instruction, Register[]>? callReads = null, Register[]? returnRegs = null)
     {
         Instructions = instructions;
         _helperKind = helperKind ?? (_ => Runtime.RuntimeHelperKind.Unknown);
-        _returnReg = returnReg;
+        _returnRegs = returnRegs ?? (returnReg == Register.None ? [] : [returnReg]);
         _callReads = callReads ?? (_ => CallArgs);
         for (var i = 0; i < instructions.Count; i++) _indexOfVa[instructions[i].IP] = i;
         FindMetadataInitGuards(reg);
@@ -77,25 +77,37 @@ public sealed class BlockGraph
     /// compiles to <c>cmp byte [rip+flag],0 / jcc / lea rcx,[usage] / call init / mov byte [rip+flag],1</c>.
     /// The compare, branch, init calls and flag store are runtime plumbing with no CIL counterpart.
     /// </summary>
+    private static ulong DirectGlobalAddr(in Instruction ins)
+    {
+        if (ins.IsIPRelativeMemoryOperand) return ins.IPRelativeMemoryAddress;
+        if (ArgumentLocations.PointerSize == 4 && ins.MemoryBase == Register.None && ins.MemoryIndex == Register.None && ins.MemoryDisplacement32 != 0)
+            return ins.MemoryDisplacement32;
+        return 0;
+    }
+
     private void FindMetadataInitGuards(Il2CppRegistration reg)
     {
         for (var i = 0; i + 1 < Instructions.Count; i++)
         {
             var c = Instructions[i];
-            if (c.Mnemonic != Mnemonic.Cmp || !c.IsIPRelativeMemoryOperand || c.MemorySize != MemorySize.UInt8
+            if (c.Mnemonic != Mnemonic.Cmp || c.MemorySize != MemorySize.UInt8
                 || c.Op1Kind != OpKind.Immediate8 || c.Immediate8 != 0)
                 continue;
-            var flag = c.IPRelativeMemoryAddress;
+            var flag = DirectGlobalAddr(c);
+            if (flag == 0) continue;
             for (var j = i + 1; j < Math.Min(Instructions.Count, i + 64); j++)
             {
                 var s = Instructions[j];
-                if (s.Mnemonic != Mnemonic.Mov || !s.IsIPRelativeMemoryOperand || s.IPRelativeMemoryAddress != flag || s.Op0Kind != OpKind.Memory)
+                if (s.Mnemonic != Mnemonic.Mov || DirectGlobalAddr(s) != flag || s.Op0Kind != OpKind.Memory)
                     continue;
                 for (var k = i; k <= j; k++)
                 {
                     var x = Instructions[k];
-                    var isUsageLea = x.Mnemonic == Mnemonic.Lea && x.IsIPRelativeMemoryOperand && reg.MetadataUsages.ContainsKey(x.IPRelativeMemoryAddress);
-                    if (k == i || k == j || isUsageLea || x.FlowControl is FlowControl.ConditionalBranch or FlowControl.Call)
+                    var ga = DirectGlobalAddr(x);
+                    var isUsageLea = ga != 0 && reg.MetadataUsages.ContainsKey(ga)
+                        && (x.Mnemonic == Mnemonic.Lea || ArgumentLocations.PointerSize == 4 && x.Mnemonic is Mnemonic.Push or Mnemonic.Mov);
+                    if (k == i || k == j || isUsageLea || x.FlowControl is FlowControl.ConditionalBranch or FlowControl.Call
+                        || ArgumentLocations.PointerSize == 4 && x.Mnemonic == Mnemonic.Add && x.Op0Kind == OpKind.Register && x.Op0Register == Register.ESP)
                         Elided.Add(k);
                 }
                 ElidedGuards++;
@@ -135,10 +147,20 @@ public sealed class BlockGraph
 
     private void BuildBlocks()
     {
-        // Branches to trap blocks (call ThrowHelper; int3) are NullCheck / bounds checks: they do not split blocks,
-        // so symbolic state flows straight through the guarded code.
-        bool IsTrapTarget(ulong va) => _indexOfVa.TryGetValue(va, out var t) && t + 1 < Instructions.Count
-            && (Instructions[t].FlowControl == FlowControl.Call && Instructions[t + 1].Mnemonic == Mnemonic.Int3 || IsRuntimeExceptionCall(Instructions[t]));
+        // Branches to trap blocks (call ThrowHelper; int3, optionally with Win32 `push`) are NullCheck / bounds
+        // checks: they do not split blocks, so symbolic state flows straight through the guarded code.
+        bool IsTrapTarget(ulong va)
+        {
+            if (!_indexOfVa.TryGetValue(va, out var t)) return false;
+            for (var skip = 0; skip <= 2 && t + 1 < Instructions.Count; skip++, t++)
+            {
+                if (Instructions[t].FlowControl == FlowControl.Call
+                    && (Instructions[t + 1].Mnemonic == Mnemonic.Int3 || IsRuntimeExceptionCall(Instructions[t])))
+                    return true;
+                if (Instructions[t].Mnemonic is not (Mnemonic.Push or Mnemonic.Mov or Mnemonic.Xor)) break;
+            }
+            return false;
+        }
 
         var leaders = new SortedSet<int> { 0 };
         for (var i = 0; i < Instructions.Count; i++)
@@ -205,14 +227,13 @@ public sealed class BlockGraph
         return -1;
     }
 
-    /// <summary>Trap = the block's only real work is a call followed by int3 (never returns).</summary>
+    /// <summary>Trap = the block's only real work is a call (with optional arg push) followed by int3 padding.</summary>
     private void MarkTraps()
     {
         foreach (var b in Blocks)
         {
             var live = Enumerable.Range(b.Start, b.End - b.Start).Where(i => !Elided.Contains(i)).ToList();
-            if (live.Count is 1 or 2 && Instructions[live[0]].FlowControl == FlowControl.Call
-                && (live.Count == 1 ? b.End == Instructions.Count || Instructions[b.End].Mnemonic == Mnemonic.Int3 : Instructions[live[1]].Mnemonic == Mnemonic.Int3))
+            if (IsPushCallInt3Trap(live, b.End))
             {
                 b.IsTrap = true;
                 b.Successors.Clear();
@@ -231,6 +252,17 @@ public sealed class BlockGraph
                 b.Successors.Clear();
             }
         }
+    }
+
+    private bool IsPushCallInt3Trap(List<int> live, int blockEnd)
+    {
+        if (live.Count == 0) return false;
+        var pos = 0;
+        while (pos < live.Count && pos < 2 && Instructions[live[pos]].Mnemonic is Mnemonic.Push or Mnemonic.Mov or Mnemonic.Xor) pos++;
+        if (pos >= live.Count || Instructions[live[pos]].FlowControl != FlowControl.Call) return false;
+        if (pos + 1 == live.Count)
+            return blockEnd == Instructions.Count || Instructions[blockEnd].Mnemonic == Mnemonic.Int3;
+        return live.Skip(pos + 1).All(i => Instructions[i].Mnemonic == Mnemonic.Int3);
     }
 
     // ------------------------------------------------------------------ liveness
@@ -253,7 +285,7 @@ public sealed class BlockGraph
             if (u.Access is OpAccess.Write or OpAccess.ReadWrite) writes.Add(r);
         }
         if (ins.FlowControl == FlowControl.Call) { reads.AddRange(_callReads(ins)); writes.AddRange(CallClobbers); }
-        if (ins.FlowControl == FlowControl.Return && _returnReg != Register.None) reads.Add(_returnReg);
+        if (ins.FlowControl == FlowControl.Return) reads.AddRange(_returnRegs);
         _reads[i] = [.. reads];
         _writes[i] = [.. writes];
     }
@@ -316,8 +348,9 @@ public sealed class BlockGraph
                     foreach (var r in CallClobbers)
                         b.Def.Add(r);
                 }
-                if (ins.FlowControl == FlowControl.Return && _returnReg != Register.None && !b.Def.Contains(_returnReg))
-                    b.Use.Add(_returnReg);
+                if (ins.FlowControl == FlowControl.Return)
+                    foreach (var rr in _returnRegs)
+                        if (!b.Def.Contains(rr)) b.Use.Add(rr);
                 RecordInstructionRegisters(i, ins, info, zeroIdiom);
             }
         }

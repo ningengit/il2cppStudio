@@ -9,6 +9,18 @@ namespace Il2CppStudio.Core.Binary;
 /// its memory offset so the format-neutral registration scanner works unchanged. Method pointers in those structures
 /// are indices into the function table (element section) and are resolved to code bodies by <see cref="FunctionBody"/>.
 /// </summary>
+/// <summary>WebAssembly function type: value type bytes (0x7F i32, 0x7E i64, 0x7D f32, 0x7C f64).</summary>
+public readonly record struct WasmFuncType(byte[] Parameters, byte[] Results)
+{
+    public int ParameterCount => Parameters.Length;
+    public int ResultCount => Results.Length;
+    public byte Parameter(int index) => Parameters[index];
+    public byte Result(int index) => Results[index];
+}
+
+/// <summary>A module global: value type, mutability and constant initializer bits.</summary>
+public readonly record struct WasmGlobal(byte ValueType, bool Mutable, long Init);
+
 public sealed class WasmBinaryImage : IBinaryImage
 {
     private readonly byte[] _data;
@@ -16,6 +28,11 @@ public sealed class WasmBinaryImage : IBinaryImage
     private readonly Dictionary<uint, uint> _table = [];                 // table slot -> function index
     private readonly List<(int Offset, int Length)> _bodies = [];       // defined functions, in order
     private readonly List<(string Name, ulong Rva)> _exports = [];
+    private readonly List<WasmFuncType> _types = [];                    // type section
+    private readonly List<uint> _importFunctionTypes = [];              // function imports, in index order
+    private readonly List<(string Module, string Name)> _importFunctionNames = [];   // function imports, in index order
+    private readonly List<uint> _definedFunctionTypes = [];             // code section entries, in index order
+    private readonly List<WasmGlobal> _globals = [];                    // imported globals first, then defined
 
     public string Path { get; }
     public BinaryFormat Format => BinaryFormat.Wasm;
@@ -42,16 +59,73 @@ public sealed class WasmBinaryImage : IBinaryImage
 
     public IReadOnlyList<(string Name, ulong Rva)> GetSymbols() => _exports;
 
+    /// <summary>Function index behind a function-table slot (an IL2CPP method pointer).</summary>
+    public bool TryGetFunctionIndex(ulong tableSlot, out uint functionIndex) =>
+        _table.TryGetValue((uint)tableSlot, out functionIndex);
+
     /// <summary>Code bytes of the function behind a function-table slot (an IL2CPP method pointer), or empty.</summary>
     public ReadOnlySpan<byte> FunctionBody(ulong tableSlot, out uint functionIndex)
     {
         functionIndex = 0;
         if (!_table.TryGetValue((uint)tableSlot, out functionIndex)) return [];
+        return FunctionBody(functionIndex);
+    }
+
+    /// <summary>Body (local declarations + code) of a defined function, or empty for imports/unknown indices.</summary>
+    public ReadOnlySpan<byte> FunctionBody(uint functionIndex)
+    {
         var defined = (int)functionIndex - ImportedFunctions;
         if ((uint)defined >= (uint)_bodies.Count) return [];
         var (off, len) = _bodies[defined];
         return _data.AsSpan(off, len);
     }
+
+    /// <summary>Signature of import (index &lt; <see cref="ImportedFunctions"/>) or defined function.</summary>
+    public bool TryGetFunctionType(uint functionIndex, out WasmFuncType type)    {
+        type = default;
+        var typeIndex = functionIndex < ImportedFunctions
+            ? (uint)functionIndex < (uint)_importFunctionTypes.Count ? _importFunctionTypes[(int)functionIndex] : uint.MaxValue
+            : (int)(functionIndex - ImportedFunctions) is var d && (uint)d < (uint)_definedFunctionTypes.Count ? _definedFunctionTypes[d] : uint.MaxValue;
+        if (typeIndex == uint.MaxValue || typeIndex >= _types.Count) return false;
+        type = _types[(int)typeIndex];
+        return true;
+    }
+
+    /// <summary>Signature and body of the defined function behind a table slot.</summary>
+    public bool TryGetFunction(ulong tableSlot, out uint functionIndex, out WasmFuncType type)
+    {
+        type = default;
+        if (!_table.TryGetValue((uint)tableSlot, out functionIndex)) return false;
+        if (!TryGetFunctionType(functionIndex, out type)) return false;
+        var defined = (int)functionIndex - ImportedFunctions;
+        return (uint)defined < (uint)_bodies.Count;
+    }
+
+    public bool TryGetGlobal(uint index, out WasmGlobal global)
+    {
+        if ((uint)index >= (uint)_globals.Count) { global = default; return false; }
+        global = _globals[(int)index];
+        return true;
+    }
+
+    /// <summary>Module and field name of an imported function (e.g. <c>env</c>/<c>emscripten_memcpy</c>).</summary>
+    public bool TryGetImportName(uint functionIndex, out string module, out string name)
+    {
+        if (functionIndex >= (uint)_importFunctionNames.Count) { module = name = ""; return false; }
+        (module, name) = _importFunctionNames[(int)functionIndex];
+        return true;
+    }
+
+    /// <summary>Function type by type-section index (used for block signatures that name a type).</summary>
+    public bool TryGetType(uint typeIndex, out WasmFuncType type)
+    {
+        if (typeIndex >= (uint)_types.Count) { type = default; return false; }
+        type = _types[(int)typeIndex];
+        return true;
+    }
+
+    public int FunctionCount => ImportedFunctions + _bodies.Count;
+    public int TypeCount => _types.Count;
 
     public bool TryRvaToFileOffset(ulong rva, out long fileOffset) => SectionMath.TryRvaToOffset(_sections, rva, out fileOffset);
     public bool TryFileOffsetToRva(long fileOffset, out ulong rva) => SectionMath.TryOffsetToRva(_sections, fileOffset, out rva);
@@ -67,7 +141,10 @@ public sealed class WasmBinaryImage : IBinaryImage
             var end = p + size;
             switch (id)
             {
+                case 1: ParseTypes(p); break;
                 case 2: ParseImports(p); break;
+                case 3: ParseFunctions(p); break;
+                case 6: ParseGlobals(p); break;
                 case 7: ParseExports(p); break;
                 case 9: ParseElements(p); break;
                 case 10: ParseCode(p); break;
@@ -77,21 +154,83 @@ public sealed class WasmBinaryImage : IBinaryImage
         }
     }
 
+    private void ParseTypes(int p)
+    {
+        var n = Leb.U32(_data, ref p);
+        for (var i = 0; i < n; i++)
+        {
+            var form = _data[p++];
+            if (form != 0x60) { _types.Add(default); continue; }   // only func types are legal in the type section
+            var pc = (int)Leb.U32(_data, ref p);
+            var ps = _data.AsSpan(p, pc).ToArray(); p += pc;
+            var rc = (int)Leb.U32(_data, ref p);
+            var rs = _data.AsSpan(p, rc).ToArray(); p += rc;
+            _types.Add(new WasmFuncType(ps, rs));
+        }
+    }
+
+    private void ParseFunctions(int p)
+    {
+        var n = Leb.U32(_data, ref p);
+        for (var i = 0; i < n; i++) _definedFunctionTypes.Add(Leb.U32(_data, ref p));
+    }
+
+    private void ParseGlobals(int p)
+    {
+        var n = Leb.U32(_data, ref p);
+        for (var i = 0; i < n; i++)
+        {
+            var type = _data[p++];
+            var mutable = _data[p++] != 0;
+            var value = GlobalInit(ref p);
+            _globals.Add(new WasmGlobal(type, mutable, value));
+        }
+    }
+
+    /// <summary><c>i32.const</c>/<c>i64.const</c>/<c>f32.const</c>/<c>f64.const</c> initializer; other initializers yield 0.</summary>
+    private long GlobalInit(ref int p)
+    {
+        var op = _data[p++];
+        long v;
+        switch (op)
+        {
+            case 0x41 or 0x42: v = Leb.S64(_data, ref p); break;
+            case 0x43: v = BitConverter.ToInt32(_data, p); p += 4; break;
+            case 0x44: v = BitConverter.ToInt64(_data, p); p += 8; break;
+            default: v = 0; break;
+        }
+        while (_data[p++] != 0x0B) { }
+        return v;
+    }
+
     private void ParseImports(int p)
     {
         var n = Leb.U32(_data, ref p);
         for (var i = 0; i < n; i++)
         {
-            SkipName(ref p); SkipName(ref p);
+            var module = ReadName(ref p);
+            var field = ReadName(ref p);
             var kind = _data[p++];
             switch (kind)
             {
-                case 0: Leb.U32(_data, ref p); ImportedFunctions++; break;            // function: type index
+                case 0:
+                    _importFunctionTypes.Add(Leb.U32(_data, ref p));
+                    _importFunctionNames.Add((module, field));
+                    ImportedFunctions++;
+                    break;
                 case 1: p++; Limits(ref p); break;                                     // table: elemtype + limits
                 case 2: Limits(ref p); break;                                          // memory
                 case 3: p += 2; break;                                                 // global: valtype + mut
             }
         }
+    }
+
+    private string ReadName(ref int p)
+    {
+        var len = (int)Leb.U32(_data, ref p);
+        var s = Encoding.UTF8.GetString(_data, p, len);
+        p += len;
+        return s;
     }
 
     private void ParseExports(int p)
@@ -185,4 +324,32 @@ public sealed class WasmBinaryImage : IBinaryImage
 
     private void SkipName(ref int p) { var len = (int)Leb.U32(_data, ref p); p += len; }
     private void Limits(ref int p) { var f = _data[p++]; Leb.U32(_data, ref p); if ((f & 1) != 0) Leb.U32(_data, ref p); }
+
+    /// <summary>
+    /// Skips a code body's local declarations: a vec of (count, valtype) groups. Returns the number of declared
+    /// locals (parameters are not included) and the offset of the first instruction.
+    /// </summary>
+    public static bool TryReadLocals(ReadOnlySpan<byte> body, out List<byte> locals, out int instructionOffset)
+    {
+        locals = [];
+        instructionOffset = 0;
+        try
+        {
+            var p = 0;
+            var groups = Leb.U32(body, ref p);
+            for (var g = 0u; g < groups; g++)
+            {
+                var count = Leb.U32(body, ref p);
+                if (count > 1_000_000) return false;
+                var type = body[p++];
+                for (var i = 0u; i < count; i++) locals.Add(type);
+            }
+            instructionOffset = p;
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
 }

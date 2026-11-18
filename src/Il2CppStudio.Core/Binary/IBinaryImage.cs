@@ -1,6 +1,6 @@
 namespace Il2CppStudio.Core.Binary;
 
-public enum BinaryFormat { Unknown, PE, Elf, MachO, Wasm }
+public enum BinaryFormat { Unknown, PE, Elf, MachO, Wasm, Nso }
 
 public enum CpuArchitecture { Unknown, X86, X64, Arm, Arm64, Wasm32 }
 

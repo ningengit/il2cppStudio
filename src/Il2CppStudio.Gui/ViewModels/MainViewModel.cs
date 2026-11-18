@@ -66,6 +66,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (folder is not null) await LoadFolderAsync(folder);
     }
 
+    [RelayCommand]
+    private async Task LoadFile()
+    {
+        if (Ui is null) return;
+        var file = await Ui.PickFileAsync("Select an APK, XAPK, IL2CPP binary, WebGL wasm, Switch main, or global-metadata.dat");
+        if (file is not null) await LoadFolderAsync(file);
+    }
+
     public async Task LoadFolderAsync(string folder)
     {
         await RunBusy($"Loading {folder}…", () =>

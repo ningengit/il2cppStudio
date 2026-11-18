@@ -12,7 +12,7 @@ public sealed class MemoryCodeReader(ReadOnlyMemory<byte> code) : CodeReader
     public override int ReadByte() => _pos < code.Length ? code.Span[_pos++] : -1;
 }
 
-public sealed record DisassembledFunction(ulong StartVa, ulong EndVa, IReadOnlyList<Instruction> Instructions, bool Truncated);
+public sealed record DisassembledFunction(ulong StartVa, ulong EndVa, IReadOnlyList<Instruction> Instructions, bool Truncated, string? DecodeWarning = null);
 
 /// <summary>x86-64 disassembly of method bodies with IL2CPP-aware symbolization (Intel syntax).</summary>
 public sealed class X64Disassembler(NativeSymbolizer symbols)
@@ -25,17 +25,24 @@ public sealed class X64Disassembler(NativeSymbolizer symbols)
         var reader = symbols.Registration.Reader;
         var length = (int)Math.Min(end - start, (ulong)maxBytes);
         var mem = reader.SliceMemory(start, length);
-        var decoder = Decoder.Create(64, new MemoryCodeReader(mem), start, DecoderOptions.None);
+        var bitness = reader.PointerSize == 8 ? 64 : 32;
+        var decoder = Decoder.Create(bitness, new MemoryCodeReader(mem), start, DecoderOptions.None);
         var list = new List<Instruction>(Math.Max(16, length / 4));
         var stop = start + (ulong)mem.Length;
         var truncated = end - start > (ulong)maxBytes;
+        string? decodeWarning = truncated ? $"truncated at 0x{maxBytes:X} byte limit" : null;
         while (decoder.IP < stop)
         {
             decoder.Decode(out var instr);
-            if (instr.IsInvalid) { truncated = true; break; }
+            if (instr.IsInvalid)
+            {
+                truncated = true;
+                decodeWarning = $"decoding stopped at RVA 0x{decoder.IP - reader.ImageBase:X} after {list.Count} instruction(s) (invalid opcode or inline data)";
+                break;
+            }
             list.Add(instr);
         }
-        return new DisassembledFunction(start, stop, list, truncated);
+        return new DisassembledFunction(start, stop, list, truncated, decodeWarning);
     }
 
     public string Format(DisassembledFunction fn, bool withBytes = true)
@@ -61,7 +68,8 @@ public sealed class X64Disassembler(NativeSymbolizer symbols)
             if (comment is not null) sb.Append("    ; ").Append(comment);
             sb.AppendLine();
         }
-        if (fn.Truncated) sb.AppendLine("; ... (truncated)");
+        if (fn.DecodeWarning is not null) sb.Append("; ").AppendLine(fn.DecodeWarning);
+        else if (fn.Truncated) sb.AppendLine("; ... (truncated)");
         return sb.ToString();
     }
 

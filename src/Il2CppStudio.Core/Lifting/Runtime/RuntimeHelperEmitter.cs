@@ -22,8 +22,8 @@ public sealed class RuntimeHelperEmitter(RuntimeHelperMap map, StubAssemblyBuild
     {
         var kind = map.KindOf(target);
         if (kind == RuntimeHelperKind.Unknown) return HelperOutcome.NotHandled;
-        var rcx = regs.Get(ArgumentLocations.IntArg(0));
-        var rdx = regs.Get(ArgumentLocations.IntArg(1));
+        var rcx = ArgumentLocations.ReadHelperArg(regs, 0);
+        var rdx = ArgumentLocations.ReadHelperArg(regs, 1);
         Handled++;
         switch (kind)
         {
@@ -45,7 +45,7 @@ public sealed class RuntimeHelperEmitter(RuntimeHelperMap map, StubAssemblyBuild
                 ctx.IL.Add(CilOpCodes.Box, t.ToTypeDefOrRef());
                 return Result(ctx, module.CorLibTypeFactory.Object);
             case RuntimeHelperKind.Unbox:
-                var unboxType = TypeOf(regs.Get(ArgumentLocations.IntArg(2))) ?? TypeOf(rdx) ?? module.CorLibTypeFactory.Int32;
+                var unboxType = TypeOf(ArgumentLocations.ReadHelperArg(regs, 2)) ?? TypeOf(rdx) ?? module.CorLibTypeFactory.Int32;
                 CompareExpr.EmitOperand(ctx, rcx, ValueKind.Ref);
                 ctx.IL.Add(CilOpCodes.Unbox_Any, unboxType.ToTypeDefOrRef());
                 var unboxedLocal = regs.NewLocal(unboxType);
@@ -63,7 +63,7 @@ public sealed class RuntimeHelperEmitter(RuntimeHelperMap map, StubAssemblyBuild
                 ctx.IL.Add(resultNullTested ? CilOpCodes.Isinst : CilOpCodes.Castclass, t.ToTypeDefOrRef());
                 return Result(ctx, t);
             case RuntimeHelperKind.InterfaceLookup when rdx is MarkerExpr { Marker: MarkerKind.TypeInfo } iface:
-                var slot = regs.Get(ArgumentLocations.IntArg(2)) is ConstExpr c ? (int)c.Value : 0;
+                var slot = ArgumentLocations.ReadHelperArg(regs, 2) is ConstExpr c ? (int)c.Value : 0;
                 regs.ClobberVolatiles(CallEmitter.Volatile);
                 regs.Set(Register.RAX, new MarkerExpr(MarkerKind.VTableEntry, iface.Index, $"iface_vtable[{slot}]", rcx, new(0, MetadataUsageKind.MethodDef, slot)));
                 return HelperOutcome.Handled;

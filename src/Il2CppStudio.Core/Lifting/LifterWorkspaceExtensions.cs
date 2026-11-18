@@ -6,10 +6,10 @@ using Il2CppStudio.Core.Workspace;
 namespace Il2CppStudio.Core.Lifting;
 
 /// <summary>
-/// <see cref="IMethodBodyProvider"/> backed by <see cref="LifterDriver"/>: lifts each requested method once and
+/// <see cref="IMethodBodyProvider"/> backed by <see cref="IMethodLifter"/>: lifts each requested method once and
 /// keeps aggregate statistics. Lifting is serialized because stub modules are shared mutable state.
 /// </summary>
-public sealed class LiftingBodyProvider(LifterDriver driver, IDiagnosticSink sink) : IMethodBodyProvider
+public sealed class LiftingBodyProvider(IMethodLifter driver, IDiagnosticSink sink) : IMethodBodyProvider
 {
     private readonly ConcurrentDictionary<int, LiftResult> _results = new();
     private readonly Lock _gate = new();
@@ -54,10 +54,11 @@ public sealed class LiftingBodyProvider(LifterDriver driver, IDiagnosticSink sin
 
     public int EnsureLifted(IEnumerable<int> methodIndices)
     {
+        var ordered = methodIndices.Distinct().Order().ToArray();
         var lifted = 0;
         lock (_gate)
         {
-            foreach (var m in methodIndices)
+            foreach (var m in ordered)
             {
                 if (_results.ContainsKey(m)) continue;
                 var r = driver.Lift(m);
@@ -83,8 +84,18 @@ public static class LifterWorkspaceExtensions
     /// <summary>Creates the lifting body provider for a workspace with recovered native code, or null.</summary>
     public static LiftingBodyProvider? CreateLifter(this Il2CppWorkspace ws)
     {
-        if (ws.Symbolizer is null || ws.Disassembler is null) return null;
-        return new LiftingBodyProvider(new LifterDriver(ws.Symbolizer, ws.Stubs, ws.Disassembler, ws.Sink, ws.RuntimeHelpers, ws.Abi), ws.Sink)
+        if (ws.Symbolizer is null) return null;
+        IMethodLifter? lifter = ws.Binary switch
+        {
+            Binary.WasmBinaryImage wasm => new Wasm.WasmLifter(ws.Symbolizer, ws.Stubs, wasm, ws.Sink),
+            _ when ws.Binary?.Architecture == Binary.CpuArchitecture.Arm64 => new Arm64.Arm64Lifter(ws.Symbolizer, ws.Stubs, ws.Sink, ws.RuntimeHelpers),
+            _ when ws.Binary?.Architecture == Binary.CpuArchitecture.Arm && ws.TextDisassembler is Disassembly.CapstoneArmDisassembler cap
+                => new Arm32.Arm32Lifter(ws.Symbolizer, ws.Stubs, cap, ws.Sink, ws.RuntimeHelpers),
+            _ when ws.Disassembler is not null => new LifterDriver(ws.Symbolizer, ws.Stubs, ws.Disassembler, ws.Sink, ws.RuntimeHelpers, ws.Abi),
+            _ => null,
+        };
+        if (lifter is null) return null;
+        return new LiftingBodyProvider(lifter, ws.Sink)
         {
             ErrorLog = ws.Decompiler.ErrorLog,
             Describe = m =>

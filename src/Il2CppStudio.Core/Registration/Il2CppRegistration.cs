@@ -35,7 +35,7 @@ public sealed partial class Il2CppRegistration
         (uint)typeDefIndex < (uint)TypeSizeTableVas.Count && TypeSizeTableVas[typeDefIndex] != 0 ? Reader.ReadI32(TypeSizeTableVas[typeDefIndex]) : 0;
 
     /// <summary>Unboxed size of a value type (instance_size minus the object header), or 0 if unknown.</summary>
-    public int GetValueTypeSize(int typeDefIndex) => Math.Max(0, GetInstanceSize(typeDefIndex) - 16);
+    public int GetValueTypeSize(int typeDefIndex) => Math.Max(0, GetInstanceSize(typeDefIndex) - 2 * Ptr);
     public IReadOnlyDictionary<ulong, MetadataUsage> MetadataUsages { get; private set; } = new Dictionary<ulong, MetadataUsage>();
 
     private readonly Dictionary<ulong, int> _typeIndexByVa = [];

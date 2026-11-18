@@ -17,6 +17,7 @@ public static class UnityInlineRecognizer
     public static void Apply(SyntaxTree tree)
     {
         InlinePureComponentTemps(tree);
+        CollapseIdentityVectorCreate(tree);
         RemoveRepeatedDefault(tree);
         foreach (var inv in tree.Descendants.OfType<InvocationExpression>().ToList()) TryEuler(inv);
     }
@@ -32,18 +33,26 @@ public static class UnityInlineRecognizer
         var stripped = create.Arguments.Select(StripDeg2Rad).ToList();
         if (stripped.Any(s => s is null)) return;
         var euler = new InvocationExpression(new MemberReferenceExpression(t.Target.Clone(), "Euler"), stripped.Select(s => s!.Clone()));
-        inv.ReplaceWith(euler);
+        if (inv.Parent is ExpressionStatement es
+            && es.NextSibling is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: MemberReferenceExpression { MemberName: "rotation" } rotLhs, Right: DefaultValueExpression } } nextRot)
+        {
+            nextRot.Expression = new AssignmentExpression(rotLhs.Detach(), euler);
+            es.Remove();
+        }
+        else
+            inv.ReplaceWith(euler);
         tempDecl?.Remove();
     }
 
     /// <summary><c>a * ((float)Math.PI / 180f)</c> → <c>a</c>.</summary>
     private static Expression? StripDeg2Rad(Expression e) =>
-        e is BinaryOperatorExpression { Operator: BinaryOperatorType.Multiply } m && IsDeg2Rad(m.Right) ? m.Left : null;
+        e is PrimitiveExpression { Value: 0f } ? e
+        : e is BinaryOperatorExpression { Operator: BinaryOperatorType.Multiply } m && IsDeg2Rad(m.Right) ? m.Left : null;
 
     private static bool IsDeg2Rad(Expression e)
     {
         var s = e.ToString().Replace(" ", "");
-        return s is "((float)Math.PI/180f)" or "(float)Math.PI/180f" or "Mathf.Deg2Rad" or "0.0174532924f" or "0.017453292f";
+        return s is "((float)Math.PI/180f)" or "(float)Math.PI/180f" or "(MathF.PI/180f)" or "MathF.PI/180f" or "Mathf.Deg2Rad" or "0.0174532924f" or "0.017453292f";
     }
 
     private static VariableDeclarationStatement? FindSingleUseTemp(AstNode use, string name)
@@ -70,13 +79,40 @@ public static class UnityInlineRecognizer
         }
     }
 
+    private static void CollapseIdentityVectorCreate(SyntaxTree tree)
+    {
+        foreach (var create in tree.Descendants.OfType<ObjectCreateExpression>().ToList())
+        {
+            if (create.Parent is null || create.Type is not SimpleType { Identifier: "Vector3" or "Vector2" } st) continue;
+            var expected = st.Identifier == "Vector3" ? 3 : 2;
+            if (create.Arguments.Count != expected) continue;
+            var args = create.Arguments.ToList();
+            if (args[0] is not MemberReferenceExpression { MemberName: "x" } mx || args[1] is not MemberReferenceExpression { MemberName: "y" } my) continue;
+            if (expected == 3 && args[2] is not MemberReferenceExpression { MemberName: "z" }) continue;
+            var src = mx.Target.ToString();
+            if (my.Target.ToString() != src || (expected == 3 && ((MemberReferenceExpression)args[2]).Target.ToString() != src)) continue;
+            if (!IsPureVectorSource(mx.Target)) continue;
+            create.ReplaceWith(mx.Target.Detach());
+        }
+    }
+
+    private static bool IsPureVectorSource(Expression e) => e switch
+    {
+        IdentifierExpression => true,
+        MemberReferenceExpression { Target: TypeReferenceExpression or ThisReferenceExpression or IdentifierExpression { Identifier: "Vector3" or "Vector2" or "Quaternion" } } => true,
+        _ => EmptyIfRemover.IsPure(e),
+    };
+
     private static void RemoveRepeatedDefault(SyntaxTree tree)
     {
         foreach (var decl in tree.Descendants.OfType<VariableDeclarationStatement>().Where(d => d.Variables.Count == 1).ToList())
         {
             var v = decl.Variables.Single();
-            if (v.Initializer is not DefaultValueExpression) continue;
-            if (decl.NextSibling is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: IdentifierExpression l, Right: DefaultValueExpression } } next
+            if (v.Initializer is not DefaultValueExpression || decl.Parent is not BlockStatement block) continue;
+            var stmts = block.Statements.ToList();
+            var idx = stmts.IndexOf(decl);
+            if (idx >= 0 && idx + 1 < stmts.Count
+                && stmts[idx + 1] is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: IdentifierExpression l, Right: DefaultValueExpression } } next
                 && l.Identifier == v.Name)
                 next.Remove();
         }

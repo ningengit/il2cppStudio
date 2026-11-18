@@ -23,6 +23,25 @@ internal static class Leb
         if (shift < 64 && (b & 0x40) != 0) result |= -1L << shift;
         return result;
     }
+
+    public static uint U32(ReadOnlySpan<byte> d, ref int p)
+    {
+        uint result = 0;
+        var shift = 0;
+        byte b;
+        do { b = d[p++]; result |= (uint)(b & 0x7F) << shift; shift += 7; } while ((b & 0x80) != 0 && shift < 35);
+        return result;
+    }
+
+    public static long S64(ReadOnlySpan<byte> d, ref int p)
+    {
+        long result = 0;
+        var shift = 0;
+        byte b;
+        do { b = d[p++]; result |= (long)(b & 0x7F) << shift; shift += 7; } while ((b & 0x80) != 0 && shift < 70);
+        if (shift < 64 && (b & 0x40) != 0) result |= -1L << shift;
+        return result;
+    }
 }
 
 /// <summary>Locating and decompressing the WebGL code module (<c>Build/*.wasm</c>, <c>.wasm.br</c>, <c>.wasm.gz</c>, <c>.wasm.unityweb</c>).</summary>

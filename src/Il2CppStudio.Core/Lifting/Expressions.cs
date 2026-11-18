@@ -2,6 +2,7 @@ using AsmResolver.DotNet;
 using AsmResolver.DotNet.Code.Cil;
 using AsmResolver.DotNet.Signatures;
 using AsmResolver.PE.DotNet.Cil;
+using E = AsmResolver.PE.DotNet.Metadata.Tables.ElementType;
 
 namespace Il2CppStudio.Core.Lifting;
 
@@ -162,6 +163,84 @@ public sealed class ArgExpr(AsmResolver.DotNet.Collections.Parameter parameter, 
     public override string Describe() => parameter.Name ?? "this";
 }
 
+/// <summary>
+/// A struct lvalue reached through a native pointer expression (webassembly struct parameters, unboxed buffers):
+/// the lvalue's address is exactly what <see cref="Address"/> emits, and reading the value is <c>ldobj T</c>.
+/// </summary>
+public sealed class IndirectStructExpr(TypeSignature type, Expr address) : Expr
+{
+    public Expr Address => address;
+    public override TypeSignature Type => type;
+    public override ValueKind Kind => ValueKind.Struct;
+    public override void Emit(EmitContext ctx)
+    {
+        Address.Emit(ctx);
+        ctx.IL.Add(CilOpCodes.Ldobj, type.ToTypeDefOrRef());
+    }
+}
+
+/// <summary>A value read through a native pointer of known static type (webassembly by-reference parameters).</summary>
+public sealed class IndirectExpr(Expr pointer, TypeSignature type) : Expr
+{
+    public Expr Pointer => pointer;
+    public override TypeSignature Type => type;
+    public override ValueKind Kind => KindOf(type);
+    public override void Emit(EmitContext ctx)
+    {
+        pointer.Emit(ctx);
+        EmitLoad(ctx, type);
+    }
+
+    /// <summary>Emits <c>ldind.*</c> for the primitive the signature names (or <c>ldobj</c> for structs).</summary>
+    public static void EmitLoad(EmitContext ctx, TypeSignature type)
+    {
+        var il = ctx.IL;
+        if (KindOf(type) == ValueKind.Struct) { il.Add(CilOpCodes.Ldobj, type.ToTypeDefOrRef()); return; }
+        if (EnumRegistry.TryGetUnderlying(type, out var underlying))
+        {
+            il.Add(underlying == ValueKind.I8 ? CilOpCodes.Ldind_I8 : CilOpCodes.Ldind_I4);
+            return;
+        }
+        switch (type.ElementType)
+        {
+            case E.Boolean or E.U1: il.Add(CilOpCodes.Ldind_U1); return;
+            case E.I1: il.Add(CilOpCodes.Ldind_I1); return;
+            case E.Char or E.U2: il.Add(CilOpCodes.Ldind_U2); return;
+            case E.I2: il.Add(CilOpCodes.Ldind_I2); return;
+            case E.I4: il.Add(CilOpCodes.Ldind_I4); return;
+            case E.U4: il.Add(CilOpCodes.Ldind_U4); return;
+            case E.I8 or E.U8: il.Add(CilOpCodes.Ldind_I8); return;
+            case E.R4: il.Add(CilOpCodes.Ldind_R4); return;
+            case E.R8: il.Add(CilOpCodes.Ldind_R8); return;
+            case E.I or E.U or E.Ptr: il.Add(CilOpCodes.Ldind_I); return;
+            default: il.Add(CilOpCodes.Ldobj, type.ToTypeDefOrRef()); return;
+        }
+    }
+
+    /// <summary>Emits <c>stind.*</c> for the primitive the signature names (or <c>stobj</c> for structs).</summary>
+    public static void EmitStore(EmitContext ctx, TypeSignature type)
+    {
+        var il = ctx.IL;
+        if (KindOf(type) == ValueKind.Struct) { il.Add(CilOpCodes.Stobj, type.ToTypeDefOrRef()); return; }
+        if (EnumRegistry.TryGetUnderlying(type, out var underlying))
+        {
+            il.Add(underlying == ValueKind.I8 ? CilOpCodes.Stind_I8 : CilOpCodes.Stind_I4);
+            return;
+        }
+        switch (type.ElementType)
+        {
+            case E.Boolean or E.I1 or E.U1: il.Add(CilOpCodes.Stind_I1); return;
+            case E.Char or E.I2 or E.U2: il.Add(CilOpCodes.Stind_I2); return;
+            case E.I4 or E.U4: il.Add(CilOpCodes.Stind_I4); return;
+            case E.I8 or E.U8: il.Add(CilOpCodes.Stind_I8); return;
+            case E.R4: il.Add(CilOpCodes.Stind_R4); return;
+            case E.R8: il.Add(CilOpCodes.Stind_R8); return;
+            case E.I or E.U or E.Ptr: il.Add(CilOpCodes.Stind_I); return;
+            default: il.Add(CilOpCodes.Stobj, type.ToTypeDefOrRef()); return;
+        }
+    }
+}
+
 public sealed class LocalExpr(CilLocalVariable local) : Expr
 {
     public CilLocalVariable Local => local;
@@ -192,6 +271,8 @@ public sealed class FieldExpr(Expr instance, IFieldDescriptor fieldRef, TypeSign
     public override void Emit(EmitContext ctx)
     {
         if (instance is LocalExpr { Kind: ValueKind.Struct } l) ctx.IL.Add(CilOpCodes.Ldloca, l.Local);
+        else if (instance is ThisStructExpr) ctx.IL.Add(CilOpCodes.Ldarg_0);   // ldarg.0 is a T&, valid for ldfld
+        else if (instance is IndirectStructExpr ise) ise.Address.Emit(ctx);
         else instance.Emit(ctx);
         ctx.IL.Add(CilOpCodes.Ldfld, fieldRef);
     }
