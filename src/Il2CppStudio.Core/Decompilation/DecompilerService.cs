@@ -125,6 +125,7 @@ public sealed class DecompilerService
         RemoveDeadStores = true,
         UseDebugSymbols = false,
         AlwaysUseBraces = true,
+        ObjectOrCollectionInitializers = false,
     };
 
     // ------------------------------------------------------------------ public API

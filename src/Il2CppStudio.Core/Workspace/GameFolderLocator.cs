@@ -14,16 +14,18 @@ public static class GameFolderLocator
 {
     private static readonly string[] BinaryNames = ["GameAssembly.dll", "GameAssembly.so", "libil2cpp.so"];
 
-    public static GameFiles Locate(string path, IDiagnosticSink sink)
+    public static GameFiles Locate(string path, IDiagnosticSink sink) => LocateCore(path, sink, explicitBinary: null);
+
+    private static GameFiles LocateCore(string path, IDiagnosticSink sink, string? explicitBinary)
     {
         path = Path.GetFullPath(path);
 
-        if (File.Exists(path))
+        if (explicitBinary is null && File.Exists(path))
         {
             if (ApkExtractor.IsApkPath(path))
             {
                 return ApkExtractor.Extract(path, sink) is { } extractedApk
-                    ? Locate(extractedApk, sink)
+                    ? LocateCore(extractedApk, sink, explicitBinary: null)
                     : new GameFiles(path, null, null, null, null);
             }
 
@@ -34,7 +36,7 @@ public static class GameFolderLocator
             if (BinaryNames.Contains(name, StringComparer.OrdinalIgnoreCase) || ConsoleBinaryPluginRegistry.CanOpen(path))
             {
                 var root = FindAncestorGameRoot(Path.GetDirectoryName(path)!);
-                return Locate(root, sink) with { BinaryPath = path };
+                return LocateCore(root, sink, explicitBinary: path);
             }
 
             if (WasmFiles.IsWasmPath(path) || IsWebDataPath(path))
@@ -43,8 +45,7 @@ public static class GameFolderLocator
                 var root = Path.GetFileName(dir).Equals("Build", StringComparison.OrdinalIgnoreCase)
                     ? (Directory.GetParent(dir)?.FullName ?? dir)
                     : dir;
-                var located = Locate(root, sink);
-                return WasmFiles.IsWasmPath(path) ? located with { BinaryPath = path } : located;
+                return LocateCore(root, sink, explicitBinary: WasmFiles.IsWasmPath(path) ? path : null);
             }
         }
 
@@ -54,9 +55,11 @@ public static class GameFolderLocator
             return new GameFiles(path, null, null, null, null);
         }
 
-        string? binary = BinaryNames.Select(n => Path.Combine(path, n)).FirstOrDefault(File.Exists);
+        var binary = explicitBinary;
+        binary ??= BinaryNames.Select(n => Path.Combine(path, n)).FirstOrDefault(File.Exists);
         binary ??= PreferAbi(Directory.EnumerateFiles(path, "libil2cpp.so", SearchOption.AllDirectories));
-        binary ??= new[] { Path.Combine(path, "main"), Path.Combine(path, "exefs", "main") }
+        binary ??= new[] { Path.Combine(path, "main"), Path.Combine(path, "exefs", "main"), Path.Combine(path, "0", "main") }
+            .Concat(Directory.EnumerateFiles(path, "main", SearchOption.AllDirectories))
             .FirstOrDefault(p => File.Exists(p) && ConsoleBinaryPluginRegistry.CanOpen(p));
 
         // WebGL: no native binary; metadata lives inside the (optionally brotli/gzip-compressed) UnityWebData container.
@@ -109,6 +112,9 @@ public static class GameFolderLocator
         var switchData = Path.Combine(path, "romfs", "Data");
         if (Directory.Exists(switchData))
             return switchData;
+        var switchTitleData = Path.Combine(path, "1", "Data");
+        if (Directory.Exists(switchTitleData))
+            return switchTitleData;
         if (searchRoot != path)
             return searchRoot;
         if (metadata is not null)
@@ -132,6 +138,7 @@ public static class GameFolderLocator
             if (Directory.EnumerateDirectories(cur, "*_Data").Any()
                 || Directory.Exists(Path.Combine(cur, "assets", "bin", "Data"))
                 || Directory.Exists(Path.Combine(cur, "romfs", "Data"))
+                || Directory.Exists(Path.Combine(cur, "1", "Data"))
                 || Directory.EnumerateFiles(cur, "global-metadata.dat", SearchOption.AllDirectories).Any())
                 return cur;
             cur = Directory.GetParent(cur)?.FullName;

@@ -176,4 +176,19 @@ public sealed class PlatformMatrixTests
         Assert.Contains("player.transform.position", cs, StringComparison.Ordinal);
         Assert.DoesNotContain("throw null", cs, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void SwitchRealBuild_RecoversRegistrationAndDecompiles()
+    {
+        using var ws = Il2CppWorkspace.Load(Build("2019 game il2cpp switch")!, Sink());
+        WorkspaceSetup.Attach(ws);
+        Assert.Equal(24, ws.Metadata.Version.Major);
+        Assert.NotNull(ws.Registration);
+        Assert.True(ws.Registration!.IsComplete);
+        Assert.True(ws.Registration.GenericMethodPointers.Count > 30000);
+        var type = ws.FindTypes("AzukariyaWork").Single();
+        var clear = type.Methods.Single(m => m.Name == "Clear");
+        var cs = ws.Render(type, clear, CodeView.CSharp);
+        Assert.Contains("PlayerWork.AzukariyaData.Clear()", cs, StringComparison.Ordinal);
+    }
 }

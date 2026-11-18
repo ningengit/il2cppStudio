@@ -22,10 +22,10 @@ public sealed class AddressExpr(Expr target) : Expr
             case ThisStructExpr: ctx.IL.Add(CilOpCodes.Ldarg_0); break;   // value-type `this` is already a managed pointer
             case IndirectStructExpr i: i.Address.Emit(ctx); break;
             case FieldExpr f:
-                if (f.Instance is LocalExpr { Kind: ValueKind.Struct } sl) ctx.IL.Add(CilOpCodes.Ldloca, sl.Local);
-                else if (f.Instance is ArrayElementExpr sae && sae.Kind == ValueKind.Struct) new AddressExpr(sae).Emit(ctx);
-                else if (f.Instance is FieldExpr sfe && sfe.Kind == ValueKind.Struct) new AddressExpr(sfe).Emit(ctx);
-                else f.Instance.Emit(ctx);
+                if (f.Instance.Kind == ValueKind.Struct && f.Instance is LocalExpr or ArgExpr or ThisStructExpr or IndirectStructExpr or FieldExpr or StaticFieldExpr or ArrayElementExpr)
+                    new AddressExpr(f.Instance).Emit(ctx);
+                else
+                    f.Instance.Emit(ctx);
                 ctx.IL.Add(CilOpCodes.Ldflda, f.Field);
                 break;
             case StaticFieldExpr s: ctx.IL.Add(CilOpCodes.Ldsflda, s.Field); break;
@@ -115,6 +115,7 @@ public sealed class MemoryResolver
     public int TypeDefOf(TypeSignature? sig)
     {
         if (sig is null) return -1;
+        if (sig is ByReferenceTypeSignature br) sig = br.BaseType;
         if (sig is GenericInstanceTypeSignature g) sig = g.GenericType.ToTypeSignature(g.IsValueType);
         if (sig is not TypeDefOrRefSignature and not CorLibTypeSignature) return -1;
         var name = sig.FullName.Replace('/', '+');
@@ -162,8 +163,14 @@ public sealed class MemoryResolver
         return list;
     }
 
-    public ResolvedField? FindInstanceField(int typeDef, long offset) =>
-        FieldsOf(typeDef).Where(f => !f.IsStatic && f.Offset == offset).Cast<ResolvedField?>().FirstOrDefault();
+    private bool IsEnumType(TypeSignature sig) =>
+        TypeDefOf(sig) is var td and >= 0 && (uint)td < (uint)_md.TypeDefinitions.Length && _md.TypeDefinitions[td].IsEnum;
+
+    public ResolvedField? FindInstanceField(int typeDef, long offset)
+    {
+        if ((uint)typeDef < (uint)_md.TypeDefinitions.Length && _md.TypeDefinitions[typeDef].IsEnum) return null;
+        return FieldsOf(typeDef).Where(f => !f.IsStatic && f.Offset == offset).Cast<ResolvedField?>().FirstOrDefault();
+    }
 
     public ResolvedField? FindStaticField(int typeDef, long offset)
     {
@@ -176,6 +183,7 @@ public sealed class MemoryResolver
     public Expr? StructField(Expr structValue, int typeDef, long offset, int depth = 0)
     {
         if (depth > 6) return null;
+        if ((uint)typeDef < (uint)_md.TypeDefinitions.Length && _md.TypeDefinitions[typeDef].IsEnum) return null;
         var fields = FieldsOf(typeDef).Where(f => !f.IsStatic).OrderBy(f => f.Offset).ToList();
         foreach (var f in fields)
         {
@@ -190,10 +198,18 @@ public sealed class MemoryResolver
                     ? StructField(fe, inner, 0, depth + 1) ?? fe
                     : fe;
             }
-            if (offset > f.Offset && offset < f.Offset + size && Expr.KindOf(ft) == ValueKind.Struct && FieldRef(f) is { } nr)
+            if (offset > f.Offset && offset < f.Offset + size && FieldRef(f) is { } nr)
             {
-                var inner = TypeDefOf(ft);
-                if (inner >= 0) return StructField(new FieldExpr(structValue, nr, ft), inner, offset - f.Offset, depth + 1);
+                if (Expr.KindOf(ft) == ValueKind.Struct)
+                {
+                    var inner = TypeDefOf(ft);
+                    if (inner >= 0) return StructField(new FieldExpr(structValue, nr, ft), inner, offset - f.Offset, depth + 1);
+                }
+                if (Expr.KindOf(ft) is ValueKind.I4 or ValueKind.I8)
+                {
+                    var k = Expr.KindOf(ft);
+                    return new BinaryExpr(CilOpCodes.Shr_Un, new FieldExpr(structValue, nr, ft), new ConstExpr((int)((offset - f.Offset) * 8), ValueKind.I4), k);
+                }
             }
         }
         return null;
@@ -247,15 +263,43 @@ public sealed class MemoryResolver
     public Expr? Load(Expr baseExpr, Expr? index, int scale, long disp, int size)
     {
         // Address of a struct lvalue → its field (or a chunk for wide copies).
-        if (baseExpr is AddressExpr addr && index is null && disp == 0 && addr.Target.Type is { } att && size <= Math.Max(4, ValueSize(att))
-            && Expr.KindOf(att) is not ValueKind.Struct)
-            return addr.Target;
+        if (baseExpr is AddressExpr addr && index is null && disp == 0 && addr.Target.Type is { } att)
+        {
+            var elem = att is ByReferenceTypeSignature br ? br.BaseType : att;
+            var elemTd = TypeDefOf(elem);
+            if (size <= Math.Max(4, ValueSize(elem)) && (Expr.KindOf(elem) != ValueKind.Struct || (elemTd >= 0 && _md.TypeDefinitions[elemTd].IsEnum)))
+                return att is ByReferenceTypeSignature ? new IndirectExpr(addr, elem) : addr.Target;
+        }
         if (baseExpr is AddressExpr { Target: var addrTarget } && TypeDefOf(addrTarget.Type) is var std and >= 0)
         {
             if (index is not null) return null;
             var field = StructField(addrTarget, std, disp);
-            if (field is not null && (size <= ValueSize(field.Type!) || size <= 4)) return field;
+            if (field is not null && (size <= ValueSize(field.Type!) || size <= 4))
+            {
+                if (field.Type is not null && ValueSize(field.Type) > size && Expr.KindOf(field.Type) is ValueKind.I4 or ValueKind.I8)
+                {
+                    var mask = size == 1 ? 0xFFL : size == 2 ? 0xFFFFL : 0xFFFFFFFFL;
+                    return new BinaryExpr(CilOpCodes.And, field, new ConstExpr(mask, ValueKind.I4), ValueKind.I4);
+                }
+                return field;
+            }
             return new StructChunkExpr(addrTarget, (int)disp, size);
+        }
+        if (baseExpr.Type is ByReferenceTypeSignature brDirect && index is null)
+        {
+            var elem = brDirect.BaseType;
+            if (disp == 0 && (Expr.KindOf(elem) != ValueKind.Struct || IsEnumType(elem)))
+            {
+                if (size <= Math.Max(4, ValueSize(elem)))
+                    return new IndirectExpr(baseExpr, elem);
+            }
+            if (TypeDefOf(elem) is var btd and >= 0 && Expr.KindOf(elem) == ValueKind.Struct && !IsEnumType(elem))
+            {
+                var indStruct = new IndirectStructExpr(elem, baseExpr);
+                var field = StructField(indStruct, btd, disp);
+                if (field is not null && (size <= ValueSize(field.Type!) || size <= 4)) return field;
+                return new StructChunkExpr(indStruct, (int)disp, size);
+            }
         }
         if (baseExpr is IndirectStructExpr indirect && index is null && TypeDefOf(indirect.Type) is var itd and >= 0)
         {
@@ -391,6 +435,38 @@ public sealed class MemoryResolver
         var il = ctx.IL;
         if (value is StructChunkExpr chunk && baseExpr is AddressExpr dst && TypeDefOf(dst.Target.Type) is var dtd and >= 0)
             return CopyChunk(ctx, chunk, dst.Target, dtd, (int)disp, size);
+
+        if (baseExpr is AddressExpr scalarAddr && index is null && disp == 0 && scalarAddr.Target.Type is { } satt)
+        {
+            var elem = satt is ByReferenceTypeSignature sbr ? sbr.BaseType : satt;
+            var elemTd = TypeDefOf(elem);
+            if (Expr.KindOf(elem) != ValueKind.Struct || (elemTd >= 0 && _md.TypeDefinitions[elemTd].IsEnum))
+            {
+                if (scalarAddr.Target is LocalExpr le && satt is not ByReferenceTypeSignature)
+                {
+                    Expr.EmitAs(ctx, value, elem);
+                    il.Add(CilOpCodes.Stloc, le.Local);
+                    return true;
+                }
+                scalarAddr.Emit(ctx);
+                Expr.EmitAs(ctx, value, elem);
+                IndirectExpr.EmitStore(ctx, elem);
+                return true;
+            }
+        }
+        if (baseExpr.Type is ByReferenceTypeSignature sbrDirect && index is null)
+        {
+            var elem = sbrDirect.BaseType;
+            if (disp == 0 && (Expr.KindOf(elem) != ValueKind.Struct || IsEnumType(elem)))
+            {
+                baseExpr.Emit(ctx);
+                Expr.EmitAs(ctx, value, elem);
+                IndirectExpr.EmitStore(ctx, elem);
+                return true;
+            }
+            if (TypeDefOf(elem) is var btd and >= 0 && Expr.KindOf(elem) == ValueKind.Struct && !IsEnumType(elem))
+                return Store(ctx, new IndirectStructExpr(elem, baseExpr), null, 1, disp, size, value);
+        }
 
         if (baseExpr is AddressExpr a && TypeDefOf(a.Target.Type) is var std and >= 0 && index is null)
         {
@@ -573,6 +649,23 @@ public sealed class MemoryResolver
             copied = true;
         }
         return copied;
+    }
+
+    /// <summary>True when <paramref name="derivedTd"/> strictly inherits from <paramref name="baseTd"/>.</summary>
+    public bool IsStrictDerivedFrom(int derivedTd, int baseTd)
+    {
+        if (derivedTd < 0 || baseTd < 0 || derivedTd == baseTd || _reg is null) return false;
+        var cur = derivedTd;
+        for (var d = 0; d < 32 && (uint)cur < (uint)_md.TypeDefinitions.Length; d++)
+        {
+            var parentIdx = _md.TypeDefinitions[cur].ParentIndex;
+            if (parentIdx < 0 || !_reg.TryGetType(parentIdx, out var pt)) return false;
+            var ptd = _names.ResolveTypeDefIndex(pt);
+            if (ptd == baseTd) return true;
+            if (ptd < 0 || ptd == cur) return false;
+            cur = ptd;
+        }
+        return false;
     }
 }
 

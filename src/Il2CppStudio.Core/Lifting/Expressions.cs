@@ -64,6 +64,8 @@ public abstract class Expr
     public static void EmitAs(EmitContext ctx, Expr e, TypeSignature target, bool numeric = false)
     {
         var tk = KindOf(target);
+        if (e is AddressExpr ae && target is not ByReferenceTypeSignature && tk != ValueKind.Native)
+            e = ae.Target;
         var sk = e.Kind;
         if (e is ConstExpr { Value: 0 } && tk == ValueKind.Ref) { ctx.IL.Add(CilOpCodes.Ldnull); return; }
         if (!numeric && IsBitMove(sk, tk))
@@ -77,23 +79,45 @@ public abstract class Expr
                 case FloatExpr f when tk == ValueKind.I8: ctx.IL.Add(CilOpCodes.Ldc_I8, BitConverter.DoubleToInt64Bits(f.Value)); return;
             }
             e.Emit(ctx);
-            ctx.IL.Add(CilOpCodes.Box, BoxType(ctx.Module, sk));
-            ctx.IL.Add(CilOpCodes.Call, new MethodSpecification(ctx.Intrinsics.Reinterpret, new GenericInstanceMethodSignature([target])));
+            ctx.IL.Add(CilOpCodes.Box, e.Type is { IsValueType: true } stType ? stType.ToTypeDefOrRef() : BoxType(ctx.Module, sk));
+            var reinterpTarget = target is ByReferenceTypeSignature brt ? brt.BaseType : target;
+            ctx.IL.Add(CilOpCodes.Call, new MethodSpecification(ctx.Intrinsics.Reinterpret, new GenericInstanceMethodSignature([reinterpTarget])));
             ConversionLog.Record(ctx, $"bit reinterpretation {sk} -> {tk} of {e.Describe()} (non-constant raw-bit move)");
             return;
         }
         e.Emit(ctx);
-        Convert(ctx, sk, tk, target);
+        Convert(ctx, sk, tk, target, e.Type);
     }
 
     /// <summary>Integer ↔ floating-point flows that are register/memory bit moves rather than numeric conversions.</summary>
     public static bool IsBitMove(ValueKind from, ValueKind to) =>
         (from is ValueKind.I4 or ValueKind.I8 && to is ValueKind.R4 or ValueKind.R8) || (from is ValueKind.R4 or ValueKind.R8 && to is ValueKind.I4 or ValueKind.I8);
 
-    public static void Convert(EmitContext ctx, ValueKind from, ValueKind to, TypeSignature target)
+    public static void Convert(EmitContext ctx, ValueKind from, ValueKind to, TypeSignature target, TypeSignature? sourceType = null)
     {
-        if (from == to) return;
         var il = ctx.IL;
+        var src = sourceType is ByReferenceTypeSignature sbr ? sbr.BaseType : sourceType;
+        var reinterpTarget = target is ByReferenceTypeSignature brt ? brt.BaseType : target;
+        if (from == ValueKind.Struct && to == ValueKind.Struct)
+        {
+            if (src is not null && !SignatureComparer.Default.Equals(src, reinterpTarget))
+            {
+                il.Add(CilOpCodes.Box, src.ToTypeDefOrRef());
+                il.Add(CilOpCodes.Call, new MethodSpecification(ctx.Intrinsics.Reinterpret, new GenericInstanceMethodSignature([reinterpTarget])));
+            }
+            return;
+        }
+        if (from == ValueKind.Ref && to == ValueKind.Ref)
+        {
+            if (src is not null && reinterpTarget is not GenericParameterSignature && reinterpTarget.ElementType != E.Object
+                && !SignatureComparer.Default.Equals(src, reinterpTarget)
+                && (src.ElementType == E.Object || src.FullName == "UnityEngine.Object"))
+            {
+                il.Add(CilOpCodes.Castclass, reinterpTarget.ToTypeDefOrRef());
+            }
+            return;
+        }
+        if (from == to) return;
         switch (to)
         {
             case ValueKind.I4 when from is ValueKind.I8 or ValueKind.Native or ValueKind.R4 or ValueKind.R8:
@@ -109,13 +133,16 @@ public abstract class Expr
             case ValueKind.Ref or ValueKind.Struct when from is not (ValueKind.Ref or ValueKind.Struct):
             case ValueKind.Struct when from == ValueKind.Ref:
             case ValueKind.Ref when from == ValueKind.Struct:
-                if (from is ValueKind.I4 or ValueKind.I8 or ValueKind.R4 or ValueKind.R8 or ValueKind.Native or ValueKind.Struct)
+                if (from == ValueKind.Struct)
+                    il.Add(CilOpCodes.Box, src is { IsValueType: true } ? src.ToTypeDefOrRef() : ctx.Module.CorLibTypeFactory.Object.Type);
+                else if (from is ValueKind.I4 or ValueKind.I8 or ValueKind.R4 or ValueKind.R8 or ValueKind.Native)
                     il.Add(CilOpCodes.Box, BoxType(ctx.Module, from));
-                il.Add(CilOpCodes.Call, new MethodSpecification(ctx.Intrinsics.Reinterpret, new GenericInstanceMethodSignature([target])));
+                il.Add(CilOpCodes.Call, new MethodSpecification(ctx.Intrinsics.Reinterpret, new GenericInstanceMethodSignature([reinterpTarget])));
                 return;
             case ValueKind.I4 or ValueKind.I8 or ValueKind.R4 or ValueKind.R8 or ValueKind.Native when from is ValueKind.Ref or ValueKind.Struct:
-                if (from == ValueKind.Struct) il.Add(CilOpCodes.Box, ctx.Module.CorLibTypeFactory.Object.Type);
-                il.Add(CilOpCodes.Call, new MethodSpecification(ctx.Intrinsics.Reinterpret, new GenericInstanceMethodSignature([target])));
+                if (from == ValueKind.Struct)
+                    il.Add(CilOpCodes.Box, src is { IsValueType: true } ? src.ToTypeDefOrRef() : ctx.Module.CorLibTypeFactory.Object.Type);
+                il.Add(CilOpCodes.Call, new MethodSpecification(ctx.Intrinsics.Reinterpret, new GenericInstanceMethodSignature([reinterpTarget])));
                 return;
         }
     }
@@ -196,11 +223,6 @@ public sealed class IndirectExpr(Expr pointer, TypeSignature type) : Expr
     {
         var il = ctx.IL;
         if (KindOf(type) == ValueKind.Struct) { il.Add(CilOpCodes.Ldobj, type.ToTypeDefOrRef()); return; }
-        if (EnumRegistry.TryGetUnderlying(type, out var underlying))
-        {
-            il.Add(underlying == ValueKind.I8 ? CilOpCodes.Ldind_I8 : CilOpCodes.Ldind_I4);
-            return;
-        }
         switch (type.ElementType)
         {
             case E.Boolean or E.U1: il.Add(CilOpCodes.Ldind_U1); return;
@@ -222,11 +244,6 @@ public sealed class IndirectExpr(Expr pointer, TypeSignature type) : Expr
     {
         var il = ctx.IL;
         if (KindOf(type) == ValueKind.Struct) { il.Add(CilOpCodes.Stobj, type.ToTypeDefOrRef()); return; }
-        if (EnumRegistry.TryGetUnderlying(type, out var underlying))
-        {
-            il.Add(underlying == ValueKind.I8 ? CilOpCodes.Stind_I8 : CilOpCodes.Stind_I4);
-            return;
-        }
         switch (type.ElementType)
         {
             case E.Boolean or E.I1 or E.U1: il.Add(CilOpCodes.Stind_I1); return;
@@ -370,7 +387,7 @@ public sealed class CompareExpr(Condition cond, Expr left, Expr right) : Expr
     public override ValueKind Kind => ValueKind.I4;
     public override void Emit(EmitContext ctx)
     {
-        var k = OperandKind(left, right);
+        var k = OperandKind(left, right, cond);
         EmitOperand(ctx, left, k);
         EmitOperand(ctx, right, k);
         var il = ctx.IL;
@@ -389,9 +406,11 @@ public sealed class CompareExpr(Condition cond, Expr left, Expr right) : Expr
         }
     }
 
-    public static ValueKind OperandKind(Expr a, Expr b)
+    public static ValueKind OperandKind(Expr a, Expr b) => OperandKind(a, b, Condition.Eq);
+
+    public static ValueKind OperandKind(Expr a, Expr b, Condition cond)
     {
-        if (a.Kind == ValueKind.Ref || b.Kind == ValueKind.Ref) return ValueKind.Ref;
+        if (cond is Condition.Eq or Condition.Ne && (a.Kind == ValueKind.Ref || b.Kind == ValueKind.Ref)) return ValueKind.Ref;
         if (a.Kind is ValueKind.R4 or ValueKind.R8 || b.Kind is ValueKind.R4 or ValueKind.R8)
             return a.Kind == ValueKind.R8 || b.Kind == ValueKind.R8 ? ValueKind.R8 : ValueKind.R4;
         if (a.Kind == ValueKind.I8 || b.Kind == ValueKind.I8 || a.Kind == ValueKind.Native || b.Kind == ValueKind.Native) return ValueKind.I8;
@@ -404,15 +423,15 @@ public sealed class CompareExpr(Condition cond, Expr left, Expr right) : Expr
         {
             if (e is ConstExpr { Value: 0 }) { ctx.IL.Add(CilOpCodes.Ldnull); return; }
             e.Emit(ctx);
-            if (e.Kind != ValueKind.Ref) EmitAsObject(ctx, e.Kind);
+            if (e.Kind != ValueKind.Ref) EmitAsObject(ctx, e.Kind, e.Type);
             return;
         }
         var f = ctx.Module.CorLibTypeFactory;
         EmitAs(ctx, e, k switch { ValueKind.I4 => f.Int32, ValueKind.R4 => f.Single, ValueKind.R8 => f.Double, _ => f.Int64 });
     }
 
-    private static void EmitAsObject(EmitContext ctx, ValueKind from) =>
-        Convert(ctx, from, ValueKind.Ref, ctx.Module.CorLibTypeFactory.Object);
+    private static void EmitAsObject(EmitContext ctx, ValueKind from, TypeSignature? sourceType) =>
+        Convert(ctx, from, ValueKind.Ref, ctx.Module.CorLibTypeFactory.Object, sourceType);
 }
 
 public enum Condition { Eq, Ne, Lt, LtUn, Gt, GtUn, Le, LeUn, Ge, GeUn }

@@ -13,6 +13,15 @@ public static class DefiniteAssignment
     {
         foreach (var decl in tree.Descendants.OfType<VariableDeclarationStatement>().ToList())
         {
+            if (decl.Type is ComposedType { HasRefSpecifier: true } ct)
+            {
+                foreach (var v in decl.Variables)
+                {
+                    if (!v.Initializer.IsNull && v.Initializer is not DefaultValueExpression) continue;
+                    v.Initializer = MakeDefaultRefExpr(ct);
+                }
+                continue;
+            }
             if (decl.Modifiers.HasFlag(Modifiers.Const) || decl.Type is SimpleType { Identifier: "var" }) continue;
             foreach (var v in decl.Variables)
                 if (v.Initializer.IsNull) v.Initializer = new DefaultValueExpression(decl.Type.Clone());
@@ -33,6 +42,26 @@ public static class DefiniteAssignment
                 var earlierShadow = block.Statements.TakeWhile(s => s != decl).SelectMany(s => s.Descendants)
                     .OfType<VariableInitializer>().Any(vi => decl.Variables.Any(dv => dv.Name == vi.Name));
                 if (earlierShadow) continue;
+                if (decl.Type is ComposedType { HasRefSpecifier: true } rct)
+                {
+                    if (decl.Variables.Count == 1 && decl.Variables.Single() is var rv)
+                    {
+                        if (IsDummyRefInit(rv.Initializer))
+                        {
+                            if (block.Statements.FirstOrDefault() == decl) continue;
+                            decl.Remove();
+                            block.Statements.InsertBefore(block.Statements.FirstOrDefault(), decl);
+                        }
+                        else if (!rv.Initializer.IsNull)
+                        {
+                            var rhs = rv.Initializer is DirectionExpression ? rv.Initializer.Detach() : new DirectionExpression(FieldDirection.Ref, rv.Initializer.Detach());
+                            var hoisted = new VariableDeclarationStatement(rct.Clone(), rv.Name, MakeDefaultRefExpr(rct));
+                            decl.ReplaceWith(new ExpressionStatement(new AssignmentExpression(new IdentifierExpression(rv.Name), rhs)));
+                            block.Statements.InsertBefore(block.Statements.FirstOrDefault(), hoisted);
+                        }
+                    }
+                    continue;
+                }
                 if (decl.Variables.All(v => v.Initializer is DefaultValueExpression))
                 {
                     if (block.Statements.FirstOrDefault() == decl) continue;
@@ -61,5 +90,19 @@ public static class DefiniteAssignment
                 else method.Body.Statements.Add(init);
             }
         }
+    }
+
+    private static bool IsDummyRefInit(Expression expr) =>
+        expr is DirectionExpression { FieldDirection: FieldDirection.Ref, Expression: IndexerExpression { Target: ArrayCreateExpression } };
+
+    private static DirectionExpression MakeDefaultRefExpr(ComposedType ct)
+    {
+        AstType baseElem = ct.BaseType.Clone();
+        if (ct.PointerRank > 0 || ct.HasNullableSpecifier)
+            baseElem = new ComposedType { BaseType = baseElem, PointerRank = ct.PointerRank, HasNullableSpecifier = ct.HasNullableSpecifier };
+        var arrCreate = new ArrayCreateExpression { Type = baseElem };
+        arrCreate.Arguments.Add(new PrimitiveExpression(1));
+        foreach (var spec in ct.ArraySpecifiers) arrCreate.AdditionalArraySpecifiers.Add((ArraySpecifier)spec.Clone());
+        return new DirectionExpression(FieldDirection.Ref, new IndexerExpression(arrCreate, new PrimitiveExpression(0)));
     }
 }

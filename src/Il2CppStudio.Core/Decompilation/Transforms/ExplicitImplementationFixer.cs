@@ -16,11 +16,31 @@ public static class ExplicitImplementationFixer
         {
             if (member is not (MethodDeclaration or PropertyDeclaration or EventDeclaration) || Split(member.Name) is not var (iface, name)) continue;
             if (member is MethodDeclaration { PrivateImplementationType.IsNull: false } or PropertyDeclaration { PrivateImplementationType.IsNull: false }) continue;
+            if (member is MethodDeclaration m && ((name.StartsWith("get_", StringComparison.Ordinal) && m.Parameters.Count == 0)
+                || (name.StartsWith("set_", StringComparison.Ordinal) && m.Parameters.Count == 1)))
+            {
+                var isGetter = name.StartsWith("get_", StringComparison.Ordinal);
+                var propName = name[4..];
+                var existing = (m.Parent as TypeDeclaration)?.Members.OfType<PropertyDeclaration>().FirstOrDefault(p =>
+                    p.Name == propName && !p.PrivateImplementationType.IsNull && p.PrivateImplementationType.ToString() == iface);
+                var acc = new Accessor { Body = m.Body.Detach() };
+                if (isGetter)
+                {
+                    if (existing is not null && existing.Getter.IsNull) { existing.Getter = acc; m.Remove(); }
+                    else m.ReplaceWith(new PropertyDeclaration { ReturnType = m.ReturnType.Clone(), PrivateImplementationType = new SimpleType(iface), Name = propName, Getter = acc });
+                }
+                else
+                {
+                    if (existing is not null && existing.Setter.IsNull) { existing.Setter = acc; m.Remove(); }
+                    else m.ReplaceWith(new PropertyDeclaration { ReturnType = m.Parameters.Single().Type.Clone(), PrivateImplementationType = new SimpleType(iface), Name = propName, Setter = acc });
+                }
+                continue;
+            }
             member.Modifiers = Modifiers.None;
             member.Name = name;
             switch (member)
             {
-                case MethodDeclaration m: m.PrivateImplementationType = new SimpleType(iface); break;
+                case MethodDeclaration md: md.PrivateImplementationType = new SimpleType(iface); break;
                 case PropertyDeclaration p: p.PrivateImplementationType = new SimpleType(iface); break;
                 case CustomEventDeclaration e: e.PrivateImplementationType = new SimpleType(iface); break;
             }

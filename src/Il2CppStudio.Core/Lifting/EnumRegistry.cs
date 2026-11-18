@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using AsmResolver.DotNet;
 using AsmResolver.DotNet.Signatures;
+using E = AsmResolver.PE.DotNet.Metadata.Tables.ElementType;
 
 namespace Il2CppStudio.Core.Lifting;
 
@@ -17,6 +19,13 @@ public static class EnumRegistry
     public static bool TryGetUnderlying(TypeSignature t, out ValueKind kind)
     {
         kind = default;
-        return t is TypeDefOrRefSignature { IsValueType: true } && Kinds.TryGetValue(t.FullName, out kind);
+        if (t is not TypeDefOrRefSignature { IsValueType: true } tdr) return false;
+        if (tdr.Type is TypeDefinition { IsEnum: true } td)
+        {
+            var vf = td.Fields.FirstOrDefault(f => f.Name == "value__");
+            kind = vf?.Signature?.FieldType.ElementType is E.I8 or E.U8 ? ValueKind.I8 : ValueKind.I4;
+            return true;
+        }
+        return Kinds.TryGetValue(t.FullName, out kind);
     }
 }

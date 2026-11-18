@@ -1,3 +1,4 @@
+using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.Semantics;
 using ICSharpCode.Decompiler.TypeSystem;
@@ -36,7 +37,8 @@ public static class CompileHygiene
         foreach (var s in tree.Descendants.OfType<ExpressionStatement>().ToList())
             if (s.Expression is AssignmentExpression { Operator: AssignmentOperatorType.Assign } a
                 && (a.Left is ThisReferenceExpression && a.Right is ThisReferenceExpression
-                    || a.Left is IdentifierExpression l && a.Right is IdentifierExpression r && l.Identifier == r.Identifier))
+                    || a.Left is IdentifierExpression l && a.Right is IdentifierExpression r && l.Identifier == r.Identifier
+                    || a.Left is IdentifierExpression l2 && a.Right is DirectionExpression { Expression: IdentifierExpression r2 } && l2.Identifier == r2.Identifier))
                 s.Remove();
 
         foreach (var decl in tree.Descendants.OfType<VariableDeclarationStatement>().Where(d => d.Variables.Count == 1).ToList())
@@ -55,21 +57,34 @@ public static class CompileHygiene
 
     private static void MarkUnsafe(SyntaxTree tree)
     {
-        foreach (var member in tree.Descendants.OfType<EntityDeclaration>().Where(m => m is MethodDeclaration or ConstructorDeclaration or PropertyDeclaration or OperatorDeclaration))
+        foreach (var member in tree.Descendants.OfType<EntityDeclaration>().Where(m => m is MethodDeclaration or ConstructorDeclaration or PropertyDeclaration or OperatorDeclaration or IndexerDeclaration or DestructorDeclaration))
         {
             // Iterator bodies are always a safe context (unsafe modifier does not apply inside): use the safe escape.
             if (member.Descendants.Any(n => n is YieldReturnStatement or YieldBreakStatement)) { SafeIteratorReads(member); continue; }
             var usesPointers = UsesPointers(member);
-            if (usesPointers && !member.GetParent<TypeDeclaration>()!.Modifiers.HasFlag(Modifiers.Unsafe)) member.Modifiers |= Modifiers.Unsafe;
+            if (usesPointers && member.GetParent<TypeDeclaration>()?.Modifiers.HasFlag(Modifiers.Unsafe) != true) member.Modifiers |= Modifiers.Unsafe;
             else if (!usesPointers) member.Modifiers &= ~Modifiers.Unsafe;
         }
     }
 
     public static void RefreshUnsafe(SyntaxTree tree) => MarkUnsafe(tree);
 
-    private static bool UsesPointers(AstNode member) => member.Descendants.Any(n =>
-        n is PointerReferenceExpression || n is ComposedType { PointerRank: > 0 } || n is FixedStatement
-        || n is UnaryOperatorExpression { Operator: UnaryOperatorType.Dereference or UnaryOperatorType.AddressOf });
+    private static bool UsesPointers(AstNode member)
+    {
+        if (member.Descendants.Any(n =>
+            n is PointerReferenceExpression || n is ComposedType { PointerRank: > 0 } || n is FixedStatement
+            || n is UnaryOperatorExpression { Operator: UnaryOperatorType.Dereference or UnaryOperatorType.AddressOf }
+            || n is Expression e && e.Annotation<ResolveResult>()?.Type.Kind == TypeKind.Pointer))
+            return true;
+        if (member.GetParent<TypeDeclaration>() is not { } owner) return false;
+        var ptrFields = owner.Members.OfType<FieldDeclaration>()
+            .Where(f => f.ReturnType is ComposedType { PointerRank: > 0 })
+            .SelectMany(f => f.Variables.Select(v => v.Name))
+            .ToHashSet(StringComparer.Ordinal);
+        return ptrFields.Count > 0 && member.Descendants.Any(n =>
+            n is IdentifierExpression id && ptrFields.Contains(id.Identifier)
+            || n is MemberReferenceExpression mr && ptrFields.Contains(mr.MemberName));
+    }
 
     /// <summary><c>((T*)a)-&gt;f</c> → <c>NativeIntrinsics.Reinterpret&lt;T&gt;(a).f</c>; <c>*(T*)a</c> (read) → <c>NativeIntrinsics.Reinterpret&lt;T&gt;(a)</c>.</summary>
     private static void SafeIteratorReads(EntityDeclaration member)
@@ -101,16 +116,54 @@ public static class CompileHygiene
         var namespaces = tree.Descendants.OfType<UsingDeclaration>().Select(u => u.Namespace).ToList();
         if (namespaces.Count < 2) return;
         foreach (var id in tree.Descendants.OfType<IdentifierExpression>().ToList())
-            if (id.Parent is MemberReferenceExpression m && m.Target == id && KnownClashes.TryGetValue(id.Identifier, out var cns)
+        {
+            if (id.Parent is not MemberReferenceExpression m || m.Target != id) continue;
+            if (KnownClashes.TryGetValue(id.Identifier, out var cns)
                 && namespaces.Contains(cns) && namespaces.Contains("System")
                 && (id.Annotation<ICSharpCode.Decompiler.Semantics.ResolveResult>()?.Type is not { } it || it.Namespace == cns))
+            {
                 id.ReplaceWith(new TypeReferenceExpression(new MemberType(QualifierFor(cns), id.Identifier)));
+                continue;
+            }
+            if (id.Annotation<TypeResolveResult>()?.Type.GetDefinition() is { DeclaringTypeDefinition: null } idDef
+                && !string.IsNullOrEmpty(idDef.Namespace)
+                && idDef.ParentModule?.Compilation is { } idComp)
+            {
+                var encNs = string.Join('.', id.Ancestors.OfType<NamespaceDeclaration>().Reverse().Select(n => n.Name));
+                if (encNs != idDef.Namespace && !encNs.EndsWith("." + idDef.Namespace, StringComparison.Ordinal)
+                    && namespaces.Any(ns => ns != idDef.Namespace
+                        && idComp.Modules.Any(mod => mod.GetTypeDefinition(new TopLevelTypeName(ns, idDef.Name, idDef.TypeParameterCount)) is not null)))
+                    id.ReplaceWith(new TypeReferenceExpression(new MemberType(QualifierFor(idDef.Namespace), id.Identifier)));
+            }
+        }
         foreach (var st in tree.Descendants.OfType<SimpleType>().ToList())
         {
-            var resolved = st.Annotation<TypeResolveResult>()?.Type ?? (st.Parent as TypeReferenceExpression)?.Annotation<ICSharpCode.Decompiler.Semantics.ResolveResult>()?.Type;
+            var resolved = st.Annotation<TypeResolveResult>()?.Type
+                ?? (st.Parent as TypeReferenceExpression)?.Annotation<ICSharpCode.Decompiler.Semantics.ResolveResult>()?.Type
+                ?? (st.Parent is FieldDeclaration fd && fd.ReturnType == st ? (fd.GetSymbol() ?? fd.Variables.FirstOrDefault()?.GetSymbol()) is IField f ? f.Type : null : null)
+                ?? (st.Parent is PropertyDeclaration pd && pd.ReturnType == st && pd.GetSymbol() is IProperty p ? p.ReturnType : null)
+                ?? (st.Parent is MethodDeclaration md && md.ReturnType == st && md.GetSymbol() is IMethod m ? m.ReturnType : null)
+                ?? (st.Parent is ParameterDeclaration prm && prm.Type == st && prm.GetSymbol() is IParameter pr ? pr.Type : null)
+                ?? (st.Parent is VariableDeclarationStatement vds && vds.Type == st && vds.Variables.FirstOrDefault()?.GetSymbol() is IVariable vr ? vr.Type : null)
+                ?? (st.Parent is ObjectCreateExpression oce && oce.Type == st
+                    ? oce.Annotation<ICSharpCode.Decompiler.Semantics.ResolveResult>()?.Type
+                        ?? (oce.Parent is VariableInitializer { Parent: VariableDeclarationStatement vds2 }
+                            ? vds2.Variables.FirstOrDefault()?.GetSymbol() is IVariable vr2 ? vr2.Type : vds2.Type.Annotation<TypeResolveResult>()?.Type
+                            : null)
+                        ?? (oce.Parent is AssignmentExpression ae2 && ae2.Right == oce ? ae2.Left.Annotation<ICSharpCode.Decompiler.Semantics.ResolveResult>()?.Type : null)
+                    : null)
+                ?? (st.Parent is DefaultValueExpression dve && dve.Type == st ? dve.Annotation<ICSharpCode.Decompiler.Semantics.ResolveResult>()?.Type : null)
+                ?? (st.Parent is CastExpression ce && ce.Type == st ? ce.Annotation<ICSharpCode.Decompiler.Semantics.ResolveResult>()?.Type : null)
+                ?? (st.Parent is TypeOfExpression toe && toe.Type == st ? toe.Type.Annotation<TypeResolveResult>()?.Type : null);
             if (KnownClashes.TryGetValue(st.Identifier, out var ns) && (resolved is null || resolved.Namespace == ns) && namespaces.Contains(ns) && namespaces.Contains("System"))
             {
                 st.ReplaceWith(new MemberType(QualifierFor(ns), st.Identifier));   // unannotated reference: Unity's type is the one IL2CPP code uses
+                continue;
+            }
+            if (st.Identifier == "VideoPlayer" && namespaces.Contains("UnityEngine.Video") && namespaces.Contains("UnityEngine.Switch"))
+            {
+                var vns = resolved?.Namespace is { Length: > 0 } rns ? rns : "UnityEngine.Video";
+                st.ReplaceWith(new MemberType(QualifierFor(vns), st.Identifier));
                 continue;
             }
             if (resolved is not { } type || type.GetDefinition() is not { } def || def.DeclaringTypeDefinition is not null) continue;
@@ -119,11 +172,21 @@ public static class CompileHygiene
             var enclosingNs = string.Join('.', st.Ancestors.OfType<NamespaceDeclaration>().Reverse().Select(n => n.Name));
             if (enclosingNs == def.Namespace || enclosingNs.EndsWith("." + def.Namespace, StringComparison.Ordinal)) continue;
             var clash = namespaces.Any(ns => ns != def.Namespace
-                && compilation.FindType(new FullTypeName(new TopLevelTypeName(ns, def.Name, def.TypeParameterCount))).Kind != TypeKind.Unknown);
+                && compilation.Modules.Any(m => m.GetTypeDefinition(new TopLevelTypeName(ns, def.Name, def.TypeParameterCount)) is not null));
             if (!clash) continue;
             var qualified = new MemberType(QualifierFor(def.Namespace), st.Identifier) { IsDoubleColon = false };
             foreach (var arg in st.TypeArguments.ToList()) qualified.TypeArguments.Add(arg.Detach());
             st.ReplaceWith(qualified);
+        }
+        if (namespaces.Contains("System.IO") && namespaces.Contains("System.Linq"))
+        {
+            foreach (var inv in tree.Descendants.OfType<InvocationExpression>().ToList())
+                if (inv.Parent is not null && inv.Arguments.Count == 0
+                    && inv.Target is MemberReferenceExpression { MemberName: "ToArray" } mr && !mr.TypeArguments.Any())
+                {
+                    var linqEnum = new TypeReferenceExpression(new MemberType(new MemberType(new SimpleType("System"), "Linq"), "Enumerable"));
+                    inv.ReplaceWith(new InvocationExpression(new MemberReferenceExpression(linqEnum, "ToArray"), mr.Target.Detach()));
+                }
         }
     }
 

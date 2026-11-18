@@ -25,12 +25,32 @@ internal static class NativeEscapeSanitizer
             if (Unwrap(deref.Expression) is not CastExpression { Type: ComposedType { PointerRank: > 0 } ptrType }) continue;
             if (dir.Ancestors.OfType<Statement>().FirstOrDefault(s => s.Parent is BlockStatement) is not { } insertBefore) continue;
 
-            var baseType = ptrType.BaseType.Clone();
+            AstType slotType = StripOnePointer(ptrType);
             var localName = $"_outSlot{++slot}";
-            var decl = new VariableDeclarationStatement(baseType, localName, new DefaultValueExpression(baseType.Clone()));
-            insertBefore.Parent!.InsertChildBefore(insertBefore, decl, BlockStatement.StatementRole);
+            var decl = new VariableDeclarationStatement(slotType, localName, new DefaultValueExpression(slotType.Clone()));
+            var methodBody = dir.Ancestors.OfType<MethodDeclaration>().FirstOrDefault()?.Body;
+            if (methodBody is not null && !methodBody.IsNull && methodBody.Statements.FirstOrDefault() is { } firstStmt)
+                methodBody.InsertChildBefore(firstStmt, decl, BlockStatement.StatementRole);
+            else
+                insertBefore.Parent!.InsertChildBefore(insertBefore, decl, BlockStatement.StatementRole);
             dir.Expression = new IdentifierExpression(localName);
         }
+    }
+
+    private static AstType StripOnePointer(ComposedType ptrType)
+    {
+        if (ptrType.PointerRank > 1 || ptrType.HasNullableSpecifier || ptrType.ArraySpecifiers.Any())
+        {
+            var ct = new ComposedType
+            {
+                BaseType = ptrType.BaseType.Clone(),
+                HasNullableSpecifier = ptrType.HasNullableSpecifier,
+                PointerRank = Math.Max(0, ptrType.PointerRank - 1),
+            };
+            foreach (var spec in ptrType.ArraySpecifiers) ct.ArraySpecifiers.Add((ArraySpecifier)spec.Clone());
+            return ct;
+        }
+        return ptrType.BaseType.Clone();
     }
 
     private static void SanitizePointerExpressions(SyntaxTree tree, ref int slot)
@@ -41,18 +61,24 @@ internal static class NativeEscapeSanitizer
             if (!IsAsmCall(Unwrap(cast.Expression), out var arg)) continue;
             if (arg is not null && arg.Contains("ThisStructExpr", StringComparison.Ordinal))
             {
-                p.ReplaceWith(new MemberReferenceExpression(new ThisReferenceExpression(), p.MemberName));
+                var rep = new MemberReferenceExpression(new ThisReferenceExpression(), p.MemberName);
+                foreach (var ta in p.TypeArguments.ToList()) rep.TypeArguments.Add(ta.Detach());
+                p.ReplaceWith(rep);
                 continue;
             }
             if (p.Parent is AssignmentExpression a && a.Left == p && p.Ancestors.OfType<Statement>().FirstOrDefault(s => s.Parent is BlockStatement) is { } stmt)
             {
-                var baseType = ct.BaseType.Clone();
+                var baseType = StripOnePointer(ct);
                 var localName = $"_ptrSlot{++slot}";
                 stmt.Parent!.InsertChildBefore(stmt, new VariableDeclarationStatement(baseType, localName, new DefaultValueExpression(baseType.Clone())), BlockStatement.StatementRole);
-                p.ReplaceWith(new MemberReferenceExpression(new IdentifierExpression(localName), p.MemberName));
+                var rep = new MemberReferenceExpression(new IdentifierExpression(localName), p.MemberName);
+                foreach (var ta in p.TypeArguments.ToList()) rep.TypeArguments.Add(ta.Detach());
+                p.ReplaceWith(rep);
                 continue;
             }
-            p.ReplaceWith(new MemberReferenceExpression(new DefaultValueExpression(ct.BaseType.Clone()), p.MemberName));
+            var rep2 = new MemberReferenceExpression(new DefaultValueExpression(StripOnePointer(ct)), p.MemberName);
+            foreach (var ta in p.TypeArguments.ToList()) rep2.TypeArguments.Add(ta.Detach());
+            p.ReplaceWith(rep2);
         }
 
         foreach (var u in tree.Descendants.OfType<UnaryOperatorExpression>().Where(u => u.Operator == UnaryOperatorType.Dereference).ToList())
@@ -65,7 +91,7 @@ internal static class NativeEscapeSanitizer
                 else es.Remove();
                 continue;
             }
-            u.ReplaceWith(new DefaultValueExpression(ct.BaseType.Clone()));
+            u.ReplaceWith(new DefaultValueExpression(StripOnePointer(ct)));
         }
     }
 

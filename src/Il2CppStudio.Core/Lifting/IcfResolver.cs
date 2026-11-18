@@ -27,13 +27,21 @@ public static class IcfResolver
         var bestRank = int.MaxValue;
         foreach (var c in candidates)
         {
-            var decl = md.Methods[c.MethodIndex].DeclaringType;
+            var mdef = md.Methods[c.MethodIndex];
+            var decl = mdef.DeclaringType;
+            var mname = md.GetString(mdef.NameIndex);
             var depth = chain.IndexOf(decl);
             var rank = depth >= 0 ? depth
                 : names.TypeDefName(decl, true) == "System.Object" ? 1000
                 : c.MethodSpecIndex < 0 ? 2000 : 3000;
+            if (depth < 0)
+            {
+                if (!mname.StartsWith('.') && mname.Contains('.')) continue;
+                if (md.TypeDefinitions[decl].IsValueType) rank += 5000;
+                if (mdef.ParameterCount == 0) rank -= 200;
+            }
             // The first call on a freshly allocated object is its constructor chain.
-            if (receiverIsNewObject) rank += md.GetString(md.Methods[c.MethodIndex].NameIndex) == ".ctor" ? -10_000 : 0;
+            if (receiverIsNewObject) rank += mname == ".ctor" ? -10_000 : 0;
             if (rank < bestRank) { best = c; bestRank = rank; }
         }
         if (log is not null && best is not null && bestRank >= 1000 && !receiverIsNewObject)

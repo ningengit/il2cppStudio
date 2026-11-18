@@ -47,7 +47,7 @@ public sealed partial class Il2CppWorkspace
 
     public CppHeaderGenerator Cpp => _cpp ??= new CppHeaderGenerator(
         Metadata, Model, Registration, Names, AddressMap,
-        Disassembler is null ? null : idx => DisassembleMethod(Model.Types[Metadata.Methods[idx].DeclaringType].Methods.First(m => m.Index == idx)),
+        Disassembler is null && TextDisassembler is null ? null : idx => DisassembleMethod(Model.Types[Metadata.Methods[idx].DeclaringType].Methods.First(m => m.Index == idx)),
         BackupSources, IsEnhanced ? Backup : null);
 
     public BackupSourceIndex? BackupSources =>

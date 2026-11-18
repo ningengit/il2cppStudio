@@ -204,8 +204,10 @@ public sealed partial class Il2CppRegistration
                 if (name is null || !imageNames.Contains(name)) continue;
 
                 var fieldVa = start + (ulong)(i * Ptr);
-                // codeGenModulesCount is field 15 in v29.1+/v31 (unresolvedInstance/StaticCallPointers present), 13 before.
-                var fieldIndex = _md.Version.Major >= 31 ? 15 : 13;
+                // codeGenModulesCount index: v31+ = 15, v27-v29 = 13, v24.3-24.4 (genericAdjustorThunks) = 15, v24.2 = 14.
+                var fieldIndex = _md.Version.Major >= 31 ? 15
+                    : _md.Version.IsV24 ? PickV24CodeRegFieldIndex(fieldVa)
+                    : 13;
                 CodeRegistrationVa = fieldVa - (ulong)(fieldIndex * Ptr);
                 ParseCodeRegistration(arrayVa, (int)imageCount);
                 return;
@@ -213,6 +215,14 @@ public sealed partial class Il2CppRegistration
         }
         _sink.Error(DiagnosticCategory.Registration, DiagnosticCodes.RegistrationNotFound,
             "Il2CppCodeRegistration not found; method addresses are unavailable.", new() { File = Reader.Image.Path });
+    }
+
+    private int PickV24CodeRegFieldIndex(ulong fieldVa)
+    {
+        var cr15 = fieldVa - (ulong)(15 * Ptr);
+        var cnt = At(cr15, 2);
+        var ptr = At(cr15, 3);
+        return cnt > 0 && cnt < 5_000_000 && Reader.IsMapped(ptr) ? 15 : 14;
     }
 
     private void ParseCodeRegistration(ulong modulesArrayVa, int count)

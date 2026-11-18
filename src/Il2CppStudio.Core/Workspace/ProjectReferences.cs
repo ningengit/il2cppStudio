@@ -21,14 +21,14 @@ public static class ProjectReferences
         {
             if (BclReferenceProvider.IsBclAssembly(dep.Name) && bcl.Find(dep.Name) is { } pristine) { paths.Add(PublicizedCopy(pristine, referencesDir)); continue; }
             var target = Path.Combine(referencesDir, dep.ImageName);
-            if (!File.Exists(target))
+            var image = ws.Stubs.FindImage(dep.ImageName);
+            if (image >= 0 && ws.Decompiler.GetStubImage(image) is { } bytes)
             {
-                var image = ws.Stubs.FindImage(dep.ImageName);
-                if (image < 0 || ws.Decompiler.GetStubImage(image) is not { } bytes) continue;
                 Directory.CreateDirectory(referencesDir);
                 File.WriteAllBytes(target, ReferencePublicizer.Publicize(bytes));
             }
-            paths.Add(Path.GetFullPath(target));
+            if (File.Exists(target))
+                paths.Add(Path.GetFullPath(target));
         }
         return paths;
     }

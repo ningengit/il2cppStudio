@@ -34,6 +34,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
     Runtime.RuntimeHelperMap? helpers = null) : IMethodLifter
 {
     private readonly Dictionary<string, int> _typeIndex = MemoryResolver.BuildTypeIndex(sym.Model);
+    private readonly Dictionary<ulong, Arm64HelperKind> _helperCache = [];
 
     public LiftResult Lift(int methodIndex)
     {
@@ -63,9 +64,10 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             var ctx = new EmitContext(body.Instructions, stub.Module, stub.Intrinsics) { Log = notes.Add };
             var mem = new MemoryResolver(md, sym.Model, sym.Registration, sym.Names, stubs, stub.Module, _typeIndex, pointerSize: 8);
             var shape = MethodShape.Create(md, sym.Registration, stubs, mem, stub.Module, methodIndex, -1);
-            var tr = new Arm64BlockTranslator(sym, stubs, stub.Module, method, shape, mem, body, helpers, loc, sink, notes, start, end);
+            var tr = new Arm64BlockTranslator(sym, stubs, stub.Module, method, shape, mem, body, helpers, loc, sink, notes, start, end, _helperCache);
 
             var order = TopologicalOrder(blocks);
+            var emitted = order.ToHashSet();
             for (var bi = 0; bi < order.Count; bi++)
             {
                 var b = order[bi];
@@ -78,7 +80,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                     continue;
                 }
                 var nextInEmit = bi + 1 < order.Count ? order[bi + 1] : null;
-                tr.TranslateBlock(ctx, insns, b, nextInEmit);
+                tr.TranslateBlock(ctx, insns, b, nextInEmit, emitted);
             }
 
             if (body.Instructions.Count == 0 || body.Instructions[^1].OpCode.Code is not (CilCode.Ret or CilCode.Throw or CilCode.Br))
@@ -143,6 +145,73 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             return hasCall && idx >= insns.Count - 4;
         }
 
+        bool IsMathErrnoBranch(int i)
+        {
+            if (i <= 0) return false;
+            var ins = insns[i].Ins;
+            if (ins.Mnemonic != Arm64Mnemonic.B || ins.OperandCount != 2) return false;
+            if (((Arm64EnumOperand)ins.GetOperand(0)).AsConditional != Arm64ConditionalKind.VS) return false;
+            var prev = insns[i - 1].Ins;
+            return prev.Mnemonic is Arm64Mnemonic.FCMP or Arm64Mnemonic.FCMPE
+                && prev.OperandCount >= 2
+                && prev.GetOperand(0).Kind == Arm64OperandKind.Register
+                && prev.GetOperand(1).Kind == Arm64OperandKind.Register
+                && RawRegKey(((Arm64RegisterOperand)prev.GetOperand(0)).Value) == RawRegKey(((Arm64RegisterOperand)prev.GetOperand(1)).Value);
+        }
+
+        bool IsColdInitFallthrough(int branchIdx, ulong targetVa)
+        {
+            if (!indexAtVa.TryGetValue(targetVa, out var targetIdx) || targetIdx <= branchIdx + 1 || targetIdx - branchIdx > 10)
+                return false;
+            var bi = insns[branchIdx].Ins;
+            if (bi.Mnemonic is Arm64Mnemonic.TBNZ && bi.OperandCount >= 3 && ((Arm64ImmediateOperand)bi.GetOperand(1)).Value == 0)
+            {
+                var hasInitCall = false;
+                for (var k = branchIdx + 1; k < targetIdx; k++)
+                {
+                    var km = insns[k].Ins.Mnemonic;
+                    if (km is Arm64Mnemonic.RET or Arm64Mnemonic.BR or Arm64Mnemonic.B) return false;
+                    if (km == Arm64Mnemonic.BL)
+                    {
+                        if (sym.Map.SymbolAt(BranchTarget(insns[k].Address, insns[k].Ins, 0)) is not null) return false;
+                        hasInitCall = true;
+                    }
+                }
+                return hasInitCall && insns[targetIdx - 1].Ins.Mnemonic == Arm64Mnemonic.STRB;
+            }
+            if (bi.Mnemonic == Arm64Mnemonic.TBZ && bi.OperandCount >= 3 && ((Arm64ImmediateOperand)bi.GetOperand(1)).Value == 1)
+            {
+                if (insns[targetIdx - 1].Ins.Mnemonic == Arm64Mnemonic.BL
+                    && sym.Map.SymbolAt(BranchTarget(insns[targetIdx - 1].Address, insns[targetIdx - 1].Ins, 0)) is null
+                    && Enumerable.Range(branchIdx + 1, targetIdx - branchIdx - 2).All(k =>
+                        insns[k].Ins.Mnemonic is Arm64Mnemonic.LDR or Arm64Mnemonic.CBNZ))
+                    return true;
+                if (targetIdx == branchIdx + 3
+                    && insns[branchIdx + 1].Ins.Mnemonic == Arm64Mnemonic.LDR
+                    && insns[branchIdx + 2].Ins.Mnemonic == Arm64Mnemonic.CBZ)
+                {
+                    var coldVa = BranchTarget(insns[branchIdx + 2].Address, insns[branchIdx + 2].Ins, 1);
+                    if (indexAtVa.TryGetValue(coldVa, out var coldIdx)
+                        && insns[coldIdx].Ins.Mnemonic == Arm64Mnemonic.BL
+                        && sym.Map.SymbolAt(BranchTarget(insns[coldIdx].Address, insns[coldIdx].Ins, 0)) is null)
+                        return true;
+                }
+            }
+            if (bi.Mnemonic == Arm64Mnemonic.CBNZ)
+            {
+                if (insns[targetIdx - 1].Ins.Mnemonic != Arm64Mnemonic.BL) return false;
+                if (sym.Map.SymbolAt(BranchTarget(insns[targetIdx - 1].Address, insns[targetIdx - 1].Ins, 0)) is not null) return false;
+                for (var k = branchIdx + 1; k < targetIdx - 1; k++)
+                {
+                    var km = insns[k].Ins.Mnemonic;
+                    if (km is not (Arm64Mnemonic.LDR or Arm64Mnemonic.CBNZ)) return false;
+                    if (km == Arm64Mnemonic.CBNZ && BranchTarget(insns[k].Address, insns[k].Ins, 1) != targetVa) return false;
+                }
+                return true;
+            }
+            return false;
+        }
+
         var leaders = new SortedSet<int> { 0 };
         for (var i = 0; i < insns.Count; i++)
         {
@@ -152,6 +221,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             {
                 case Arm64Mnemonic.B when ins.OperandCount == 2: // b.cond
                 {
+                    if (IsMathErrnoBranch(i)) break;
                     var target = BranchTarget(pc, ins, 1);
                     if (!IsTrapAt(target) && indexAtVa.TryGetValue(target, out var ti))
                     {
@@ -205,42 +275,59 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             blockAtVa[b.Va] = b;
         }
 
+        // Mark cold trap blocks first so no unconditional or fallthrough edge ever targets a skipped trap block.
+        foreach (var b in blocks)
+        {
+            if (b.End <= b.Start || b == blocks[0]) continue;
+            var lastIdx = b.End - 1;
+            if (lastIdx - b.Start <= 2 && IsTrapAt(b.Va))
+                b.IsTrap = true;
+        }
+
         for (var bi = 0; bi < blocks.Count; bi++)
         {
             var b = blocks[bi];
-            if (b.End <= b.Start) continue;
-            // Trap detection: isolated cold block containing only trap BL / BRK / UDF
+            if (b.End <= b.Start || b.IsTrap) continue;
             var lastIdx = b.End - 1;
-            if (lastIdx - b.Start <= 2 && IsTrapAt(b.Va) && b != blocks[0])
-            {
-                b.IsTrap = true;
-                continue;
-            }
             var last = insns[lastIdx];
             var m = last.Ins.Mnemonic;
             if (m is Arm64Mnemonic.RET or Arm64Mnemonic.BR or Arm64Mnemonic.BRK or Arm64Mnemonic.UDF) continue;
             if (m == Arm64Mnemonic.B && last.Ins.OperandCount == 1)
             {
                 var target = BranchTarget(last.Address, last.Ins, 0);
-                if (target >= funcStart && target < funcEnd && blockAtVa.TryGetValue(target, out var tb))
+                if (target >= funcStart && target < funcEnd && blockAtVa.TryGetValue(target, out var tb) && !tb.IsTrap && !IsTrapAt(target))
                     b.Successors.Add(tb);
                 continue;
             }
             ulong condTarget = 0;
             var isCond = false;
-            if (m == Arm64Mnemonic.B && last.Ins.OperandCount == 2) { condTarget = BranchTarget(last.Address, last.Ins, 1); isCond = true; }
+            if (m == Arm64Mnemonic.B && last.Ins.OperandCount == 2 && !IsMathErrnoBranch(lastIdx))
+            { condTarget = BranchTarget(last.Address, last.Ins, 1); isCond = true; }
             else if (m is Arm64Mnemonic.CBZ or Arm64Mnemonic.CBNZ) { condTarget = BranchTarget(last.Address, last.Ins, 1); isCond = true; }
             else if (m is Arm64Mnemonic.TBZ or Arm64Mnemonic.TBNZ) { condTarget = BranchTarget(last.Address, last.Ins, 2); isCond = true; }
 
-            if (isCond && blockAtVa.TryGetValue(condTarget, out var cb) && !cb.IsTrap && !IsTrapAt(condTarget))
-                b.Successors.Add(cb);
-            if (bi + 1 < blocks.Count && !blocks[bi + 1].IsTrap)
+            var addedTarget = isCond && blockAtVa.TryGetValue(condTarget, out var cb) && !cb.IsTrap && !IsTrapAt(condTarget);
+            if (addedTarget)
+                b.Successors.Add(blockAtVa[condTarget]);
+            if (bi + 1 < blocks.Count && !blocks[bi + 1].IsTrap && !(addedTarget && IsColdInitFallthrough(lastIdx, condTarget)))
                 b.Successors.Add(blocks[bi + 1]);
         }
 
+        var reachable = new HashSet<Arm64Block>();
+        var q = new Queue<Arm64Block>();
+        reachable.Add(blocks[0]);
+        q.Enqueue(blocks[0]);
+        while (q.Count > 0)
+        {
+            var cur = q.Dequeue();
+            foreach (var s in cur.Successors)
+                if (!s.IsTrap && reachable.Add(s)) q.Enqueue(s);
+        }
+
         foreach (var b in blocks)
-            foreach (var s in b.Successors.Distinct())
-                s.Predecessors.Add(b);
+            if (reachable.Contains(b))
+                foreach (var s in b.Successors.Distinct())
+                    s.Predecessors.Add(b);
         return blocks;
     }
 
@@ -310,8 +397,8 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
     {
         if (ins.OperandCount == 0) return;
         var m = ins.Mnemonic;
-        var isStore = m is Arm64Mnemonic.STR or Arm64Mnemonic.STRB or Arm64Mnemonic.STRH or Arm64Mnemonic.STUR or Arm64Mnemonic.STP;
-        var isCompare = m is Arm64Mnemonic.CMP or Arm64Mnemonic.CMN or Arm64Mnemonic.TST or Arm64Mnemonic.FCMP or Arm64Mnemonic.FCMPE;
+        var isStore = m is Arm64Mnemonic.STR or Arm64Mnemonic.STRB or Arm64Mnemonic.STRH or Arm64Mnemonic.STUR or Arm64Mnemonic.STURB or Arm64Mnemonic.STURH or Arm64Mnemonic.STP;
+        var isCompare = m is Arm64Mnemonic.CMP or Arm64Mnemonic.CMN or Arm64Mnemonic.TST or Arm64Mnemonic.FCMP or Arm64Mnemonic.FCMPE or Arm64Mnemonic.CCMP or Arm64Mnemonic.FCCMP;
         var isBranch = m is Arm64Mnemonic.B or Arm64Mnemonic.CBZ or Arm64Mnemonic.CBNZ or Arm64Mnemonic.TBZ or Arm64Mnemonic.TBNZ or Arm64Mnemonic.BR or Arm64Mnemonic.BLR;
         var firstIsRead = isStore || isCompare || isBranch;
 
@@ -330,7 +417,12 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             {
                 var acc = ((Arm64MemoryOperand)op).Accessor;
                 var bk = RawRegKey(acc.BaseRegister);
-                if (bk >= 0 && bk != 99) reads.Add(bk);
+                if (bk >= 0 && bk != 99)
+                {
+                    reads.Add(bk);
+                    if (acc.IsPreIncrement || (ins.OperandCount > oi + 1 && ins.GetOperand(oi + 1).Kind == Arm64OperandKind.Immediate))
+                        defs.Add(bk);
+                }
                 if (acc.HasIndexRegister)
                 {
                     var ik = RawRegKey(acc.IndexRegister);

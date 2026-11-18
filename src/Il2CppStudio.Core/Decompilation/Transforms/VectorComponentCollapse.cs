@@ -44,9 +44,13 @@ public static class VectorComponentCollapse
                 if (!FieldOnly(target) || group.Select((g, k) => ReadsWritten(g.Value, target, names, k)).Any(x => x)) continue;
 
                 // The component sets cover every instance field of these structs, so a whole-value write is exact.
+                var declType = first.Member.Annotation<MemberResolveResult>()?.Member.DeclaringType;
                 var isAllZero = group.All(g => g.Value is PrimitiveExpression { Value: 0f or 0d or 0 });
+                SimpleType? matrixType = type == "UnityEngine.Matrix4x4" && isAllZero ? new SimpleType("Matrix4x4") : null;
+                if (matrixType is not null && declType is not null)
+                    matrixType.AddAnnotation(new TypeResolveResult(declType));
                 var replacement = WholeSource(group, names)
-                    ?? (type == "UnityEngine.Matrix4x4" ? (isAllZero ? new DefaultValueExpression(new SimpleType("Matrix4x4")) : null) : CtorFor(type, group.Select(g => g.Value)));
+                    ?? (type == "UnityEngine.Matrix4x4" ? (matrixType is not null ? new DefaultValueExpression(matrixType) : null) : CtorFor(type, declType, group.Select(g => g.Value)));
                 if (replacement is null) continue;
                 if (i > 0 && stmts[i - 1] is VariableDeclarationStatement { Variables.Count: 1 } decl && target is IdentifierExpression id
                     && decl.Variables.Single().Name == id.Identifier && decl.Variables.Single().Initializer is DefaultValueExpression)
@@ -83,8 +87,12 @@ public static class VectorComponentCollapse
         return src.Clone();
     }
 
-    private static Expression CtorFor(string type, IEnumerable<Expression> values) =>
-        new ObjectCreateExpression(new SimpleType(type[(type.LastIndexOf('.') + 1)..]), values.Select(v => v.Clone()));
+    private static Expression CtorFor(string type, IType? declType, IEnumerable<Expression> values)
+    {
+        var st = new SimpleType(type[(type.LastIndexOf('.') + 1)..]);
+        if (declType is not null) st.AddAnnotation(new TypeResolveResult(declType));
+        return new ObjectCreateExpression(st, values.Select(v => v.Clone()));
+    }
 
     private static bool FieldOnly(Expression e) => e switch
     {

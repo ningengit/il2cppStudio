@@ -37,8 +37,9 @@ public sealed partial class StateMachineInfo
         foreach (var (field, name) in fields)
         {
             if (HoistedLocal().Match(name) is { Success: true } h) info.HoistedLocals[name] = (h.Groups["name"].Value, field.ReturnType);
-            // <>8__N: lambda display-class instance hoisted into the state machine; the output names it by its sanitized field name.
-            else if (name.StartsWith("<>8__", StringComparison.Ordinal) || name.StartsWith("__8__", StringComparison.Ordinal))
+            // <>8__N / <>7__wrapN: lambda display-class or foreach/using enumerator locals hoisted into the state machine.
+            else if (name.StartsWith("<>8__", StringComparison.Ordinal) || name.StartsWith("__8__", StringComparison.Ordinal)
+                || name.StartsWith("<>7__wrap", StringComparison.Ordinal) || name.StartsWith("__7__wrap", StringComparison.Ordinal))
             {
                 var sanitized = name.Replace('<', '_').Replace('>', '_');
                 info.ClosureLocals[sanitized] = field.ReturnType;

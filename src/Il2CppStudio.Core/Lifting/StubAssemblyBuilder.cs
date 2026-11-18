@@ -162,6 +162,14 @@ public sealed class StubAssemblyBuilder
         var module = new ModuleDefinition(ImageName(imageIndex), corlib);
         var assembly = new AssemblyDefinition(asmName, new Version(asmDef.Major, asmDef.Minor, asmDef.Build, asmDef.Revision));
         assembly.Modules.Add(module);
+        for (var r = 0; r < asmDef.ReferencedAssemblyCount; r++)
+        {
+            var ri = asmDef.ReferencedAssemblyStart + r;
+            if ((uint)ri < (uint)_md.ReferencedAssemblies.Length
+                && (uint)_md.ReferencedAssemblies[ri] is var refAsmIdx && refAsmIdx < (uint)_md.Assemblies.Length
+                && _md.Assemblies[(int)refAsmIdx].ImageIndex is >= 0 and var refImg && refImg != imageIndex)
+                _ = AssemblyRefFor(module, refImg);
+        }
 
         var start = img.TypeStart;
         var end = img.TypeStart + (int)img.TypeCount;
@@ -171,7 +179,7 @@ public sealed class StubAssemblyBuilder
         {
             var def = _md.TypeDefinitions[t];
             var tm = _model.Types[t];
-            var td = new TypeDefinition(tm.DeclaringType is null ? tm.Namespace : "", tm.Name, (TypeAttributes)def.Flags);
+            var td = new TypeDefinition(tm.DeclaringType is null && !string.IsNullOrEmpty(tm.Namespace) ? tm.Namespace : null, tm.Name, (TypeAttributes)def.Flags);
             _typeDefs[t] = td;
             AddGenericParameters(td.GenericParameters, def.GenericContainerIndex);
         }
@@ -214,17 +222,28 @@ public sealed class StubAssemblyBuilder
             _sink.Warn(DiagnosticCategory.SignatureParsing, DiagnosticCodes.SignatureMismatch, $"Base/interface of {_model.Types[t].FullName}: {ex.Message}", new() { TypeName = _model.Types[t].FullName });
         }
 
+        var missingExplicitOffset = false;
         for (var f = 0; f < def.FieldCount; f++)
         {
             var fi = def.FieldStart + f;
             var fd = _md.Fields[fi];
             var attrs = _reg is not null && _reg.TryGetType(fd.TypeIndex, out var ft) ? (FieldAttributes)ft.Attrs : FieldAttributes.Public;
-            var field = new FieldDefinition(_md.GetString(fd.NameIndex), attrs & ~FieldAttributes.HasFieldRva, ToSig(module, fd.TypeIndex));
+            var cleanAttrs = attrs & ~FieldAttributes.HasFieldRva;
+            if ((cleanAttrs & FieldAttributes.Literal) == 0) cleanAttrs &= ~FieldAttributes.InitOnly;
+            var field = new FieldDefinition(_md.GetString(fd.NameIndex), cleanAttrs, ToSig(module, fd.TypeIndex));
             if ((attrs & FieldAttributes.HasDefault) != 0 && Constant(fi) is { } constant) field.Constant = constant;
             else field.Attributes &= ~FieldAttributes.HasDefault;
+            if (td.IsExplicitLayout && (field.Attributes & FieldAttributes.Static) == 0)
+            {
+                if (_reg is not null && _reg.GetFieldOffset(t, f) is >= 0 and var rawOff)
+                    field.FieldOffset = Math.Max(0, rawOff - (def.IsValueType ? _reg.Ptr * 2 : 0));
+                else
+                    missingExplicitOffset = true;
+            }
             _fieldDefs[fi] = field;
             td.Fields.Add(field);
         }
+        if (missingExplicitOffset) td.Attributes &= ~TypeAttributes.ExplicitLayout;
 
         for (var m = 0; m < def.MethodCount; m++)
         {
@@ -235,6 +254,7 @@ public sealed class StubAssemblyBuilder
         }
         if (_reg is null) RestoreInterfaceOverrides(module, def, td);
 
+        var addedDefaultMember = false;
         for (var p = 0; p < def.PropertyCount; p++)
         {
             var pd = _md.Properties[def.PropertyStart + p];
@@ -249,17 +269,66 @@ public sealed class StubAssemblyBuilder
             if (getter is not null) prop.Semantics.Add(new MethodSemantics(getter, MethodSemanticsAttributes.Getter));
             if (setter is not null) prop.Semantics.Add(new MethodSemantics(setter, MethodSemanticsAttributes.Setter));
             td.Properties.Add(prop);
+            if (indexParams.Count > 0 && !addedDefaultMember && !prop.Name!.Value.Contains('.'))
+            {
+                AddDefaultMemberAttribute(module, td, prop.Name.Value);
+                addedDefaultMember = true;
+            }
         }
+
+        var boundAccessors = td.Properties.SelectMany(p => p.Semantics).Select(s => s.Method).ToHashSet();
+        var itemGetters = td.Methods.Where(m => !m.IsStatic && m.Name?.Value == "get_Item"
+            && m.Signature is { ParameterTypes.Count: >= 1 } && !boundAccessors.Contains(m)).ToList();
+        var itemSetters = td.Methods.Where(m => !m.IsStatic && m.Name?.Value == "set_Item"
+            && m.Signature is { ParameterTypes.Count: >= 2 } && !boundAccessors.Contains(m)).ToList();
+        var synthesizedIndexer = false;
+        foreach (var getter in itemGetters)
+        {
+            var gSig = getter.Signature!;
+            var setter = itemSetters.FirstOrDefault(s =>
+                s.Signature!.ParameterTypes.Count == gSig.ParameterTypes.Count + 1
+                && Enumerable.Range(0, gSig.ParameterTypes.Count).All(i => SignatureComparer.Default.Equals(s.Signature.ParameterTypes[i], gSig.ParameterTypes[i]))
+                && SignatureComparer.Default.Equals(s.Signature.ParameterTypes[^1], gSig.ReturnType));
+            if (setter is not null) itemSetters.Remove(setter);
+            var prop = new PropertyDefinition("Item", PropertyAttributes.None,
+                PropertySignature.CreateInstance(gSig.ReturnType, gSig.ParameterTypes.ToList()));
+            prop.Semantics.Add(new MethodSemantics(getter, MethodSemanticsAttributes.Getter));
+            if (setter is not null) prop.Semantics.Add(new MethodSemantics(setter, MethodSemanticsAttributes.Setter));
+            td.Properties.Add(prop);
+            synthesizedIndexer = true;
+        }
+        foreach (var setter in itemSetters)
+        {
+            var sSig = setter.Signature!;
+            var prop = new PropertyDefinition("Item", PropertyAttributes.None,
+                PropertySignature.CreateInstance(sSig.ParameterTypes[^1], sSig.ParameterTypes.Take(sSig.ParameterTypes.Count - 1).ToList()));
+            prop.Semantics.Add(new MethodSemantics(setter, MethodSemanticsAttributes.Setter));
+            td.Properties.Add(prop);
+            synthesizedIndexer = true;
+        }
+        if (synthesizedIndexer && !addedDefaultMember)
+            AddDefaultMemberAttribute(module, td, "Item");
 
         for (var e = 0; e < def.EventCount; e++)
         {
             var ed = _md.Events[def.EventStart + e];
             if (ToTypeDefOrRef(module, ed.TypeIndex) is not { } evType) continue;
-            var ev = new EventDefinition(_md.GetString(ed.NameIndex), 0, evType);
+            var evName = _md.GetString(ed.NameIndex);
+            var ev = new EventDefinition(evName, 0, evType);
             if (ed.Add >= 0 && _methodDefs[def.MethodStart + ed.Add] is { } add) ev.Semantics.Add(new MethodSemantics(add, MethodSemanticsAttributes.AddOn));
             if (ed.Remove >= 0 && _methodDefs[def.MethodStart + ed.Remove] is { } rem) ev.Semantics.Add(new MethodSemantics(rem, MethodSemanticsAttributes.RemoveOn));
-            if (ev.Semantics.Count > 0) td.Events.Add(ev);
+            if (ev.Semantics.Count > 0 && !td.Fields.Any(f => f.Name == evName)) td.Events.Add(ev);
         }
+    }
+
+    private static void AddDefaultMemberAttribute(ModuleDefinition module, TypeDefinition td, string memberName)
+    {
+        if (td.CustomAttributes.Any(a => a.Constructor?.DeclaringType?.Name == "DefaultMemberAttribute")) return;
+        var f = module.CorLibTypeFactory;
+        var dmType = new TypeReference(module, f.CorLibScope, "System.Reflection", "DefaultMemberAttribute");
+        var dmCtor = new MemberReference(dmType, ".ctor", MethodSignature.CreateInstance(f.Void, [f.String]));
+        var caSig = new CustomAttributeSignature(new CustomAttributeArgument(f.String, memberName));
+        td.CustomAttributes.Add(new CustomAttribute(dmCtor, caSig));
     }
 
     private MethodDefinition BuildMethod(ModuleDefinition module, int mi)
@@ -498,7 +567,7 @@ public sealed class StubAssemblyBuilder
                 if (image < 0) return null;
                 scope = AssemblyRefFor(ctx, image);
             }
-            var tr = new TypeReference(ctx, scope, tm.DeclaringType is null ? tm.Namespace : null, tm.Name);
+            var tr = new TypeReference(ctx, scope, tm.DeclaringType is null && !string.IsNullOrEmpty(tm.Namespace) ? tm.Namespace : null, tm.Name);
             _typeRefCache[(ctx, typeDefIndex)] = tr;
             return tr;
         }
@@ -554,8 +623,25 @@ public sealed class StubAssemblyBuilder
                 if (spec.MethodInstIndex >= 0 && spec.MethodInstIndex < _reg.GenericInstVas.Count) methodInst = _reg.ReadGenericInst(_reg.GenericInstVas[spec.MethodInstIndex]);
             }
 
+            TypeSignature[]? FallbackGenericArgs(int containerIdx)
+            {
+                if ((uint)containerIdx >= (uint)_md.GenericContainers.Length) return null;
+                var gc = _md.GenericContainers[containerIdx];
+                if (gc.TypeArgc <= 0) return null;
+                var arr = new TypeSignature[gc.TypeArgc];
+                for (var i = 0; i < gc.TypeArgc; i++)
+                {
+                    var gp = _md.GenericParameters[gc.GenericParameterStart + i];
+                    arr[i] = (gp.Flags & 0x0008) != 0 ? ctx.CorLibTypeFactory.Int32 : ctx.CorLibTypeFactory.Object;
+                }
+                return arr;
+            }
+
+            var declDef = _md.TypeDefinitions[md.DeclaringType];
+            IReadOnlyList<TypeSignature>? fallbackClassArgs = classInst is null ? FallbackGenericArgs(declDef.GenericContainerIndex) : null;
+
             IMethodDefOrRef baseMethod;
-            if (defModule == ctx && classInst is null) baseMethod = def;
+            if (defModule == ctx && classInst is null && fallbackClassArgs is null) baseMethod = def;
             else
             {
                 IMemberRefParent parent;
@@ -563,13 +649,19 @@ public sealed class StubAssemblyBuilder
                 if (classInst is not null)
                     parent = new TypeSpecification(new GenericInstanceTypeSignature(typeRef, IsValueType(md.DeclaringType),
                         classInst.TypeArgVas.Select(v => ToSig(ctx, _reg!.GetTypeAt(v)))));
+                else if (fallbackClassArgs is not null)
+                    parent = new TypeSpecification(new GenericInstanceTypeSignature(typeRef, IsValueType(md.DeclaringType), fallbackClassArgs));
                 else parent = (IMemberRefParent)typeRef;
                 baseMethod = new MemberReference(parent, def.Name, RebuildSignature(ctx, methodIndex));
             }
 
+            IReadOnlyList<TypeSignature>? fallbackMethodArgs = methodInst is null ? FallbackGenericArgs(md.GenericContainerIndex) : null;
+
             IMethodDescriptor result = methodInst is not null
                 ? new MethodSpecification(baseMethod, new GenericInstanceMethodSignature(methodInst.TypeArgVas.Select(v => ToSig(ctx, _reg!.GetTypeAt(v)))))
-                : baseMethod;
+                : fallbackMethodArgs is not null
+                    ? new MethodSpecification(baseMethod, new GenericInstanceMethodSignature(fallbackMethodArgs))
+                    : baseMethod;
             _methodRefCache[(ctx, methodIndex, specIndex)] = result;
             return result;
         }

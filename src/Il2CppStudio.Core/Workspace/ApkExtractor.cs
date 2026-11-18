@@ -40,7 +40,7 @@ public static class ApkExtractor
 
         var cache = Path.Combine(Path.GetTempPath(), "Il2CppStudio", "apk",
             $"{Path.GetFileName(apkPath)}-{info.Length:X}-{info.LastWriteTimeUtc.Ticks:X}");
-        if (File.Exists(Path.Combine(cache, ".complete")))
+        if (File.Exists(Path.Combine(cache, ".complete")) && HasMetadata(cache))
             return cache;
 
         Directory.CreateDirectory(cache);
@@ -89,12 +89,16 @@ public static class ApkExtractor
             return null;
         }
 
-        File.WriteAllText(Path.Combine(cache, ".complete"), apkPath);
+        if (count > 0 && HasMetadata(cache))
+            File.WriteAllText(Path.Combine(cache, ".complete"), apkPath);
         sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.ExtractionCompleted,
             $"APK: extracted {count} IL2CPP files from '{Path.GetFileName(apkPath)}' to '{cache}'.",
             new() { File = apkPath });
         return cache;
     }
+
+    private static bool HasMetadata(string dir) =>
+        Directory.Exists(dir) && Directory.EnumerateFiles(dir, "global-metadata.dat", SearchOption.AllDirectories).Any();
 
     private static int ExtractFromArchive(ZipArchive archive, string cache, string fullCachePrefix)
     {

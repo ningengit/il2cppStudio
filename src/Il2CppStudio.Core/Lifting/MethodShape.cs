@@ -19,7 +19,7 @@ public sealed record MethodShape(
     public int ThisPosition => HasReturnBuffer ? 1 : 0;
 
     public static MethodShape Create(GlobalMetadata md, Il2CppRegistration reg, StubAssemblyBuilder stubs, MemoryResolver mem,
-        ModuleDefinition ctx, int methodIndex, int specIndex)
+        ModuleDefinition ctx, int methodIndex, int specIndex, bool forCallSite = false)
     {
         var def = md.Methods[methodIndex];
         var classArgs = new List<TypeSignature>();
@@ -35,8 +35,15 @@ public sealed record MethodShape(
 
         TypeSignature Inst(TypeSignature t) => t switch
         {
-            GenericParameterSignature { ParameterType: GenericParameterType.Type } g when g.Index < classArgs.Count => classArgs[g.Index],
-            GenericParameterSignature { ParameterType: GenericParameterType.Method } g when g.Index < methodArgs.Count => methodArgs[g.Index],
+            GenericParameterSignature { ParameterType: GenericParameterType.Type } g =>
+                (uint)g.Index < (uint)classArgs.Count ? classArgs[g.Index] : (forCallSite ? ctx.CorLibTypeFactory.Object : t),
+            GenericParameterSignature { ParameterType: GenericParameterType.Method } g =>
+                (uint)g.Index < (uint)methodArgs.Count ? methodArgs[g.Index] : (forCallSite ? ctx.CorLibTypeFactory.Object : t),
+            SzArrayTypeSignature sz => Inst(sz.BaseType).MakeSzArrayType(),
+            ByReferenceTypeSignature br => Inst(br.BaseType).MakeByReferenceType(),
+            PointerTypeSignature ptr => Inst(ptr.BaseType).MakePointerType(),
+            ArrayTypeSignature arr => new ArrayTypeSignature(Inst(arr.BaseType), arr.Rank),
+            GenericInstanceTypeSignature gi => new GenericInstanceTypeSignature(gi.GenericType, gi.IsValueType, gi.TypeArguments.Select(Inst).ToArray()),
             _ => t,
         };
 
