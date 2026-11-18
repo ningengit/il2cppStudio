@@ -12,7 +12,11 @@ namespace Il2CppStudio.Core.Binary;
 internal sealed class ElfRelocator(ElfBinaryImage image, byte[] data)
 {
     private const long DtNull = 0, DtStrTab = 5, DtSymTab = 6, DtRela = 7, DtRelaSz = 8, DtRel = 17, DtRelSz = 18, DtJmpRel = 23, DtPltRelSz = 2,
-        DtPltRel = 20, DtRelrSz = 35, DtRelr = 36, DtAndroidRela = 0x60000011, DtAndroidRel = 0x6000000F, DtGnuHash = 0x6FFFFEF5, DtHash = 4;
+        DtPltRel = 20, DtRelrSz = 35, DtRelr = 36, DtAndroidRela = 0x60000011, DtAndroidRel = 0x6000000F, DtGnuHash = 0x6FFFFEF5, DtHash = 4,
+        DtSceJmpRel = 0x61000029, DtScePltRelSz = 0x6100002D,
+        DtSceRela = 0x6100002F, DtSceRelaSz = 0x61000031,
+        DtSceStrTab = 0x61000035, DtSceStrSz = 0x61000037,
+        DtSceSymTab = 0x61000039, DtSceSymTabSz = 0x6100003F;
 
     private readonly Dictionary<long, ulong> _dyn = [];
     private bool W64 => image.Is64Bit;
@@ -34,10 +38,29 @@ internal sealed class ElfRelocator(ElfBinaryImage image, byte[] data)
         if (_dyn.TryGetValue(DtJmpRel, out var jmp) && _dyn.TryGetValue(DtPltRelSz, out var jmpSz))
             n += Table(jmp, jmpSz, _dyn.TryGetValue(DtPltRel, out var kind) ? kind == DtRela : relaLike);
         if (_dyn.TryGetValue(DtRelr, out var relr) && _dyn.TryGetValue(DtRelrSz, out var relrSz)) n += Relr(relr, relrSz);
+        if (image.DynLibData is not null)
+        {
+            if (_dyn.TryGetValue(DtSceRela, out var sceRela) && _dyn.TryGetValue(DtSceRelaSz, out var sceRelaSz)
+                && ResolveDynOffset(sceRela, true, out var sceRelaOff))
+                n += TableAtOffset(sceRelaOff, sceRelaSz, withAddend: true);
+            if (_dyn.TryGetValue(DtSceJmpRel, out var sceJmp) && _dyn.TryGetValue(DtScePltRelSz, out var sceJmpSz)
+                && ResolveDynOffset(sceJmp, true, out var sceJmpOff))
+                n += TableAtOffset(sceJmpOff, sceJmpSz, withAddend: true);
+        }
         if (_dyn.ContainsKey(DtAndroidRela) || _dyn.ContainsKey(DtAndroidRel))
             sink.Warn(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatUnsupported,
                 "Android packed relocations (APS2) are present and not decoded; some data pointers may read as 0.", new() { File = image.Path });
         return n;
+    }
+
+    private bool ResolveDynOffset(ulong val, bool isSceDynLibOffset, out long off)
+    {
+        if (isSceDynLibOffset && image.DynLibData is { } dld)
+        {
+            off = dld.Offset + (long)val;
+            return off >= dld.Offset && off < dld.Offset + (long)dld.Size && off < data.Length;
+        }
+        return ToOffset(val, out off);
     }
 
     private bool ToOffset(ulong va, out long off)
@@ -48,9 +71,11 @@ internal sealed class ElfRelocator(ElfBinaryImage image, byte[] data)
         return false;
     }
 
-    private int Table(ulong va, ulong size, bool withAddend)
+    private int Table(ulong va, ulong size, bool withAddend) =>
+        ToOffset(va, out var off) ? TableAtOffset(off, size, withAddend) : 0;
+
+    private int TableAtOffset(long off, ulong size, bool withAddend)
     {
-        if (!ToOffset(va, out var off)) return 0;
         var ent = withAddend ? 3 * Ptr : 2 * Ptr;
         var applied = 0;
         for (var p = off; p + ent <= off + (long)size && p + ent <= data.Length; p += ent)
@@ -82,25 +107,59 @@ internal sealed class ElfRelocator(ElfBinaryImage image, byte[] data)
     /// <summary>RELR: implicit-addend relative relocations; at load base 0 the stored values are already final.</summary>
     private int Relr(ulong va, ulong size) => ToOffset(va, out _) ? (int)(size / (ulong)Ptr) : 0;
 
+    private bool TryGetSymTabOffset(out long symOff, out long symEnd)
+    {
+        if (_dyn.TryGetValue(DtSymTab, out var symtab) && ToOffset(symtab, out symOff))
+        {
+            var dynsym = image.Sections.FirstOrDefault(s => s.Name == ".dynsym");
+            if (dynsym is not null) { symEnd = symOff + dynsym.RawSize; return true; }
+            if (_dyn.TryGetValue(DtStrTab, out var strtab) && ToOffset(strtab, out var strOff) && strOff > symOff)
+            {
+                symEnd = strOff;
+                return true;
+            }
+            symEnd = data.Length;
+            return true;
+        }
+        if (image.DynLibData is not null && _dyn.TryGetValue(DtSceSymTab, out var sceSym)
+            && ResolveDynOffset(sceSym, true, out symOff))
+        {
+            symEnd = _dyn.TryGetValue(DtSceSymTabSz, out var sceSz) ? symOff + (long)sceSz : data.Length;
+            return true;
+        }
+        symOff = symEnd = 0;
+        return false;
+    }
+
     private ulong? SymbolValue(int index)
     {
-        if (index == 0 || !_dyn.TryGetValue(DtSymTab, out var symtab) || !ToOffset(symtab, out var off)) return null;
-        var p = off + (long)index * (W64 ? 24 : 16);
-        if (p + (W64 ? 24 : 16) > data.Length) return null;
+        if (index == 0 || !TryGetSymTabOffset(out var off, out var end)) return null;
+        var entSize = W64 ? 24 : 16;
+        var p = off + (long)index * entSize;
+        if (p < off || p + entSize > end || p + entSize > data.Length) return null;
         return W64 ? image.Word(p + 8) : image.Word(p + 4);
     }
 
     /// <summary>Defined STT_FUNC dynamic symbols (exports such as il2cpp_object_new).</summary>
     public IEnumerable<(string Name, ulong Rva)> DynamicFunctionSymbols()
     {
-        if (!_dyn.TryGetValue(DtSymTab, out var symtab) || !_dyn.TryGetValue(DtStrTab, out var strtab)
-            || !ToOffset(symtab, out var symOff) || !ToOffset(strtab, out var strOff)) yield break;
+        if (!TryGetSymTabOffset(out var symOff, out var end)) yield break;
+        long strOff, strEnd;
+        if (_dyn.TryGetValue(DtStrTab, out var strtab) && ToOffset(strtab, out strOff))
+        {
+            var dynstr = image.Sections.FirstOrDefault(s => s.Name == ".dynstr");
+            strEnd = dynstr is not null ? strOff + dynstr.RawSize : data.Length;
+        }
+        else if (image.DynLibData is not null && _dyn.TryGetValue(DtSceStrTab, out var sceStr)
+            && ResolveDynOffset(sceStr, true, out strOff))
+        {
+            strEnd = _dyn.TryGetValue(DtSceStrSz, out var sceStrSz) ? strOff + (long)sceStrSz : data.Length;
+        }
+        else
+        {
+            yield break;
+        }
         var entSize = W64 ? 24 : 16;
-        // Prefer the .dynsym section size; otherwise the table usually ends where the string table starts.
-        var dynsym = image.Sections.FirstOrDefault(s => s.Name == ".dynsym");
-        var dynstr = image.Sections.FirstOrDefault(s => s.Name == ".dynstr");
-        var end = dynsym is not null ? symOff + dynsym.RawSize : strOff > symOff ? strOff : symOff;
-        var strEnd = dynstr is not null ? strOff + dynstr.RawSize : data.Length;
         for (var p = symOff + entSize; p + entSize <= end && p + entSize <= data.Length; p += entSize)
         {
             var name = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan((int)p));

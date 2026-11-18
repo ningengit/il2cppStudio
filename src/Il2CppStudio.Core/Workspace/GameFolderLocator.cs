@@ -12,7 +12,7 @@ public sealed record GameFiles(string Root, string? BinaryPath, string? Metadata
 /// </summary>
 public static class GameFolderLocator
 {
-    private static readonly string[] BinaryNames = ["GameAssembly.dll", "GameAssembly.so", "libil2cpp.so"];
+    private static readonly string[] BinaryNames = ["GameAssembly.dll", "GameAssembly.so", "libil2cpp.so", "Il2CppUserAssemblies.prx"];
 
     public static GameFiles Locate(string path, IDiagnosticSink sink) => LocateCore(path, sink, explicitBinary: null);
 
@@ -26,6 +26,13 @@ public static class GameFolderLocator
             {
                 return ApkExtractor.Extract(path, sink) is { } extractedApk
                     ? LocateCore(extractedApk, sink, explicitBinary: null)
+                    : new GameFiles(path, null, null, null, null);
+            }
+
+            if (Ps4PkgExtractor.IsPkgPath(path))
+            {
+                return Ps4PkgExtractor.Extract(path, sink) is { } extractedPkg
+                    ? LocateCore(extractedPkg, sink, explicitBinary: null)
                     : new GameFiles(path, null, null, null, null);
             }
 
@@ -61,6 +68,9 @@ public static class GameFolderLocator
         binary ??= new[] { Path.Combine(path, "main"), Path.Combine(path, "exefs", "main"), Path.Combine(path, "0", "main") }
             .Concat(Directory.EnumerateFiles(path, "main", SearchOption.AllDirectories))
             .FirstOrDefault(p => File.Exists(p) && ConsoleBinaryPluginRegistry.CanOpen(p));
+        binary ??= new[] { Path.Combine(path, "Media", "Modules", "Il2CppUserAssemblies.prx"), Path.Combine(path, "Il2CppUserAssemblies.prx") }
+            .Concat(Directory.EnumerateFiles(path, "Il2CppUserAssemblies.prx", SearchOption.AllDirectories))
+            .FirstOrDefault(p => File.Exists(p) && (ElfBinaryImage.IsElf(p) || ConsoleBinaryPluginRegistry.CanOpen(p)));
 
         // WebGL: no native binary; metadata lives inside the (optionally brotli/gzip-compressed) UnityWebData container.
         string? wasm = null;
@@ -115,6 +125,9 @@ public static class GameFolderLocator
         var switchTitleData = Path.Combine(path, "1", "Data");
         if (Directory.Exists(switchTitleData))
             return switchTitleData;
+        var ps4Media = Path.Combine(path, "Media");
+        if (Directory.Exists(ps4Media) && (File.Exists(Path.Combine(ps4Media, "globalgamemanagers")) || File.Exists(Path.Combine(ps4Media, "data.unity3d"))))
+            return ps4Media;
         if (searchRoot != path)
             return searchRoot;
         if (metadata is not null)
@@ -133,12 +146,14 @@ public static class GameFolderLocator
     private static string FindAncestorGameRoot(string dir)
     {
         var cur = dir;
-        for (var i = 0; i < 3 && cur is not null; i++)
+        for (var i = 0; i < 4 && cur is not null; i++)
         {
             if (Directory.EnumerateDirectories(cur, "*_Data").Any()
                 || Directory.Exists(Path.Combine(cur, "assets", "bin", "Data"))
                 || Directory.Exists(Path.Combine(cur, "romfs", "Data"))
                 || Directory.Exists(Path.Combine(cur, "1", "Data"))
+                || Directory.Exists(Path.Combine(cur, "Media", "Metadata"))
+                || File.Exists(Path.Combine(cur, "Media", "globalgamemanagers"))
                 || Directory.EnumerateFiles(cur, "global-metadata.dat", SearchOption.AllDirectories).Any())
                 return cur;
             cur = Directory.GetParent(cur)?.FullName;

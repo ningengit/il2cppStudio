@@ -191,4 +191,54 @@ public sealed class PlatformMatrixTests
         var cs = ws.Render(type, clear, CodeView.CSharp);
         Assert.Contains("PlayerWork.AzukariyaData.Clear()", cs, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Ps4RealBuild_UnpacksSelfRecoversRegistrationAndDecompiles()
+    {
+        var dir = Build("Unity Game Ps4 template")!;
+        using var ws = Il2CppWorkspace.Load(dir, Sink());
+        WorkspaceSetup.Attach(ws);
+        var elf = Assert.IsType<ElfBinaryImage>(ws.Binary);
+        Assert.Equal(CpuArchitecture.X64, elf.Architecture);
+        Assert.True(elf.AppliedRelocations > 100000);
+        Assert.Equal(Core.Lifting.NativeAbi.SysV, ws.Abi);
+        Assert.NotNull(ws.Registration);
+        Assert.True(ws.Registration!.IsComplete);
+        Assert.True(ws.AddressMap!.ResolvedMethodCount > 1000);
+
+        // Direct .prx load also locates metadata and Unity headers from the PS4 game root.
+        var prx = Path.Combine(dir, "Media", "Modules", "Il2CppUserAssemblies.prx");
+        using var wsPrx = Il2CppWorkspace.Load(prx, Sink());
+        Assert.True(wsPrx.Registration?.IsComplete);
+        Assert.Equal(ws.Environment.UnityVersion, wsPrx.Environment.UnityVersion);
+
+        var acs = ws.Model.Assemblies.First(a => a.Name == "Assembly-CSharp");
+        var candidates = acs.Namespaces.SelectMany(n => n.Types)
+            .Where(t => !t.Raw.IsInterface && !t.Raw.IsEnum && t.GenericParameters.Count == 0 && !t.Name.StartsWith('<'))
+            .SelectMany(t => t.Methods.Where(m => !m.IsAbstract && !m.Name.StartsWith('.') && ws.GetMethodRva(m) != 0).Select(m => (t, m)))
+            .Take(12);
+        var rendered = candidates.Select(p => ws.Render(p.t, p.m, CodeView.CSharp)).ToList();
+        Assert.Contains(rendered, cs => cs.Contains('{') && !cs.Contains("throw null;", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AndroidSampleApk_LoadsAndRecoversRegistration()
+    {
+        var apk = Target("sample game unity android.apk")!;
+        using var ws = Il2CppWorkspace.Load(apk, Sink());
+        WorkspaceSetup.Attach(ws);
+        var elf = Assert.IsType<ElfBinaryImage>(ws.Binary);
+        Assert.Equal(CpuArchitecture.Arm64, elf.Architecture);
+        Assert.NotNull(ws.Registration);
+        Assert.True(ws.Registration!.IsComplete);
+        Assert.True(ws.AddressMap!.ResolvedMethodCount > 1000);
+
+        var acs = ws.Model.Assemblies.First(a => a.Name == "Assembly-CSharp");
+        var candidates = acs.Namespaces.SelectMany(n => n.Types)
+            .Where(t => !t.Raw.IsInterface && !t.Raw.IsEnum && t.GenericParameters.Count == 0 && !t.Name.StartsWith('<'))
+            .SelectMany(t => t.Methods.Where(m => !m.IsAbstract && !m.Name.StartsWith('.') && ws.GetMethodRva(m) != 0).Select(m => (t, m)))
+            .Take(12);
+        var rendered = candidates.Select(p => ws.Render(p.t, p.m, CodeView.CSharp)).ToList();
+        Assert.Contains(rendered, cs => cs.Contains('{') && !cs.Contains("throw null;", StringComparison.Ordinal));
+    }
 }

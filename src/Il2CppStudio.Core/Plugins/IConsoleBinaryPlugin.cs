@@ -17,7 +17,7 @@ public interface IConsoleBinaryPlugin
 /// <summary>Discovers and dispatches registered <see cref="IConsoleBinaryPlugin"/> implementations.</summary>
 public static class ConsoleBinaryPluginRegistry
 {
-    private static readonly List<IConsoleBinaryPlugin> Plugins = [new SwitchNsoPlugin()];
+    private static readonly List<IConsoleBinaryPlugin> Plugins = [new SwitchNsoPlugin(), new Ps4SelfPlugin()];
 
     public static IReadOnlyList<IConsoleBinaryPlugin> Registered => Plugins;
 

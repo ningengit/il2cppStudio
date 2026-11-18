@@ -90,7 +90,7 @@ public sealed partial class MainWindow : Window, IUiServices
             [
                 new FilePickerFileType("IL2CPP Packages & Binaries")
                 {
-                    Patterns = ["*.apk", "*.xapk", "GameAssembly.dll", "GameAssembly.so", "libil2cpp.so", "*.wasm", "*.wasm.br", "*.wasm.gz", "*.wasm.unityweb", "main", "global-metadata.dat"]
+                    Patterns = ["*.apk", "*.xapk", "*.pkg", "*.prx", "GameAssembly.dll", "GameAssembly.so", "libil2cpp.so", "Il2CppUserAssemblies.prx", "*.wasm", "*.wasm.br", "*.wasm.gz", "*.wasm.unityweb", "main", "global-metadata.dat"]
                 },
                 FilePickerFileTypes.All
             ],

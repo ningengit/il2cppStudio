@@ -23,6 +23,8 @@ public sealed class ElfBinaryImage : IBinaryImage
     public IReadOnlyList<BinarySection> Sections { get; }
     public ReadOnlyMemory<byte> Data => _data;
     internal IReadOnlyList<(ulong VAddr, ulong FileSize, long Offset, uint Flags)> Segments { get; }
+    internal (long Offset, ulong Size)? Dynamic { get; private set; }
+    internal (long Offset, ulong Size)? DynLibData { get; private set; }
     public int AppliedRelocations { get; }
 
     private ElfBinaryImage(string path, byte[] data, IDiagnosticSink sink)
@@ -41,14 +43,17 @@ public sealed class ElfBinaryImage : IBinaryImage
         _symbols.AddRange(reloc.DynamicFunctionSymbols());
     }
 
-    public static ElfBinaryImage Load(string path, IDiagnosticSink sink)
+    public static ElfBinaryImage Load(string path, IDiagnosticSink sink) =>
+        Load(path, File.ReadAllBytes(path), sink);
+
+    public static ElfBinaryImage Load(string path, byte[] data, IDiagnosticSink sink, string? formatLabel = null)
     {
-        var data = File.ReadAllBytes(path);
         if (data.Length < 0x40 || data[0] != 0x7F || data[1] != (byte)'E' || data[2] != (byte)'L' || data[3] != (byte)'F' || data[5] != 1)
             throw new InvalidDataException("Not a little-endian ELF file.");
         var img = new ElfBinaryImage(path, data, sink);
+        var label = formatLabel ?? $"ELF{(img.Is64Bit ? 64 : 32)}";
         sink.Info(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatDetected,
-            $"ELF{(img.Is64Bit ? 64 : 32)} {img.Architecture}, {img.Sections.Count} sections, {img.AppliedRelocations:N0} relocations applied, {img._symbols.Count:N0} exported functions.",
+            $"{label} {img.Architecture}, {img.Sections.Count} sections, {img.AppliedRelocations:N0} relocations applied, {img._symbols.Count:N0} exported functions.",
             new() { File = path });
         return img;
     }
@@ -81,15 +86,13 @@ public sealed class ElfBinaryImage : IBinaryImage
             long off = Is64Bit ? (long)Word(p + 8) : (long)Word(p + 4);
             ulong vaddr = Is64Bit ? Word(p + 16) : Word(p + 8);
             ulong filesz = Is64Bit ? Word(p + 32) : Word(p + 16);
-            // PT_LOAD = 1, PT_DYNAMIC = 2
-            if (type == 1) list.Add((vaddr, filesz, off, flags));
+            // PT_LOAD = 1, PT_DYNAMIC = 2, PT_SCE_DYNLIBDATA = 0x61000000, PT_SCE_RELRO = 0x61000010
+            if (type is 1 or 0x61000010) list.Add((vaddr, filesz, off, flags));
             else if (type == 2) Dynamic = (off, filesz);
+            else if (type == 0x61000000) DynLibData = (off, filesz);
         }
         return list;
     }
-
-    /// <summary>File offset and size of the PT_DYNAMIC segment, if any.</summary>
-    internal (long Offset, ulong Size)? Dynamic { get; private set; }
 
     private List<BinarySection> ReadSections()
     {
