@@ -2,7 +2,7 @@
 
 Il2CppStudio is a high-performance C# decompiler and binary analysis tool built specifically for Unity IL2CPP games. Designed to eliminate the need for 4000 different programs just to decompile something, its goal is to instantly give you highly accurate, compilable C# code.
 
-The tool itself is vibe-coded (and I admit it!), so it may have certain bugs and quirks, but it mostly works just fine and operates at blazing speeds.
+The tool itself is vibe-coded (and I admit it!), so it may not give you the best c# code back right now, but it mostly works just fine and operates at blazing speeds.
 
 ## Supported Platforms
 It supports (or will support) a wide range of platforms, including **WebGL, Android (APK/XAPK), Windows, Linux, Nintendo Switch, PS4, and iOS**.
