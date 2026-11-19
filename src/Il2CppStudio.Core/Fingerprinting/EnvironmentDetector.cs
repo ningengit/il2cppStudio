@@ -41,6 +41,8 @@ public static partial class EnvironmentDetector
         candidateFolders.Add(gameRoot);
         candidateFolders.Add(Path.Combine(gameRoot, "assets", "bin", "Data"));
         candidateFolders.Add(Path.Combine(gameRoot, "romfs", "Data"));
+        candidateFolders.Add(Path.Combine(gameRoot, "1", "Data"));
+        candidateFolders.Add(Path.Combine(gameRoot, "Media"));
 
         foreach (var folder in candidateFolders.Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -109,14 +111,14 @@ public static partial class EnvironmentDetector
     /// <summary>
     /// Unity serialized files store the editor version as a NUL-terminated ASCII string near the start of
     /// the header (offset varies by format version: ~0x14 for old formats, ~0x30 for format 22+). Scanning
-    /// the first 1 KiB with a strict version pattern works across all formats.
+    /// the first 4 KiB with a strict version pattern works across all formats.
     /// </summary>
     public static string? ReadVersionFromSerializedFile(string path)
     {
         try
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            var buf = new byte[Math.Min(1024, fs.Length)];
+            var buf = new byte[Math.Min(4096, fs.Length)];
             fs.ReadExactly(buf);
             if (TryReadUnityFsRevision(buf) is { } bundleVersion) return bundleVersion;
             var text = Encoding.ASCII.GetString(buf.Select(b => b is >= 0x20 and < 0x7F ? b : (byte)' ').ToArray());
@@ -128,9 +130,13 @@ public static partial class EnvironmentDetector
 
     private static string? TryReadUnityFsRevision(ReadOnlySpan<byte> buf)
     {
-        ReadOnlySpan<byte> sig = "UnityFS\0"u8;
-        if (buf.Length < 16 || !buf[..sig.Length].SequenceEqual(sig)) return null;
-        var pos = sig.Length + 4;
+        int sigLen;
+        if (buf.StartsWith("UnityFS\0"u8)) sigLen = 8;
+        else if (buf.StartsWith("UnityWeb\0"u8) || buf.StartsWith("UnityRaw\0"u8)) sigLen = 9;
+        else return null;
+
+        var pos = sigLen + 4;
+        if (pos >= buf.Length) return null;
         var playerEnd = buf[pos..].IndexOf((byte)0);
         if (playerEnd < 0) return null;
         pos += playerEnd + 1;

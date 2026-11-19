@@ -36,6 +36,13 @@ public static class GameFolderLocator
                     : new GameFiles(path, null, null, null, null);
             }
 
+            if (SwitchNspExtractor.IsNspPath(path))
+            {
+                return SwitchNspExtractor.Extract(path, sink) is { } extractedNsp
+                    ? LocateCore(extractedNsp, sink, explicitBinary: null)
+                    : new GameFiles(path, null, null, null, null);
+            }
+
             var name = Path.GetFileName(path);
             if (name.Equals("global-metadata.dat", StringComparison.OrdinalIgnoreCase))
                 return new GameFiles(Path.GetDirectoryName(path)!, null, path, null, null);
