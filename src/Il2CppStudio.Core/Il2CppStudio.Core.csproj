@@ -26,7 +26,7 @@
   <ItemGroup>
     <ProjectReference Include="..\vendor\AsmArm64\AsmArm64.csproj" />
     <ProjectReference Include="..\vendor\WasmDisassembler\WasmDisassembler.csproj" />
-    <None Include="..\vendor\capstone\capstone.dll" Link="capstone.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\vendor\capstone\capstone.dll" Link="capstone.dll" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'win-x64' or ('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows')))" />
   </ItemGroup>
 
 </Project>

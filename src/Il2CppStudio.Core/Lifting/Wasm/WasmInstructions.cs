@@ -524,8 +524,13 @@ internal sealed partial class WasmMethodEmit
         if (!callee.IsStatic && argPos < args.Length)
             EmitWasmThis(callee, args[argPos++]);
 
+        var calleeMd = _md.Methods[methodIndex];
         for (var i = 0; i < callee.Parameters.Count && argPos < args.Length; i++, argPos++)
-            EmitWasmArg(callee.Parameters[i], args[argPos]);
+        {
+            var isPureOut = i < calleeMd.ParameterCount && _reg.TryGetType(_md.Parameters[calleeMd.ParameterStart + i].TypeIndex, out var pat)
+                && (pat.Attrs & 3) == 2;
+            EmitWasmArg(callee.Parameters[i], args[argPos], preserveExisting: !isPureOut);
+        }
 
         var useCallvirt = !callee.IsStatic && !callee.DeclaringIsValueType;
         ctx.IL.Add(useCallvirt ? CilOpCodes.Callvirt : CilOpCodes.Call, target);
@@ -556,7 +561,7 @@ internal sealed partial class WasmMethodEmit
         {
             if (thisArg.Expr is FrameAddrExpr fa)
             {
-                var lv = StructLValue(fa.Offset, _stubs.TypeRefFor(_module, _md.Methods[callee.MethodIndex].DeclaringType)!.ToTypeSignature(true));
+                var lv = StructLValue(fa.Offset, _stubs.TypeRefFor(_module, _md.Methods[callee.MethodIndex].DeclaringType)!.ToTypeSignature(true), preserveExisting: true);
                 new AddressExpr(lv).Emit(ctx);
                 return;
             }
@@ -572,14 +577,14 @@ internal sealed partial class WasmMethodEmit
         else thisArg.Expr.Emit(ctx);
     }
 
-    private void EmitWasmArg(TypeSignature paramType, WValue arg)
+    private void EmitWasmArg(TypeSignature paramType, WValue arg, bool preserveExisting = true)
     {
         if (paramType is ByReferenceTypeSignature byRef)
         {
             if (arg.Expr is FrameAddrExpr fa)
             {
                 if (Expr.KindOf(byRef.BaseType) == ValueKind.Struct)
-                    new AddressExpr(StructLValue(fa.Offset, byRef.BaseType)).Emit(ctx);
+                    new AddressExpr(StructLValue(fa.Offset, byRef.BaseType, preserveExisting: preserveExisting)).Emit(ctx);
                 else
                     ctx.IL.Add(CilOpCodes.Ldloca, ScalarSlot(fa.Offset, WasmOf(Expr.KindOf(byRef.BaseType)), _mem.ValueSize(byRef.BaseType)).Local!);
                 return;
@@ -590,7 +595,7 @@ internal sealed partial class WasmMethodEmit
         }
         if (Expr.KindOf(paramType) == ValueKind.Struct)
         {
-            if (arg.Expr is FrameAddrExpr fa) { StructLValue(fa.Offset, paramType).Emit(ctx); return; }
+            if (arg.Expr is FrameAddrExpr fa) { StructLValue(fa.Offset, paramType, preserveExisting: true).Emit(ctx); return; }
             if (arg.Expr is AddressExpr ae) { ae.Target.Emit(ctx); return; }
             Expr.EmitAs(ctx, arg.Expr, paramType);
             return;

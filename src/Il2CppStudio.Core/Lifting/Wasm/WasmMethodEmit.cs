@@ -45,6 +45,8 @@ internal sealed partial class WasmMethodEmit(
     private WasmFuncType _sig = new([], []);
     private List<byte> _declaredLocals = [];
     private List<WasmInstruction> _insns = [];
+    private int[] _matchEnd = [];
+    private int _currentPc;
 
     public int Unresolved { get; private set; }
     public int Elided { get; private set; }
@@ -56,11 +58,13 @@ internal sealed partial class WasmMethodEmit(
         _sig = sig;
         _declaredLocals = declaredLocals;
         _insns = insns;
+        BuildMatchEnds(insns);
         MapParameters(declaredLocals.Count);
         DetectFrameBase();
 
         for (var i = _start; i < insns.Count; i++)
         {
+            _currentPc = i;
             var ins = insns[i];
             if (!_reachable && ins.Mnemonic is not (WasmMnemonic.Block or WasmMnemonic.Loop or WasmMnemonic.If
                 or WasmMnemonic.Else or WasmMnemonic.End))
@@ -70,6 +74,32 @@ internal sealed partial class WasmMethodEmit(
 
         if (_frames.Count != 0) throw new WasmUnsupportedException("unbalanced control flow (missing end)");
         if (_reachable) EmitReturn();
+    }
+
+    private void BuildMatchEnds(List<WasmInstruction> insns)
+    {
+        _matchEnd = new int[insns.Count];
+        Array.Fill(_matchEnd, insns.Count - 1);
+        var stack = new Stack<(int OpenPc, int ElsePc)>();
+        for (var k = 0; k < insns.Count; k++)
+        {
+            var m = insns[k].Mnemonic;
+            if (m is WasmMnemonic.Block or WasmMnemonic.Loop or WasmMnemonic.If)
+            {
+                stack.Push((k, -1));
+            }
+            else if (m == WasmMnemonic.Else && stack.Count > 0)
+            {
+                var top = stack.Pop();
+                stack.Push((top.OpenPc, k));
+            }
+            else if (m == WasmMnemonic.End && stack.Count > 0)
+            {
+                var (openPc, elsePc) = stack.Pop();
+                _matchEnd[openPc] = k;
+                if (elsePc >= 0) _matchEnd[elsePc] = k;
+            }
+        }
     }
 
     private void MapParameters(int declaredLocalCount)
@@ -253,6 +283,15 @@ internal sealed partial class WasmMethodEmit(
             throw new WasmUnsupportedException($"stack frame address +0x{Offset:X} escaped without a value access");
     }
 
+    private sealed class FramePairExpr(Expr low, Expr high) : Expr
+    {
+        public Expr Low { get; } = low;
+        public Expr High { get; } = high;
+        public override ValueKind Kind => ValueKind.I8;
+        public override void Emit(EmitContext ctx) =>
+            throw new WasmUnsupportedException("packed 64-bit frame pair escaped without a typed store");
+    }
+
     private FrameSlotState? StructSlotCovering(int offset) =>
         _slots.Values.FirstOrDefault(s => s.StructType is not null && offset >= s.Offset && offset < s.Offset + s.Size);
 
@@ -273,7 +312,7 @@ internal sealed partial class WasmMethodEmit(
     }
 
     /// <summary>The struct lvalue stored at <paramref name="offset"/>, creating the slot and its local on first use.</summary>
-    private Expr StructLValue(int offset, TypeSignature type)
+    private Expr StructLValue(int offset, TypeSignature type, bool preserveExisting = false)
     {
         if (StructSlotCovering(offset) is { } covering)
         {
@@ -283,10 +322,28 @@ internal sealed partial class WasmMethodEmit(
                 return inner;
         }
         var size = _mem.ValueSize(type);
-        foreach (var k in _slots.Where(kv => kv.Value.Offset < offset + size && offset < kv.Value.Offset + kv.Value.Size).Select(kv => kv.Key).ToList())
-            _slots.Remove(k);
+        var overlapping = _slots.Where(kv => kv.Value.Offset < offset + size && offset < kv.Value.Offset + kv.Value.Size).ToList();
+        var preserved = preserveExisting
+            ? overlapping.Select(kv => kv.Value).Where(s => s.StructType is null && s.ScalarUsed && s.Local is not null).OrderBy(s => s.Offset).ToList()
+            : [];
+        foreach (var kv in overlapping) _slots.Remove(kv.Key);
         var state = new FrameSlotState(offset) { Size = size, StructType = type, Local = NewLocal(type) };
         _slots[offset] = state;
+        if (preserved.Count > 0)
+        {
+            var destTd = _mem.TypeDefOf(type);
+            var localExpr = new LocalExpr(state.Local);
+            foreach (var s in preserved)
+            {
+                var rel = s.Offset - offset;
+                if (rel < 0 || rel >= size) continue;
+                var destField = destTd >= 0 ? _mem.StructField(localExpr, destTd, rel) : null;
+                Expr srcExpr = s.ConstBits is { } cb && (destField?.Type is { } dt ? Expr.KindOf(dt) is ValueKind.R4 or ValueKind.R8 or ValueKind.I4 : Expr.KindOf(s.Local!.VariableType) is ValueKind.I4 or ValueKind.I8)
+                    ? new ConstExpr(cb, ValueKind.I4, true)
+                    : new LocalExpr(s.Local!);
+                _mem.Store(ctx, new AddressExpr(localExpr), null, 0, rel, s.Size, srcExpr);
+            }
+        }
         return new LocalExpr(state.Local);
     }
 
@@ -294,11 +351,22 @@ internal sealed partial class WasmMethodEmit(
     {
         if (StructSlotCovering(offset) is { } covering)
         {
-            var field = _mem.StructField(new LocalExpr(covering.Local!), _mem.TypeDefOf(covering.StructType!), offset - covering.Offset);
-            if (field is null or StructChunkExpr)
-                throw new WasmUnsupportedException($"stack +0x{offset:X} is not a field of the {covering.StructType!.Name} at +0x{covering.Offset:X}");
-            return field;
+            var rel = offset - covering.Offset;
+            var loaded = _mem.Load(new AddressExpr(new LocalExpr(covering.Local!)), null, 0, rel, size);
+            if (loaded is not null) return loaded;
+            throw new WasmUnsupportedException($"stack +0x{offset:X} (size {size}) is not a field of the {covering.StructType!.Name} at +0x{covering.Offset:X}");
         }
+        if (size == 8 && _slots.TryGetValue(offset, out var lo) && lo.StructType is null && lo.Size == 4 && lo.Local is not null
+            && _slots.TryGetValue(offset + 4, out var hi) && hi.StructType is null && hi.Size == 4 && hi.Local is not null)
+        {
+            Expr loExpr = lo.ConstBits is { } lb ? new ConstExpr(lb, ValueKind.I4, true) : new LocalExpr(lo.Local);
+            Expr hiExpr = hi.ConstBits is { } hb ? new ConstExpr(hb, ValueKind.I4, true) : new LocalExpr(hi.Local);
+            return new FramePairExpr(loExpr, hiExpr);
+        }
+        if (_slots.TryGetValue(offset, out var existing) && existing.StructType is null && existing.Size == size && existing.Local is not null)
+            return existing.ConstBits is { } cb && wasm == TF32
+                ? new FloatExpr(BitConverter.Int32BitsToSingle(cb), true)
+                : new LocalExpr(existing.Local);
         return new LocalExpr(ScalarSlot(offset, wasm, size).Local!);
     }
 
@@ -306,13 +374,65 @@ internal sealed partial class WasmMethodEmit(
     {
         if (StructSlotCovering(offset) is { } covering)
         {
+            if (value.Expr is FramePairExpr pair)
+            {
+                FrameStore(offset, 4, new WValue(pair.Low, WasmOf(pair.Low.Kind)));
+                FrameStore(offset + 4, 4, new WValue(pair.High, WasmOf(pair.High.Kind)));
+                return;
+            }
             if (!_mem.Store(ctx, new AddressExpr(new LocalExpr(covering.Local!)), null, 0, offset - covering.Offset, size, value.Expr))
                 throw new WasmUnsupportedException($"cannot store into stack slot +0x{offset:X} of {covering.StructType!.Name}");
             return;
         }
-        var slot = ScalarSlot(offset, value.Wasm, size);
+        if (value.Expr is FramePairExpr fp)
+        {
+            FrameStore(offset, 4, new WValue(fp.Low, WasmOf(fp.Low.Kind)));
+            FrameStore(offset + 4, 4, new WValue(fp.High, WasmOf(fp.High.Kind)));
+            return;
+        }
+        if (value.Expr is StructChunkExpr chunk)
+        {
+            var srcTd = _mem.TypeDefOf(chunk.Source.Type);
+            if (srcTd >= 0 && StoreChunkToScalarSlots(offset, chunk.Source, srcTd, chunk.Offset, chunk.Size, 0, 0))
+                return;
+        }
+        var effectiveWasm = value.Expr.Kind == ValueKind.R4 ? TF32 : value.Wasm;
+        if (_slots.TryGetValue(offset, out var cur) && cur.StructType is null
+            && (cur.Size != size || Expr.KindOf(cur.Local!.VariableType) != KindOf(effectiveWasm)))
+            _slots.Remove(offset);
+        var slot = ScalarSlot(offset, effectiveWasm, size);
+        slot.ConstBits = value.Expr is ConstExpr c && (size == 4 || c.Value == 0) ? unchecked((int)c.Value) : null;
         Expr.EmitAs(ctx, value.Expr, slot.Local!.VariableType);
         ctx.IL.Add(CilOpCodes.Stloc, slot.Local);
+    }
+
+    private bool StoreChunkToScalarSlots(int baseFrameOffset, Expr src, int srcTd, int chunkStart, int chunkSize, int relBase, int depth)
+    {
+        if (depth > 6) return false;
+        var chunkEnd = chunkStart + chunkSize;
+        var any = false;
+        foreach (var f in _mem.FieldsOf(srcTd))
+        {
+            if (f.IsStatic || f.DeclaringTypeDef != srcTd) continue;
+            var ft = _mem.FieldType(f, src.Type);
+            var fSize = _mem.ValueSize(ft);
+            var absStart = relBase + f.Offset;
+            var absEnd = absStart + fSize;
+            if (absEnd <= chunkStart || absStart >= chunkEnd) continue;
+            if (_mem.FieldRef(f) is not { } fr) continue;
+            var fe = new FieldExpr(src, fr, ft);
+            var innerTd = _mem.TypeDefOf(ft);
+            if (Expr.KindOf(ft) == ValueKind.Struct && innerTd >= 0 && !_md.TypeDefinitions[innerTd].IsEnum)
+            {
+                any |= StoreChunkToScalarSlots(baseFrameOffset, fe, innerTd, chunkStart, chunkSize, absStart, depth + 1);
+            }
+            else if (absStart >= chunkStart)
+            {
+                FrameStore(baseFrameOffset + (absStart - chunkStart), fSize, new WValue(fe, WasmOf(Expr.KindOf(ft))));
+                any = true;
+            }
+        }
+        return any;
     }
 
     // ------------------------------------------------------------------ memory access
@@ -408,7 +528,7 @@ internal sealed partial class WasmMethodEmit(
         return local;
     }
 
-    /// <summary>Records the value a wasm local now holds; the local's CIL type follows the first reference it sees.</summary>
+    /// <summary>Records the value a wasm local now holds; splits into a fresh CLR local when its reference/primitive type changes safely.</summary>
     private void WriteLocal(int index, WValue value)
     {
         if (value.Expr is FrameAddrExpr or AddressExpr or MarkerExpr
@@ -419,32 +539,138 @@ internal sealed partial class WasmMethodEmit(
             return;
         }
         _subst.Remove(index);
-        if (_paramValue.TryGetValue(index, out var paramExpr) && value.Pointee is null && value.Expr.Kind == paramExpr.Kind
-            && paramExpr is ArgExpr argExpr)
+        var desired = DesiredLocalType(value);
+        if (_paramValue.TryGetValue(index, out var paramExpr) && value.Pointee is null && paramExpr is ArgExpr argExpr)
         {
-            Expr.EmitAs(ctx, value.Expr, argExpr.Type);
-            ctx.IL.Add(CilOpCodes.Starg, argExpr.Parameter);
-            return;
+            if (value.Expr.Kind == paramExpr.Kind && SignatureComparer.Default.Equals(argExpr.Type, desired))
+            {
+                Expr.EmitAs(ctx, value.Expr, argExpr.Type);
+                ctx.IL.Add(CilOpCodes.Starg, argExpr.Parameter);
+                return;
+            }
+            if (CanSplitLocal(index))
+            {
+                _paramValue.Remove(index);
+                _localPointee.Remove(index);
+                var split = NewLocal(desired);
+                _locals[index] = split;
+                Expr.EmitAs(ctx, value.Expr, desired);
+                ctx.IL.Add(CilOpCodes.Stloc, split);
+                return;
+            }
+            if (value.Expr.Kind == paramExpr.Kind)
+            {
+                Expr.EmitAs(ctx, value.Expr, argExpr.Type);
+                ctx.IL.Add(CilOpCodes.Starg, argExpr.Parameter);
+                return;
+            }
         }
-        var local = LocalFor(index);
-        var hint = value.Expr.Type;
         if (value.Pointee is not null && Expr.KindOf(value.Pointee) == ValueKind.Struct)
         {
+            CilLocalVariable ptrLocal;
+            if (_locals.TryGetValue(index, out var curPtr))
+            {
+                if (curPtr.VariableType.ElementType != AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I4 && CanSplitLocal(index))
+                {
+                    ptrLocal = NewLocal(_f.Int32);
+                    _locals[index] = ptrLocal;
+                }
+                else
+                {
+                    ptrLocal = curPtr;
+                    ptrLocal.VariableType = _f.Int32;
+                }
+            }
+            else
+            {
+                ptrLocal = NewLocal(_f.Int32);
+                _locals[index] = ptrLocal;
+            }
             _localPointee[index] = value.Pointee;
             var tmp = Temp(TI32);
             Expr.EmitAs(ctx, value.Expr, _f.Int32);
             ctx.IL.Add(CilOpCodes.Stloc, tmp);
-            local.VariableType = _f.Int32;
             ctx.IL.Add(CilOpCodes.Ldloc, tmp);
-            ctx.IL.Add(CilOpCodes.Stloc, local);
+            ctx.IL.Add(CilOpCodes.Stloc, ptrLocal);
             return;
         }
-        if (local.VariableType.ElementType == AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I4
-            && hint is not null && Expr.KindOf(hint) is ValueKind.Ref)
-            local.VariableType = hint;
+        CilLocalVariable local;
+        if (_locals.TryGetValue(index, out var existing))
+        {
+            if (!SignatureComparer.Default.Equals(existing.VariableType, desired) && CanSplitLocal(index))
+            {
+                local = NewLocal(desired);
+                _locals[index] = local;
+            }
+            else
+            {
+                local = existing;
+            }
+        }
+        else
+        {
+            local = NewLocal(desired);
+            _locals[index] = local;
+        }
         Expr.EmitAs(ctx, value.Expr, local.VariableType);
         ctx.IL.Add(CilOpCodes.Stloc, local);
-        if (hint is not null && Expr.KindOf(hint) is ValueKind.Ref or ValueKind.Struct) _localPointee.Remove(index);
+        if (value.Expr.Type is { } hint && Expr.KindOf(hint) is ValueKind.Ref or ValueKind.Struct) _localPointee.Remove(index);
+    }
+
+    private TypeSignature DesiredLocalType(WValue value)
+    {
+        if (value.Expr is CompareExpr || value.Expr.Type?.ElementType == AsmResolver.PE.DotNet.Metadata.Tables.ElementType.Boolean)
+            return _f.Boolean;
+        if (value.Expr.Type is { } t && Expr.KindOf(t) is ValueKind.Ref or ValueKind.R4 or ValueKind.R8 or ValueKind.I8)
+            return t;
+        return TypeOf(value.Wasm);
+    }
+
+    private bool CanSplitLocal(int localIndex)
+    {
+        foreach (var f in _frames)
+        {
+            if (f.Kind == WasmMnemonic.Loop)
+            {
+                for (var k = f.StartPc; k < _currentPc; k++)
+                    if (_insns[k].Mnemonic == WasmMnemonic.LocalGet && (int)Convert.ToUInt32(_insns[k].Operands[0]) == localIndex)
+                        return false;
+            }
+            if (!IsLocalDeadAfter(localIndex, f.EndPc)) return false;
+        }
+        return true;
+    }
+
+    private bool IsLocalDeadAfter(int localIndex, int afterPc)
+    {
+        var depth = 0;
+        for (var j = afterPc + 1; j < _insns.Count; j++)
+        {
+            var m = _insns[j].Mnemonic;
+            if (m is WasmMnemonic.Block or WasmMnemonic.Loop or WasmMnemonic.If)
+            {
+                depth++;
+            }
+            else if (m == WasmMnemonic.Else)
+            {
+                if (depth == 0)
+                    j = _matchEnd[j];
+            }
+            else if (m == WasmMnemonic.End)
+            {
+                if (depth > 0) depth--;
+            }
+            else if (m == WasmMnemonic.LocalGet)
+            {
+                if ((int)Convert.ToUInt32(_insns[j].Operands[0]) == localIndex) return false;
+            }
+            else if (depth == 0 && (m is WasmMnemonic.Return or WasmMnemonic.Unreachable
+                || m is WasmMnemonic.LocalSet or WasmMnemonic.LocalTee && (int)Convert.ToUInt32(_insns[j].Operands[0]) == localIndex))
+            {
+                return true;
+            }
+        }
+        return true;
     }
 
     private static bool IsSubstitutable(WValue value) =>
@@ -459,11 +685,13 @@ internal sealed partial class WasmMethodEmit(
         {
             case WasmMnemonic.Nop: return;
             case WasmMnemonic.Block:
-                _frames.Add(new BlockFrame(WasmMnemonic.Block, _stack.Count, BlockSig(ins)) { EntryReachable = _reachable });
+                ClearConstBits();
+                _frames.Add(new BlockFrame(WasmMnemonic.Block, _stack.Count, BlockSig(ins)) { EntryReachable = _reachable, StartPc = i, EndPc = _matchEnd[i] });
                 return;
             case WasmMnemonic.Loop:
             {
-                var frame = new BlockFrame(WasmMnemonic.Loop, _stack.Count, BlockSig(ins)) { EntryReachable = _reachable };
+                ClearConstBits();
+                var frame = new BlockFrame(WasmMnemonic.Loop, _stack.Count, BlockSig(ins)) { EntryReachable = _reachable, StartPc = i, EndPc = _matchEnd[i] };
                 _frames.Add(frame);
                 if (!_reachable) return;
                 if (frame.ParamCount != 0) throw new WasmUnsupportedException("loop with parameters");
@@ -503,16 +731,37 @@ internal sealed partial class WasmMethodEmit(
         return sig;
     }
 
+    private void ClearConstBits()
+    {
+        foreach (var s in _slots.Values) s.ConstBits = null;
+    }
+
+    private static void ReplaceDict<TK, TV>(Dictionary<TK, TV> dst, Dictionary<TK, TV> src) where TK : notnull
+    {
+        dst.Clear();
+        foreach (var (k, v) in src) dst[k] = v;
+    }
+
     private void EmitIf(WasmInstruction ins, ref int i)
     {
         if (!_reachable)
         {
-            _frames.Add(new BlockFrame(WasmMnemonic.If, _stack.Count, BlockSig(ins)) { EntryReachable = false });
+            _frames.Add(new BlockFrame(WasmMnemonic.If, _stack.Count, BlockSig(ins)) { EntryReachable = false, StartPc = i, EndPc = _matchEnd[i] });
             return;
         }
+        ClearConstBits();
         var cond = Pop();
         var sig = BlockSig(ins);
-        var frame = new BlockFrame(WasmMnemonic.If, _stack.Count - sig.ParameterCount, sig) { EntryReachable = true };
+        var frame = new BlockFrame(WasmMnemonic.If, _stack.Count - sig.ParameterCount, sig)
+        {
+            EntryReachable = true,
+            StartPc = i,
+            EndPc = _matchEnd[i],
+            SavedSubst = new Dictionary<int, Expr>(_subst),
+            SavedPointee = new Dictionary<int, TypeSignature?>(_localPointee),
+            SavedLocals = new Dictionary<int, CilLocalVariable>(_locals),
+            SavedParamValue = new Dictionary<int, Expr>(_paramValue),
+        };
         frame.ElseLabel = new CilInstructionLabel();
         frame.EndLabel = new CilInstructionLabel();
 
@@ -546,10 +795,16 @@ internal sealed partial class WasmMethodEmit(
     private void EmitElse()
     {
         if (_frames.Count == 0 || _frames[^1].Kind != WasmMnemonic.If) throw new WasmUnsupportedException("else outside if");
+        ClearConstBits();
         var frame = _frames[^1];
         frame.HadElse = true;
+        frame.ThenFellThrough = _reachable;
         if (_reachable)
         {
+            frame.ThenEndSubst = new Dictionary<int, Expr>(_subst);
+            frame.ThenEndPointee = new Dictionary<int, TypeSignature?>(_localPointee);
+            frame.ThenEndLocals = new Dictionary<int, CilLocalVariable>(_locals);
+            frame.ThenEndParamValue = new Dictionary<int, Expr>(_paramValue);
             frame.Branched = true;
             if (frame.ResultCount > 0)
             {
@@ -569,17 +824,25 @@ internal sealed partial class WasmMethodEmit(
         _stack.RemoveRange(frame.Base, _stack.Count - frame.Base);
         for (var k = 0; k < frame.ParamCount; k++)
             Push(new LocalExpr(frame.ParamLocals![k]), frame.Sig.Parameters[k]);
+        if (frame.SavedSubst is not null) ReplaceDict(_subst, frame.SavedSubst);
+        if (frame.SavedPointee is not null) ReplaceDict(_localPointee, frame.SavedPointee);
+        if (frame.SavedLocals is not null) ReplaceDict(_locals, frame.SavedLocals);
+        if (frame.SavedParamValue is not null) ReplaceDict(_paramValue, frame.SavedParamValue);
         _reachable = frame.EntryReachable;
     }
 
     private void EmitEnd()
     {
         if (_frames.Count == 0) { EmitReturn(); _reachable = false; return; }
+        ClearConstBits();
         var frame = _frames[^1];
         _frames.RemoveAt(_frames.Count - 1);
 
         if (frame.Kind == WasmMnemonic.If)
         {
+            var thenReachable = frame.HadElse ? frame.ThenFellThrough : _reachable;
+            var elseReachable = frame.HadElse ? _reachable : frame.EntryReachable;
+
             var results = frame.ResultCount;
             if (_reachable && results > 0)
             {
@@ -602,6 +865,44 @@ internal sealed partial class WasmMethodEmit(
                 var locals = frame.ResultLocals ??= LocalsFor(frame, frame.Sig.Results, "ifr");
                 for (var k = 0; k < results; k++) Push(new LocalExpr(locals[k]), frame.Sig.Results[k]);
             }
+
+            if (frame.SavedSubst is not null)
+            {
+                if (!thenReachable && elseReachable && !frame.HadElse)
+                {
+                    ReplaceDict(_subst, frame.SavedSubst);
+                    ReplaceDict(_localPointee, frame.SavedPointee!);
+                    ReplaceDict(_locals, frame.SavedLocals!);
+                    ReplaceDict(_paramValue, frame.SavedParamValue!);
+                }
+                else if (frame.HadElse && thenReachable && !elseReachable && frame.ThenEndSubst is not null)
+                {
+                    ReplaceDict(_subst, frame.ThenEndSubst);
+                    ReplaceDict(_localPointee, frame.ThenEndPointee!);
+                    ReplaceDict(_locals, frame.ThenEndLocals!);
+                    ReplaceDict(_paramValue, frame.ThenEndParamValue!);
+                }
+                else if (thenReachable && elseReachable)
+                {
+                    var thenSubst = frame.HadElse ? frame.ThenEndSubst! : new Dictionary<int, Expr>(_subst);
+                    var elseSubst = frame.HadElse ? new Dictionary<int, Expr>(_subst) : frame.SavedSubst;
+                    _subst.Clear();
+                    foreach (var (k, v) in thenSubst)
+                        if (elseSubst.TryGetValue(k, out var ev) && ReferenceEquals(v, ev))
+                            _subst[k] = v;
+
+                    var thenPointee = frame.HadElse ? frame.ThenEndPointee! : new Dictionary<int, TypeSignature?>(_localPointee);
+                    var elsePointee = frame.HadElse ? new Dictionary<int, TypeSignature?>(_localPointee) : frame.SavedPointee!;
+                    _localPointee.Clear();
+                    foreach (var (k, v) in thenPointee)
+                        if (elsePointee.TryGetValue(k, out var ev) && SignatureComparer.Default.Equals(v, ev))
+                            _localPointee[k] = v;
+
+                    ReplaceDict(_locals, frame.SavedLocals!);
+                    ReplaceDict(_paramValue, frame.SavedParamValue!);
+                }
+            }
+
             _reachable = frame.EntryReachable && (_reachable || frame.Branched || !frame.HadElse);
             return;
         }

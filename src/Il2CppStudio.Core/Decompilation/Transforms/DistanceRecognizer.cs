@@ -18,58 +18,346 @@ public static class DistanceRecognizer
         {
             if (sqrt.Parent is null || sqrt.Type is not PrimitiveType { Keyword: "float" } || Unparen(sqrt.Expression) is not InvocationExpression
                 { Target: MemberReferenceExpression { MemberName: "Sqrt" }, Arguments.Count: 1 } call) continue;
-            var body = sqrt.GetParent<BlockStatement>();
-            while (body?.GetParent<BlockStatement>() is { } outer) body = outer;
-            if (body is null) continue;
+            var rawArg = Unparen(call.Arguments.Single());
+            var body = FindScopeBlock(sqrt.GetParent<BlockStatement>(), rawArg);
+            var sqrtStmt = body is null ? null : StatementInBlock(sqrt, body);
+            if (body is null || sqrtStmt is null) continue;
             var helpers = new List<Statement>();
+            var postDeclarations = new HashSet<string>(StringComparer.Ordinal);
             List<string>? locals;
-            if (call.Arguments.Single() is IdentifierExpression dRef)
+            if (rawArg is IdentifierExpression dRef)
             {
                 if (Decl(body, dRef.Identifier) is not { } dDecl || Uses(body, dRef.Identifier) != 2) continue;
                 locals = Squares(dDecl.Variables.Single().Initializer);
                 helpers.Add(dDecl);
             }
-            else locals = Squares(call.Arguments.Single());
+            else locals = Squares(rawArg);
             if (locals is not { Count: 3 }) continue;
 
             Expression? a = null, b = null;
             var components = new HashSet<string>();
+            var aVecReads = new List<(Statement ReadStmt, MemberReferenceExpression Access)>();
+            var bVecReads = new List<(Statement ReadStmt, MemberReferenceExpression Access)>();
             var ok = true;
             foreach (var l in locals)
             {
-                var sub = body.Descendants.OfType<ExpressionStatement>().FirstOrDefault(s => s.Expression is AssignmentExpression
-                    { Operator: AssignmentOperatorType.Subtract, Left: IdentifierExpression id } && id.Identifier == l);
+                var sub = FindSub(body, sqrtStmt, l);
                 if (sub is not null)
                 {
                     var (init, initValue) = Init(sub, l);
-                    if (initValue is not MemberReferenceExpression ma || sub.Expression is not AssignmentExpression { Right: MemberReferenceExpression mb }
-                        || ma.MemberName != mb.MemberName || !components.Add(ma.MemberName)
-                        || UsesAfter(body, init!, l) != 1 + 2) { ok = false; break; }
-                    if (a is null) { a = ma.Target; b = mb.Target; }
-                    else if (!a.IsMatch(ma.Target) || !b!.IsMatch(mb.Target)) { ok = false; break; }
-                    helpers.Add(init!); helpers.Add(sub);
+                    if (init is null || initValue is not MemberReferenceExpression ma) { ok = false; break; }
+
+                    MemberReferenceExpression? mb = null;
+                    Statement readStmtB = sub;
+                    if (sub.Expression is AssignmentExpression { Right: MemberReferenceExpression directMb })
+                    {
+                        mb = directMb;
+                    }
+                    else if (sub.Expression is AssignmentExpression { Right: IdentifierExpression rhsId })
+                    {
+                        var (rhsInit, rhsVal) = Init(sub, rhsId.Identifier);
+                        if (rhsInit is not null && rhsVal is MemberReferenceExpression rhsMem && IsScalarLocalValidForRange(body, rhsInit, sub, rhsId.Identifier, out var rhsReused))
+                        {
+                            mb = rhsMem;
+                            readStmtB = rhsInit;
+                            helpers.Add(rhsInit);
+                            if (rhsReused && rhsInit is VariableDeclarationStatement) postDeclarations.Add(rhsId.Identifier);
+                        }
+                    }
+
+                    if (mb is null || ma.MemberName != mb.MemberName || !components.Add(ma.MemberName)
+                        || !IsComponentLocalValid(body, init, sub, sqrtStmt, l, out var reusedAfter))
+                    {
+                        ok = false; break;
+                    }
+                    aVecReads.Add((init, ma));
+                    bVecReads.Add((readStmtB, mb));
+                    helpers.Add(init);
+                    helpers.Add(sub);
+                    if (reusedAfter && init is VariableDeclarationStatement) postDeclarations.Add(l);
                 }
-                else if (Decl(body, l) is { } diffDecl && diffDecl.Variables.Single().Initializer is BinaryOperatorExpression
+                else if (DeclBefore(body, sqrtStmt, l) is { } diffDecl && diffDecl.Variables.Single().Initializer is BinaryOperatorExpression
                     { Operator: BinaryOperatorType.Subtract, Left: MemberReferenceExpression ma2, Right: MemberReferenceExpression mb2 }
-                    && ma2.MemberName == mb2.MemberName && components.Add(ma2.MemberName) && Uses(body, l) == 1 + 2)
+                    && ma2.MemberName == mb2.MemberName && components.Add(ma2.MemberName)
+                    && IsComponentLocalValid(body, diffDecl, diffDecl, sqrtStmt, l, out var reusedDiff))
                 {
-                    if (a is null) { a = ma2.Target; b = mb2.Target; }
-                    else if (!a.IsMatch(ma2.Target) || !b!.IsMatch(mb2.Target)) { ok = false; break; }
+                    aVecReads.Add((diffDecl, ma2));
+                    bVecReads.Add((diffDecl, mb2));
                     helpers.Add(diffDecl);
+                    if (reusedDiff && diffDecl is VariableDeclarationStatement) postDeclarations.Add(l);
                 }
                 else { ok = false; break; }
             }
-            if (!ok || a is null || !components.SetEquals(["x", "y", "z"])) continue;
+            if (!ok || !components.SetEquals(["x", "y", "z"])) continue;
+
+            if (!TryResolveVectorSource(body, sqrtStmt, aVecReads, helpers, postDeclarations, out a, out var vecStmtA)
+                || !TryResolveVectorSource(body, sqrtStmt, bVecReads, helpers, postDeclarations, out b, out var vecStmtB)
+                || a is null || b is null)
+                continue;
+            if (vecStmtA is not null && ReferenceEquals(vecStmtA, vecStmtB)) continue;
+            if (vecStmtA is not null) helpers.Add(vecStmtA);
+            if (vecStmtB is not null) helpers.Add(vecStmtB);
 
             var useMagnitude = sqrt.Ancestors.OfType<MethodDeclaration>().FirstOrDefault() is { } md
                 && md.Descendants.OfType<MemberReferenceExpression>().Any(m => m.MemberName == "magnitude");
             Expression distExpr = useMagnitude
-                ? new MemberReferenceExpression(new ParenthesizedExpression(new BinaryOperatorExpression(a.Clone(), BinaryOperatorType.Subtract, b!.Clone())), "magnitude")
-                : new InvocationExpression(new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Vector3")), "Distance"), a.Clone(), b!.Clone());
+                ? new MemberReferenceExpression(new ParenthesizedExpression(new BinaryOperatorExpression(a.Clone(), BinaryOperatorType.Subtract, b.Clone())), "magnitude")
+                : new InvocationExpression(new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Vector3")), "Distance"), a.Clone(), b.Clone());
             sqrt.ReplaceWith(distExpr);
-            foreach (var h in helpers) h.Remove();
+            var distinctHelpers = helpers.Distinct().ToList();
+            var helperSet = new HashSet<Statement>(distinctHelpers);
+            foreach (var h in distinctHelpers)
+            {
+                if (h is VariableDeclarationStatement vds && vds.Variables.Count == 1)
+                {
+                    var varName = vds.Variables.Single().Name;
+                    if (HasReferenceOutside(body, varName, helperSet))
+                    {
+                        if (!TryPromoteLaterAssignment(body, vds, varName, helperSet))
+                            vds.Variables.Single().Initializer = Expression.Null;
+                        continue;
+                    }
+                }
+                h.Remove();
+            }
         }
         FoldVectorEquality(tree);
+    }
+
+    private static BlockStatement? FindScopeBlock(BlockStatement? inner, Expression arg)
+    {
+        if (inner is null) return null;
+        if (arg is IdentifierExpression dRef)
+        {
+            for (var b = inner; b is not null; b = b.GetParent<BlockStatement>())
+                if (Decl(b, dRef.Identifier) is not null) return b;
+            return inner;
+        }
+        if (Squares(arg) is { Count: 3 } sq)
+        {
+            for (var b = inner; b is not null; b = b.GetParent<BlockStatement>())
+                if (b.Statements.Any(s => s is VariableDeclarationStatement d && d.Variables.Count == 1 && d.Variables.Single().Name == sq[0]
+                    || s is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Subtract, Left: IdentifierExpression id } } && id.Identifier == sq[0]))
+                    return b;
+        }
+        return inner;
+    }
+
+    private static Statement? StatementInBlock(AstNode node, BlockStatement block)
+    {
+        for (var cur = node; cur is not null; cur = cur.Parent)
+            if (cur is Statement st && cur.Parent == block) return st;
+        return null;
+    }
+
+    private static ExpressionStatement? FindSub(BlockStatement body, Statement sqrtStmt, string local)
+    {
+        ExpressionStatement? match = null;
+        foreach (var s in body.Statements)
+        {
+            if (s == sqrtStmt) break;
+            if (s is ExpressionStatement es && es.Expression is AssignmentExpression
+                { Operator: AssignmentOperatorType.Subtract, Left: IdentifierExpression id } && id.Identifier == local)
+                match = es;
+        }
+        return match;
+    }
+
+    private static VariableDeclarationStatement? DeclBefore(BlockStatement body, Statement sqrtStmt, string name)
+    {
+        foreach (var s in body.Statements)
+        {
+            if (s == sqrtStmt) break;
+            if (s is VariableDeclarationStatement { Variables.Count: 1 } d && d.Variables.Single().Name == name) return d;
+        }
+        return null;
+    }
+
+    private static bool IsComponentLocalValid(BlockStatement body, Statement init, Statement sub, Statement sqrtStmt, string name, out bool reusedAfter)
+    {
+        reusedAfter = false;
+        var seenInit = false;
+        foreach (var s in body.Statements)
+        {
+            if (s == init) { seenInit = true; continue; }
+            if (!seenInit) continue;
+            if (s == sub) continue;
+            if (s == sqrtStmt)
+            {
+                var sqrtNodeUses = sqrtStmt.Descendants.OfType<IdentifierExpression>().Where(i => i.Identifier == name).ToList();
+                var condCount = 0;
+                foreach (var u in sqrtNodeUses)
+                {
+                    var insideChildStmt = false;
+                    for (AstNode? a = u; a is not null && a != sqrtStmt; a = a.Parent)
+                    {
+                        if (sqrtStmt is IfElseStatement ifs2 && (a == ifs2.TrueStatement || a == ifs2.FalseStatement)
+                            || a.Role == Roles.EmbeddedStatement && a is Statement) { insideChildStmt = true; break; }
+                    }
+                    if (!insideChildStmt) condCount++;
+                }
+                if (condCount != 2) return false;
+                if (sqrtStmt is IfElseStatement ifs)
+                {
+                    if (!IsSafeInBranchAfterSqrt(ifs.TrueStatement, name, ref reusedAfter)) return false;
+                    if (!IsSafeInBranchAfterSqrt(ifs.FalseStatement, name, ref reusedAfter)) return false;
+                }
+                else
+                {
+                    if (sqrtNodeUses.Count != 2) return false;
+                }
+                return IsDeadOrReassignedAfter(body, sqrtStmt, name, ref reusedAfter);
+            }
+            if (s.DescendantsAndSelf.OfType<IdentifierExpression>().Any(i => i.Identifier == name))
+                return false;
+        }
+        return false;
+    }
+
+    private static bool IsScalarLocalValidForRange(BlockStatement body, Statement init, Statement useStmt, string name, out bool reusedAfter)
+    {
+        reusedAfter = false;
+        var seenInit = false;
+        foreach (var s in body.Statements)
+        {
+            if (s == init) { seenInit = true; continue; }
+            if (!seenInit) continue;
+            if (s == useStmt)
+            {
+                var useCount = useStmt.DescendantsAndSelf.OfType<IdentifierExpression>().Count(i => i.Identifier == name);
+                if (useCount != 1) return false;
+                return IsDeadOrReassignedAfter(body, useStmt, name, ref reusedAfter);
+            }
+            if (s.DescendantsAndSelf.OfType<IdentifierExpression>().Any(i => i.Identifier == name))
+                return false;
+        }
+        return false;
+    }
+
+    private static bool IsDeadOrReassignedAfter(BlockStatement body, Statement afterStmt, string name, ref bool reusedAfter)
+    {
+        var past = false;
+        foreach (var s in body.Statements)
+        {
+            if (s == afterStmt) { past = true; continue; }
+            if (!past) continue;
+            if (IsUnconditionalAssign(s, name)) { reusedAfter = true; return true; }
+            if (s.DescendantsAndSelf.OfType<IdentifierExpression>().Any(i => i.Identifier == name)) return false;
+        }
+        return true;
+    }
+
+    private static bool IsSafeInBranchAfterSqrt(Statement branch, string name, ref bool reusedAfter)
+    {
+        if (branch.IsNull) return true;
+        if (branch is BlockStatement block)
+        {
+            foreach (var s in block.Statements)
+            {
+                if (IsUnconditionalAssign(s, name)) { reusedAfter = true; return true; }
+                if (s.DescendantsAndSelf.OfType<IdentifierExpression>().Any(i => i.Identifier == name)) return false;
+            }
+            return true;
+        }
+        if (IsUnconditionalAssign(branch, name)) { reusedAfter = true; return true; }
+        return !branch.DescendantsAndSelf.OfType<IdentifierExpression>().Any(i => i.Identifier == name);
+    }
+
+    private static bool IsUnconditionalAssign(Statement s, string name) =>
+        s is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: IdentifierExpression id } a }
+        && id.Identifier == name
+        && !a.Right.DescendantsAndSelf.OfType<IdentifierExpression>().Any(i => i.Identifier == name);
+
+    private static bool TryResolveVectorSource(
+        BlockStatement body,
+        Statement sqrtStmt,
+        List<(Statement ReadStmt, MemberReferenceExpression Access)> reads,
+        List<Statement> knownHelpers,
+        HashSet<string> postDeclarations,
+        out Expression? source,
+        out Statement? vecStmt)
+    {
+        source = null;
+        vecStmt = null;
+        if (reads.Count != 3) return false;
+
+        var firstTarget = reads[0].Access.Target;
+        if (firstTarget is not IdentifierExpression id)
+        {
+            for (var i = 1; i < reads.Count; i++)
+                if (!firstTarget.IsMatch(reads[i].Access.Target)) return false;
+            source = firstTarget;
+            return true;
+        }
+
+        Statement? commonDef = null;
+        Expression? commonVal = null;
+        foreach (var (stmt, access) in reads)
+        {
+            if (access.Target is not IdentifierExpression ri || ri.Identifier != id.Identifier) return false;
+            var (def, val) = Init(stmt, id.Identifier, stopOnAnyRead: false);
+            if (def is null || val is null) return false;
+            if (commonDef is null) { commonDef = def; commonVal = val; }
+            else if (!ReferenceEquals(commonDef, def)) return false;
+        }
+        if (commonDef is null || commonVal is null) return false;
+
+        // Verify no other statement uses this definition of id.Identifier before the next overwrite or sqrtStmt's condition.
+        var pastDef = false;
+        foreach (var s in body.Statements)
+        {
+            if (s == commonDef) { pastDef = true; continue; }
+            if (!pastDef) continue;
+            if (IsUnconditionalAssign(s, id.Identifier))
+            {
+                if (commonDef is VariableDeclarationStatement) postDeclarations.Add(id.Identifier);
+                break;
+            }
+            var allowedReads = reads.Count(r => r.ReadStmt == s);
+            var totalRefs = s.DescendantsAndSelf.OfType<IdentifierExpression>().Count(i => i.Identifier == id.Identifier);
+            if (s == sqrtStmt)
+            {
+                if (sqrtStmt is IfElseStatement ifs)
+                {
+                    var branchUnused = false;
+                    if (!IsSafeInBranchAfterSqrt(ifs.TrueStatement, id.Identifier, ref branchUnused)
+                        || !IsSafeInBranchAfterSqrt(ifs.FalseStatement, id.Identifier, ref branchUnused))
+                        return false;
+                    if (branchUnused && commonDef is VariableDeclarationStatement) postDeclarations.Add(id.Identifier);
+                    totalRefs = s.Descendants.OfType<IdentifierExpression>().Count(i => i.Identifier == id.Identifier && !i.Ancestors.Contains(ifs.TrueStatement) && !i.Ancestors.Contains(ifs.FalseStatement));
+                }
+                if (totalRefs != 0) return false;
+                break;
+            }
+            if (totalRefs != allowedReads) return false;
+        }
+
+        // If the vector temp is still read later in the block (before any overwrite), abort resolving it.
+        var afterSqrtReused = false;
+        if (!IsDeadOrReassignedAfter(body, sqrtStmt, id.Identifier, ref afterSqrtReused)) return false;
+        if (afterSqrtReused && commonDef is VariableDeclarationStatement) postDeclarations.Add(id.Identifier);
+
+        source = commonVal;
+        vecStmt = commonDef;
+        return true;
+    }
+
+    private static bool HasReferenceOutside(BlockStatement body, string varName, HashSet<Statement> removed) =>
+        body.Descendants.OfType<IdentifierExpression>().Any(i => i.Identifier == varName && !i.Ancestors.OfType<Statement>().Any(removed.Contains));
+
+    private static bool TryPromoteLaterAssignment(BlockStatement body, VariableDeclarationStatement decl, string varName, HashSet<Statement> removed)
+    {
+        var remaining = body.Descendants.OfType<IdentifierExpression>().Where(i => i.Identifier == varName && !i.Ancestors.OfType<Statement>().Any(removed.Contains)).ToList();
+        if (remaining.Count == 0) return false;
+        var firstStmt = remaining[0].Ancestors.OfType<Statement>().FirstOrDefault(s => s.Parent is BlockStatement);
+        if (firstStmt is not ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: IdentifierExpression lhs } assign }
+            || lhs.Identifier != varName || firstStmt.Parent is not BlockStatement targetBlock)
+            return false;
+        if (!remaining.All(r => r.Ancestors.Contains(targetBlock))) return false;
+        var newDecl = new VariableDeclarationStatement(decl.Type.Clone(), varName, assign.Right.Detach());
+        firstStmt.ReplaceWith(newDecl);
+        decl.Remove();
+        return true;
     }
 
     private static void FoldVectorEquality(SyntaxTree tree)
@@ -139,18 +427,32 @@ public static class DistanceRecognizer
     private static bool IsV3Epsilon(Expression e) =>
         Unparen(e) is PrimitiveExpression { Value: float f } && MathF.Abs(f - 1e-10f) < 1e-12f;
 
-    /// <summary>The statement giving <paramref name="l"/> its value right before the <c>-=</c> (declaration or plain assignment, same block).</summary>
-    private static (Statement? Stmt, Expression? Value) Init(Statement? sub, string l)
+    /// <summary>The statement giving <paramref name="l"/> its value right before <paramref name="sub"/> (declaration or plain assignment, same block).</summary>
+    private static (Statement? Stmt, Expression? Value) Init(Statement? sub, string l, bool stopOnAnyRead = true)
     {
         for (var s = sub?.PrevSibling as Statement; s is not null; s = s.PrevSibling as Statement)
         {
             if (s is VariableDeclarationStatement { Variables.Count: 1 } d && d.Variables.Single().Name == l) return (s, d.Variables.Single().Initializer);
             if (s is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: IdentifierExpression id } a } && id.Identifier == l)
                 return (s, a.Right);
-            if (s.DescendantsAndSelf.OfType<IdentifierExpression>().Any(i => i.Identifier == l)) return (null, null);
+            if (stopOnAnyRead)
+            {
+                if (s.DescendantsAndSelf.OfType<IdentifierExpression>().Any(i => i.Identifier == l)) return (null, null);
+            }
+            else if (WritesIdentifier(s, l))
+            {
+                return (null, null);
+            }
         }
         return (null, null);
     }
+
+    private static bool WritesIdentifier(Statement s, string l) =>
+        s.DescendantsAndSelf.OfType<AssignmentExpression>().Any(a => a.Left.DescendantsAndSelf.OfType<IdentifierExpression>().Any(i => i.Identifier == l))
+        || s.DescendantsAndSelf.OfType<DirectionExpression>().Any(d => d.Expression.DescendantsAndSelf.OfType<IdentifierExpression>().Any(i => i.Identifier == l))
+        || s.DescendantsAndSelf.OfType<UnaryOperatorExpression>().Any(u =>
+            u.Operator is UnaryOperatorType.Increment or UnaryOperatorType.Decrement or UnaryOperatorType.PostIncrement or UnaryOperatorType.PostDecrement
+            && u.Expression.DescendantsAndSelf.OfType<IdentifierExpression>().Any(i => i.Identifier == l));
 
     /// <summary>References to <paramref name="name"/> in statements after <paramref name="from"/> (document order).</summary>
     private static int UsesAfter(BlockStatement body, Statement from, string name)

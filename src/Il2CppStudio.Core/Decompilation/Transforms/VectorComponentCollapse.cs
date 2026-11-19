@@ -37,9 +37,9 @@ public static class VectorComponentCollapse
                 for (var k = 0; k < names.Length; k++)
                     if (Writes(stmts[i + k]) is { } w && names.Contains(w.Member.MemberName) && w.Member.Target.IsMatch(first.Member.Target)) group.Add(w);
                 if (group.Count != names.Length || group.Select(g => g.Member.MemberName).Distinct().Count() != names.Length) continue;
-                // Out-of-order writes are only reordered when every value is a constant (no evaluation order to keep).
+                // Out-of-order writes are only reordered when every value is a constant or pure local/field read (no evaluation order to keep).
                 var inOrder = group.Select(g => g.Member.MemberName).SequenceEqual(names);
-                if (!inOrder && !group.All(g => IsConstant(g.Value))) continue;
+                if (!inOrder && !group.All(g => IsConstant(g.Value) || IsPureLocalRead(g.Value))) continue;
                 group = [.. group.OrderBy(g => Array.IndexOf(names, g.Member.MemberName))];
                 var target = first.Member.Target;
                 if (!FieldOnly(target) || group.Select((g, k) => ReadsWritten(g.Value, target, names, k)).Any(x => x)) continue;
@@ -111,6 +111,16 @@ public static class VectorComponentCollapse
 
     private static bool IsConstant(Expression e) =>
         e is PrimitiveExpression || e is UnaryOperatorExpression { Operator: UnaryOperatorType.Minus, Expression: PrimitiveExpression };
+
+    private static bool IsPureLocalRead(Expression e) =>
+        FieldOnly(e) && HasLocalOrThisRoot(e);
+
+    private static bool HasLocalOrThisRoot(Expression e) => e switch
+    {
+        IdentifierExpression or ThisReferenceExpression => true,
+        MemberReferenceExpression m => HasLocalOrThisRoot(m.Target),
+        _ => false,
+    };
 
     /// <summary>
     /// True when component value <paramref name="k"/> reads the target in a way the one-shot form would change: the

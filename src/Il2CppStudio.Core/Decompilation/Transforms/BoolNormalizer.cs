@@ -62,6 +62,8 @@ public static class BoolNormalizer
         ParenthesizedExpression p => Not(p.Expression),
         BinaryOperatorExpression { Operator: BinaryOperatorType.Equality } b => new BinaryOperatorExpression(b.Left.Clone(), BinaryOperatorType.InEquality, b.Right.Clone()),
         BinaryOperatorExpression { Operator: BinaryOperatorType.InEquality } b => new BinaryOperatorExpression(b.Left.Clone(), BinaryOperatorType.Equality, b.Right.Clone()),
+        BinaryOperatorExpression { Operator: BinaryOperatorType.ConditionalOr } b when EmptyIfRemover.IsPure(b.Right) =>
+            new BinaryOperatorExpression(Not(b.Left), BinaryOperatorType.ConditionalAnd, Not(b.Right)),
         _ => new UnaryOperatorExpression(UnaryOperatorType.Not, e.Clone()),
     };
 

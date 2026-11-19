@@ -70,17 +70,26 @@ public sealed class InstructionTranslators(RegisterTracker regs, OperandReader o
                 writer.Write(ctx, ins, regs.Get(Register.XMM0)); return true;
             case Mnemonic.Fchs:
                 regs.Set(Register.XMM0, new UnaryExpr(CilOpCodes.Neg, regs.Get(Register.XMM0))); return true;
-            case Mnemonic.Fadd or Mnemonic.Faddp or Mnemonic.Fiadd when ins.OpCount == 1:
-                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Add, regs.Get(Register.XMM0), ops.Read(ins, 0), ValueKind.R4)); return true;
-            case Mnemonic.Fsub or Mnemonic.Fsubp or Mnemonic.Fisub when ins.OpCount == 1:
-                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Sub, regs.Get(Register.XMM0), ops.Read(ins, 0), ValueKind.R4)); return true;
-            case Mnemonic.Fmul or Mnemonic.Fmulp or Mnemonic.Fimul when ins.OpCount == 1:
-                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Mul, regs.Get(Register.XMM0), ops.Read(ins, 0), ValueKind.R4)); return true;
-            case Mnemonic.Fdiv or Mnemonic.Fdivp or Mnemonic.Fidiv when ins.OpCount == 1:
-                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Div, regs.Get(Register.XMM0), ops.Read(ins, 0), ValueKind.R4)); return true;
+            case Mnemonic.Fadd or Mnemonic.Faddp or Mnemonic.Fiadd when X87Op(ins) is var fi and >= 0:
+                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Add, regs.Get(Register.XMM0), ops.Read(ins, fi), ValueKind.R4)); return true;
+            case Mnemonic.Fsub or Mnemonic.Fsubp or Mnemonic.Fisub when X87Op(ins) is var fi and >= 0:
+                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Sub, regs.Get(Register.XMM0), ops.Read(ins, fi), ValueKind.R4)); return true;
+            case Mnemonic.Fsubr or Mnemonic.Fsubrp or Mnemonic.Fisubr when X87Op(ins) is var fi and >= 0:
+                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Sub, ops.Read(ins, fi), regs.Get(Register.XMM0), ValueKind.R4)); return true;
+            case Mnemonic.Fmul or Mnemonic.Fmulp or Mnemonic.Fimul when X87Op(ins) is var fi and >= 0:
+                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Mul, regs.Get(Register.XMM0), ops.Read(ins, fi), ValueKind.R4)); return true;
+            case Mnemonic.Fdiv or Mnemonic.Fdivp or Mnemonic.Fidiv when X87Op(ins) is var fi and >= 0:
+                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Div, regs.Get(Register.XMM0), ops.Read(ins, fi), ValueKind.R4)); return true;
+            case Mnemonic.Fdivr or Mnemonic.Fdivrp or Mnemonic.Fidivr when X87Op(ins) is var fi and >= 0:
+                regs.Set(Register.XMM0, new BinaryExpr(CilOpCodes.Div, ops.Read(ins, fi), regs.Get(Register.XMM0), ValueKind.R4)); return true;
             default: return false;
         }
     }
+
+    private static int X87Op(in Instruction ins) =>
+        ins.OpCount == 1 ? 0
+        : ins.OpCount == 2 && ins.Op0Kind == OpKind.Register && ins.Op0Register == Register.ST0 ? 1
+        : -1;
 
     /// <summary>push/pop/sub rsp/add rsp/mov reg,rsp: tracked for stack-slot canonicalization, no CIL.</summary>
     private bool TranslateFrame(in Instruction ins)

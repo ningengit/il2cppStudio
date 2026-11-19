@@ -589,7 +589,8 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                     receiverType: recvType, stubs: _stubs, module: _module);
                 if (EmitManagedCall(ctx, s.MethodIndex, s.MethodSpecIndex)) return;
             }
-            if (ReadReg("r0") is MarkerExpr { Marker: MarkerKind.MethodInfo or MarkerKind.TypeInfo or MarkerKind.Il2CppType })
+            if (ReadReg("r0") is MarkerExpr { Marker: MarkerKind.MethodInfo or MarkerKind.TypeInfo or MarkerKind.Il2CppType } or StringExpr
+                || _helpers?.KindOf(targetVa) is Runtime.RuntimeHelperKind.MetadataInit or Runtime.RuntimeHelperKind.ClassInit or Runtime.RuntimeHelperKind.WriteBarrier)
             {
                 Elided++;
                 ClobberVolatiles();

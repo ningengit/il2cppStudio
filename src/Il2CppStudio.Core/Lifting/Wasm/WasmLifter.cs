@@ -147,6 +147,7 @@ internal sealed class FrameSlotState(int offset)
     public TypeSignature? StructType { get; set; }
     public int Size { get; set; }
     public bool ScalarUsed { get; set; }
+    public int? ConstBits { get; set; }
 }
 
 /// <summary>An open wasm structured-control frame.</summary>
@@ -155,6 +156,8 @@ internal sealed class BlockFrame(WasmMnemonic kind, int baseHeight, WasmFuncType
     public WasmMnemonic Kind { get; } = kind;
     public int Base { get; } = baseHeight;
     public WasmFuncType Sig { get; } = sig;
+    public int StartPc { get; set; }
+    public int EndPc { get; set; }
     public CilInstructionLabel? EndLabel { get; set; }
     public CilInstructionLabel? ElseLabel { get; set; }
     public CilInstructionLabel? LoopLabel { get; set; }
@@ -163,6 +166,15 @@ internal sealed class BlockFrame(WasmMnemonic kind, int baseHeight, WasmFuncType
     public bool Branched { get; set; }
     public bool HadElse { get; set; }
     public bool EntryReachable { get; set; }
+    public bool ThenFellThrough { get; set; }
+    public Dictionary<int, Expr>? SavedSubst { get; set; }
+    public Dictionary<int, TypeSignature?>? SavedPointee { get; set; }
+    public Dictionary<int, CilLocalVariable>? SavedLocals { get; set; }
+    public Dictionary<int, Expr>? SavedParamValue { get; set; }
+    public Dictionary<int, Expr>? ThenEndSubst { get; set; }
+    public Dictionary<int, TypeSignature?>? ThenEndPointee { get; set; }
+    public Dictionary<int, CilLocalVariable>? ThenEndLocals { get; set; }
+    public Dictionary<int, Expr>? ThenEndParamValue { get; set; }
     public int ResultCount => Sig.ResultCount;
     public int ParamCount => Sig.ParameterCount;
 }

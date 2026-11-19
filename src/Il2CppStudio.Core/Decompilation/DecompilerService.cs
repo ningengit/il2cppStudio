@@ -110,6 +110,7 @@ public sealed class DecompilerService
         }
         if (annotate)
         {
+            Transforms.InheritedStaticSimplifier.Apply(tree);
             Transforms.ExplicitImplementationFixer.Apply(tree);
             Transforms.InlinedGetterRestorer.Apply(tree);
             Transforms.CompileHygiene.Apply(tree);
