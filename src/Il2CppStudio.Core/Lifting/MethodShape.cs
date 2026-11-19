@@ -19,15 +19,18 @@ public sealed record MethodShape(
     public int ThisPosition => HasReturnBuffer ? 1 : 0;
 
     public static MethodShape Create(GlobalMetadata md, Il2CppRegistration reg, StubAssemblyBuilder stubs, MemoryResolver mem,
-        ModuleDefinition ctx, int methodIndex, int specIndex, bool forCallSite = false)
+        ModuleDefinition ctx, int methodIndex, int specIndex, bool forCallSite = false,
+        IReadOnlyList<TypeSignature>? classArgsOverride = null)
     {
         var def = md.Methods[methodIndex];
         var classArgs = new List<TypeSignature>();
         var methodArgs = new List<TypeSignature>();
+        if (classArgsOverride is not null)
+            classArgs.AddRange(classArgsOverride);
         if (specIndex >= 0 && (uint)specIndex < (uint)reg.MethodSpecs.Count)
         {
             var spec = reg.MethodSpecs[specIndex];
-            if (spec.ClassInstIndex >= 0 && spec.ClassInstIndex < reg.GenericInstVas.Count)
+            if (classArgsOverride is null && spec.ClassInstIndex >= 0 && spec.ClassInstIndex < reg.GenericInstVas.Count)
                 classArgs.AddRange(reg.ReadGenericInst(reg.GenericInstVas[spec.ClassInstIndex]).TypeArgVas.Select(v => stubs.ToSig(ctx, reg.GetTypeAt(v))));
             if (spec.MethodInstIndex >= 0 && spec.MethodInstIndex < reg.GenericInstVas.Count)
                 methodArgs.AddRange(reg.ReadGenericInst(reg.GenericInstVas[spec.MethodInstIndex]).TypeArgVas.Select(v => stubs.ToSig(ctx, reg.GetTypeAt(v))));

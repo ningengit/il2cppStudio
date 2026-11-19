@@ -317,8 +317,61 @@ public sealed class StubAssemblyBuilder
             var ev = new EventDefinition(evName, 0, evType);
             if (ed.Add >= 0 && _methodDefs[def.MethodStart + ed.Add] is { } add) ev.Semantics.Add(new MethodSemantics(add, MethodSemanticsAttributes.AddOn));
             if (ed.Remove >= 0 && _methodDefs[def.MethodStart + ed.Remove] is { } rem) ev.Semantics.Add(new MethodSemantics(rem, MethodSemanticsAttributes.RemoveOn));
-            if (ev.Semantics.Count > 0 && !td.Fields.Any(f => f.Name == evName)) td.Events.Add(ev);
+            if (ev.Semantics.Count > 0 && (!td.Fields.Any(f => f.Name == evName) || ImplementsInterfaceEvent(def, evName))) td.Events.Add(ev);
         }
+    }
+
+    private int TypeDefOfTypeIndex(int typeIndex)
+    {
+        if (typeIndex < 0) return -1;
+        if (_reg is not null && _reg.TryGetType(typeIndex, out var t))
+        {
+            if (t.Type == Il2CppTypeEnum.GenericInst)
+            {
+                var gc = _reg.ReadGenericClass(t.Data);
+                t = _reg.GetTypeAt(gc.TypeVa);
+            }
+            return _names.ResolveTypeDefIndex(t);
+        }
+        _byvalToTypeDef ??= _md.TypeDefinitions.Select((x, i) => (x.ByvalTypeIndex, i)).Where(x => x.ByvalTypeIndex >= 0)
+            .GroupBy(x => x.ByvalTypeIndex).ToDictionary(g => g.Key, g => g.First().i);
+        return _byvalToTypeDef.GetValueOrDefault(typeIndex, -1);
+    }
+
+    private bool ImplementsInterfaceEvent(Il2CppTypeDefinition def, string evName)
+    {
+        var visited = new HashSet<int>();
+        var queue = new Queue<int>();
+        var cur = def;
+        for (var hop = 0; hop < 16; hop++)
+        {
+            for (var i = 0; i < cur.InterfacesCount; i++)
+            {
+                var idx = TypeDefOfTypeIndex(_md.Interfaces[cur.InterfacesStart + i]);
+                if (idx >= 0 && visited.Add(idx)) queue.Enqueue(idx);
+            }
+            var parentTd = TypeDefOfTypeIndex(cur.ParentIndex);
+            if ((uint)parentTd >= (uint)_md.TypeDefinitions.Length) break;
+            cur = _md.TypeDefinitions[parentTd];
+        }
+        while (queue.Count > 0)
+        {
+            var ii = queue.Dequeue();
+            if ((uint)ii >= (uint)_md.TypeDefinitions.Length) continue;
+            var iface = _md.TypeDefinitions[ii];
+            for (var e = 0; e < iface.EventCount; e++)
+            {
+                var ifaceEvName = _md.GetString(_md.Events[iface.EventStart + e].NameIndex);
+                if (evName == ifaceEvName || evName.EndsWith("." + ifaceEvName, StringComparison.Ordinal))
+                    return true;
+            }
+            for (var i = 0; i < iface.InterfacesCount; i++)
+            {
+                var sub = TypeDefOfTypeIndex(_md.Interfaces[iface.InterfacesStart + i]);
+                if (sub >= 0 && visited.Add(sub)) queue.Enqueue(sub);
+            }
+        }
+        return false;
     }
 
     private static void AddDefaultMemberAttribute(ModuleDefinition module, TypeDefinition td, string memberName)

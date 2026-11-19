@@ -46,6 +46,7 @@ public sealed class OperandReader(RegisterTracker regs, StructSlotTable slots, M
         if (baseExpr is StackAddrPlaceholder p && ins.MemoryIndex == Register.None) return ReadStack(p.Key + disp, size);
         var index = ins.MemoryIndex == Register.None ? null : regs.Get(ins.MemoryIndex);
         if (index is null && disp == 0 && _gotValues.Contains(baseExpr)) return baseExpr;   // [GOT value] = the metadata item
+        if (index is null && disp == 0 && _slotUsage.TryGetValue(baseExpr, out var slotUsage)) return UsageValue(slotUsage);   // lea r,[usage]; mov x,[r]
         return mem.Load(baseExpr, index, ins.MemoryIndexScale, disp, size)
                ?? new NativeExpr($"*({baseExpr.Describe()} + 0x{disp:X})", size == 4 || ArgumentLocations.PointerSize == 4 && size != 8 ? ValueKind.I4 : ValueKind.I8);
     }
@@ -80,9 +81,9 @@ public sealed class OperandReader(RegisterTracker regs, StructSlotTable slots, M
     /// <summary>Address computed by <c>lea</c>.</summary>
     public Expr AddressOf(in Instruction ins)
     {
-        if (ins.IsIPRelativeMemoryOperand) return ReadGlobal(ins.IPRelativeMemoryAddress, MemorySize.UInt64);
+        if (ins.IsIPRelativeMemoryOperand) return ReadAddressGlobal(ins.IPRelativeMemoryAddress, MemorySize.UInt64);
         if (ins.MemoryBase == Register.None && ins.MemoryIndex == Register.None && ArgumentLocations.PointerSize == 4 && ins.MemoryDisplacement32 != 0)
-            return ReadGlobal(ins.MemoryDisplacement32, MemorySize.UInt32);
+            return ReadAddressGlobal(ins.MemoryDisplacement32, MemorySize.UInt32);
         var disp = unchecked((long)ins.MemoryDisplacement64);
         if (ArgumentLocations.PointerSize == 4 && disp > int.MaxValue) disp = unchecked((int)ins.MemoryDisplacement32);
         if (ins.MemoryBase is Register.RSP or Register.ESP && ins.MemoryIndex == Register.None) return new StackAddrPlaceholder(regs.SlotKey(disp));
@@ -138,6 +139,20 @@ public sealed class OperandReader(RegisterTracker regs, StructSlotTable slots, M
 
     /// <summary>Values read through a GOT slot; dereferencing them (<c>[reg+0]</c>) yields the same metadata item.</summary>
     private readonly HashSet<Expr> _gotValues = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>Addresses of global runtime-metadata slots computed by <c>lea</c>; one <c>[reg+0]</c> read yields the metadata item.</summary>
+    private readonly Dictionary<Expr, MetadataUsage> _slotUsage = new(ReferenceEqualityComparer.Instance);
+
+    private Expr ReadAddressGlobal(ulong va, MemorySize size)
+    {
+        if (sym.TryGetUsage(va, out var u))
+        {
+            var slot = UsageValue(u);
+            _slotUsage[slot] = u;
+            return slot;
+        }
+        return ReadGlobal(va, size);
+    }
 
     private Expr UsageValue(MetadataUsage u) => u.Kind switch
     {

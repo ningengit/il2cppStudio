@@ -23,14 +23,38 @@ public static class CrossTypeAccessScanner
                 tokens.Add(n.MetadataToken.ToUInt32());
         }
 
+        void ScanTypeSig(TypeSignature? sig, TypeDefinition? callerType)
+        {
+            switch (sig)
+            {
+                case TypeDefOrRefSignature tdor:
+                    if (tdor.Type is TypeDefinition td && td.IsNested && (callerType is null || !Encloses(td, callerType)))
+                        AddNestedOwners(td);
+                    break;
+                case GenericInstanceTypeSignature gi:
+                    if (gi.GenericType is TypeDefinition gtd && gtd.IsNested && (callerType is null || !Encloses(gtd, callerType)))
+                        AddNestedOwners(gtd);
+                    foreach (var ta in gi.TypeArguments)
+                        ScanTypeSig(ta, callerType);
+                    break;
+                case TypeSpecificationSignature ts:
+                    ScanTypeSig(ts.BaseType, callerType);
+                    break;
+            }
+        }
+
         void ScanMethod(MethodDefinition method, TypeDefinition? callerType)
         {
             if (method.CilMethodBody is not { } body) return;
             foreach (var ins in body.Instructions)
             {
+                if (ins.Operand is MethodSpecification { Signature: { } msigSpec })
+                    foreach (var ta in msigSpec.TypeArguments)
+                        ScanTypeSig(ta, callerType);
                 var operand = ins.Operand is MethodSpecification ms ? (object?)ms.Method : ins.Operand;
                 if (operand is MemberReference mr)
                 {
+                    if (mr.Parent is TypeSpecification mrSpec) ScanTypeSig(mrSpec.Signature, callerType);
                     var parentTd = mr.Parent switch
                     {
                         TypeDefinition td0 => td0,
@@ -48,13 +72,9 @@ public static class CrossTypeAccessScanner
 
                 if (operand is TypeDefinition or TypeSpecification)
                 {
-                    var td = operand switch
-                    {
-                        TypeDefinition t0 => t0,
-                        TypeSpecification { Signature: GenericInstanceTypeSignature { GenericType: TypeDefinition gtd } } => gtd,
-                        _ => null,
-                    };
-                    if (td is not null && td.IsNested && (callerType is null || !Encloses(td, callerType)))
+                    if (operand is TypeSpecification ts)
+                        ScanTypeSig(ts.Signature, callerType);
+                    else if (operand is TypeDefinition td && td.IsNested && (callerType is null || !Encloses(td, callerType)))
                         AddNestedOwners(td);
                     continue;
                 }
@@ -77,9 +97,33 @@ public static class CrossTypeAccessScanner
             }
         }
 
+        void ScanSignatures()
+        {
+            foreach (var type in module.GetAllTypes())
+            {
+                var typeVisible = !type.IsNestedPrivate || tokens.Contains(type.MetadataToken.ToUInt32());
+                foreach (var field in type.Fields)
+                {
+                    var fVisible = (typeVisible && (field.Attributes & FieldAttributes.FieldAccessMask) != FieldAttributes.Private)
+                        || tokens.Contains(field.MetadataToken.ToUInt32());
+                    if (fVisible) ScanTypeSig(field.Signature?.FieldType, type);
+                }
+                foreach (var method in type.Methods)
+                {
+                    var mVisible = (typeVisible && (method.Attributes & MethodAttributes.MemberAccessMask) != MethodAttributes.Private)
+                        || tokens.Contains(method.MetadataToken.ToUInt32());
+                    if (!mVisible || method.Signature is not { } sig) continue;
+                    ScanTypeSig(sig.ReturnType, type);
+                    foreach (var p in sig.ParameterTypes) ScanTypeSig(p, type);
+                }
+            }
+        }
+
         foreach (var type in module.GetAllTypes())
             foreach (var method in type.Methods)
                 ScanMethod(method, type);
+
+        ScanSignatures();
 
         foreach (var type in module.GetAllTypes())
             foreach (var method in type.Methods)
@@ -87,6 +131,32 @@ public static class CrossTypeAccessScanner
                     && method.Name?.Value is { } mn
                     && (mn.Contains(">b__", StringComparison.Ordinal) || mn.Contains(">g__", StringComparison.Ordinal)))
                     ScanMethod(method, callerType: null);
+
+        ScanSignatures();
+
+        foreach (var type in module.GetAllTypes())
+        {
+            foreach (var method in type.Methods)
+            {
+                if (!method.IsVirtual || !tokens.Contains(method.MetadataToken.ToUInt32())) continue;
+                var cur = type;
+                for (var hop = 0; hop < 16 && cur is not null; hop++)
+                {
+                    var bt = cur.BaseType switch
+                    {
+                        TypeDefinition btd => btd,
+                        TypeSpecification { Signature: GenericInstanceTypeSignature { GenericType: TypeDefinition bgtd } } => bgtd,
+                        _ => null,
+                    };
+                    if (bt is null) break;
+                    foreach (var bm in bt.Methods)
+                        if (bm.IsVirtual && bm.Name == method.Name
+                            && (bm.Signature?.ParameterTypes.Count ?? 0) == (method.Signature?.ParameterTypes.Count ?? 0))
+                            tokens.Add(bm.MetadataToken.ToUInt32());
+                    cur = bt;
+                }
+            }
+        }
 
         return tokens;
     }

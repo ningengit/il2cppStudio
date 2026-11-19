@@ -8,7 +8,7 @@ namespace Il2CppStudio.Core.Lifting.Runtime;
 /// <summary>Per-target call-site statistics gathered by <see cref="CallSiteScanner"/>.</summary>
 public sealed class CallSiteStats
 {
-    public int Sites, WriteBarrierShape, FollowedByInt3, FollowedByTrap, RcxSetJustBefore, RdxFromTypeInfo, RcxLeaUsage, RaxUsedAfter, FollowedByIndirectCallAtRax, RcxLeaStack, RcxFromTypeInfo, Xmm0SetBefore, Xmm1SetBefore, FollowedByRad2Deg;
+    public int Sites, WriteBarrierShape, FollowedByInt3, FollowedByTrap, RcxSetJustBefore, RdxFromTypeInfo, RcxLeaUsage, RaxUsedAfter, FollowedByIndirectCallAtRax, RcxLeaStack, RcxFromTypeInfo, Xmm0SetBefore, Xmm1SetBefore, FollowedByRad2Deg, FollowedByInitFlagWrite;
     public readonly ConcurrentDictionary<ulong, int> NextCalls = new();
     public void Inc(ref int field) => Interlocked.Increment(ref field);
 }
@@ -61,11 +61,13 @@ public static class CallSiteScanner
             if (SourceUsage(ins, i, a0, sym) is { Kind: MetadataUsageKind.TypeInfo }) s.Inc(ref s.RcxFromTypeInfo);
             if (i > 0 && ins[i - 1].Mnemonic == Mnemonic.Lea && ins[i - 1].Op0Register == a0 && ins[i - 1].MemoryBase == Register.RSP)
                 s.Inc(ref s.RcxLeaStack);
+            var rcxUsage = false;
             for (var k = i - 1; k >= Math.Max(0, i - 3); k--)
                 if (ins[k].Op0Register == a0 && ins[k].IsIPRelativeMemoryOperand
                     && (ins[k].Mnemonic == Mnemonic.Lea && sym.TryGetUsage(ins[k].IPRelativeMemoryAddress, out _)
                         || ins[k].Mnemonic == Mnemonic.Mov && sym.TryGetUsage(sym.Registration.Reader.ReadPointer(ins[k].IPRelativeMemoryAddress), out _)))   // PIC: GOT slot → usage
-                { s.Inc(ref s.RcxLeaUsage); break; }
+                { s.Inc(ref s.RcxLeaUsage); rcxUsage = true; break; }
+            if (!rcxUsage && SourceUsage(ins, i, a0, sym, window: 6) is not null) s.Inc(ref s.RcxLeaUsage);
         }
         else if (i > 0 && ins[i - 1].Mnemonic == Mnemonic.Push)
         {
@@ -88,6 +90,11 @@ public static class CallSiteScanner
             if (!xmm1Seen && full == Register.ZMM1) { s.Inc(ref s.Xmm1SetBefore); xmm1Seen = true; }
         }
 
+        if (i + 1 < ins.Count && ins[i + 1].Mnemonic == Mnemonic.Mov && ins[i + 1].IsIPRelativeMemoryOperand
+            && ins[i + 1].MemorySize.GetSize() == 1
+            && ins[i + 1].Op1Kind is OpKind.Immediate8 or OpKind.Immediate32 && ins[i + 1].GetImmediate(1) == 1
+            && sym.Registration.Reader.IsWritableData(ins[i + 1].IPRelativeMemoryAddress))
+            s.Inc(ref s.FollowedByInitFlagWrite);
         var raxSeen = false;
         for (var k = i + 1; k < Math.Min(ins.Count, i + 10); k++)
         {
@@ -130,10 +137,10 @@ public static class CallSiteScanner
         {
             var x = ins[k];
             if (x.Op0Kind != OpKind.Register || x.Op0Register.GetFullRegister() != reg) continue;
-            if (x.Mnemonic == Mnemonic.Mov && x.IsIPRelativeMemoryOperand)
+            if (x.Mnemonic is Mnemonic.Mov or Mnemonic.Lea && x.IsIPRelativeMemoryOperand)
             {
-                if (!deref && sym.TryGetUsage(x.IPRelativeMemoryAddress, out var u)) return u;
-                if (deref && sym.TryGetUsage(sym.Registration.Reader.ReadPointer(x.IPRelativeMemoryAddress), out var gu)) return gu;
+                if (sym.TryGetUsage(x.IPRelativeMemoryAddress, out var u)) return u;
+                if (deref && x.Mnemonic == Mnemonic.Mov && sym.TryGetUsage(sym.Registration.Reader.ReadPointer(x.IPRelativeMemoryAddress), out var gu)) return gu;
                 return null;
             }
             if (x.Mnemonic == Mnemonic.Mov && x.Op1Kind == OpKind.Register) { reg = x.Op1Register.GetFullRegister(); continue; }

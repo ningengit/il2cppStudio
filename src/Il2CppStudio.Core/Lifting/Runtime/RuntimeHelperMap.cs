@@ -39,8 +39,8 @@ public sealed class RuntimeHelperMap
                 map.Add(va, a.Kind, $"thunk chain reaches {a.Api} (impl 0x{impl - reader.ImageBase:X})", s.Sites);
             else if (Agrees(s.WriteBarrierShape, s, 0.5) && s.FollowedByInt3 == 0)
                 map.Add(va, RuntimeHelperKind.WriteBarrier, $"{s.WriteBarrierShape}/{s.Sites} sites: store [B+D] then lea rcx,[B+D]", s.Sites);
-            else if (s.Sites >= 2 && Ratio(s.RcxLeaUsage, s) >= 0.8)
-                map.Add(va, RuntimeHelperKind.MetadataInit, $"{s.RcxLeaUsage}/{s.Sites} sites: lea rcx,[metadata usage]", s.Sites);
+            else if (s.Sites >= 2 && (Ratio(s.RcxLeaUsage, s) >= 0.8 || (s.FollowedByInitFlagWrite >= 2 && Ratio(s.FollowedByInitFlagWrite, s) >= 0.8 && s.RaxUsedAfter == 0)))
+                map.Add(va, RuntimeHelperKind.MetadataInit, $"{s.RcxLeaUsage}/{s.Sites} sites: lea rcx,[metadata usage] (init-flag writes {s.FollowedByInitFlagWrite})", s.Sites);
             else if (s.Sites >= 2 && Ratio(s.FollowedByTrap, s) >= 0.8 && Ratio(s.RaxUsedAfter, s) < 0.1)
                 map.Add(va, Ratio(s.RcxSetJustBefore, s) >= 0.5 ? RuntimeHelperKind.Raise : RuntimeHelperKind.ThrowHelper,
                     $"{s.FollowedByTrap}/{s.Sites} sites end in int3/another trap call (no return), rcx set before {s.RcxSetJustBefore}/{s.Sites}", s.Sites);

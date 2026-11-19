@@ -49,6 +49,16 @@ public sealed class CallEmitter(
         var retPtr = shape.HasReturnBuffer ? ArgumentLocations.Read(regs, 0, false) : null;
         var thisValue = shape.IsStatic ? null : explicitThis ?? ArgumentLocations.Read(regs, shape.ThisPosition, false);
 
+        if (RebindReceiverGeneric(ref target, ref shape, thisValue, md, reg, stubs, mem, module, methodIndex, specIndex))
+        {
+            shape.EnsureAbiSupported(mem);
+            ArgumentLocations.Layout(shape.FloatLayout(mem),
+                ArgumentLocations.Abi == NativeAbi.SysV ? shape.SysVLayout(mem) : null,
+                ArgumentLocations.Abi == NativeAbi.Win32 ? shape.Win32Layout(mem) : null);
+            retPtr = shape.HasReturnBuffer ? ArgumentLocations.Read(regs, 0, false) : null;
+            thisValue = shape.IsStatic ? null : explicitThis ?? ArgumentLocations.Read(regs, shape.ThisPosition, false);
+        }
+
         // object_new(klass) followed by klass::.ctor(obj, …) → newobj .ctor(…)
         if (thisValue is NewObjExpr { IsMaterialized: false } inlined && md.GetString(md.Methods[methodIndex].NameIndex) == ".ctor"
             && DelegateCtorFor(inlined, target) is null
@@ -185,6 +195,82 @@ public sealed class CallEmitter(
             return u.Index;
         return specIndex;
     }
+
+    internal StubAssemblyBuilder Stubs => stubs;
+    internal ModuleDefinition Module => module;
+
+    /// <summary>Static type of the receiver of an instance call, or null.</summary>
+    public TypeSignature? ReceiverType()
+    {
+        var expr = ArgumentLocations.Abi == NativeAbi.Win32 ? Win32ThisCandidate() : regs.Get(ArgumentLocations.FirstIntRegister);
+        return expr switch
+        {
+            NewObjExpr n => n.Type,
+            AddressExpr a => a.Target.Type,
+            var e => e.Type,
+        };
+    }
+
+    internal static bool RebindReceiverGeneric(
+        ref IMethodDescriptor target, ref MethodShape shape, Expr? thisValue,
+        GlobalMetadata md, Il2CppRegistration reg, StubAssemblyBuilder stubs, MemoryResolver mem,
+        ModuleDefinition module, int methodIndex, int specIndex)
+    {
+        if (shape.IsStatic || thisValue is null) return false;
+        var baseMr = target as MemberReference ?? (target as MethodSpecification)?.Method as MemberReference;
+        if (baseMr?.Parent is not TypeSpecification { Signature: GenericInstanceTypeSignature targetGen }) return false;
+
+        var declTd = md.Methods[methodIndex].DeclaringType;
+        var recvType = thisValue switch
+        {
+            NewObjExpr n => n.Type,
+            AddressExpr a => a.Target.Type,
+            _ => thisValue.Type,
+        };
+        if (recvType is null) return false;
+
+        GenericInstanceTypeSignature? matchingRecvGen = null;
+        if (recvType is GenericInstanceTypeSignature gi && mem.TypeDefOf(gi) == declTd)
+            matchingRecvGen = gi;
+        else
+        {
+            var curTd = mem.TypeDefOf(recvType);
+            for (var hop = 0; hop < 16 && (uint)curTd < (uint)md.TypeDefinitions.Length; hop++)
+            {
+                var parentIdx = md.TypeDefinitions[curTd].ParentIndex;
+                if (parentIdx < 0 || !reg.TryGetType(parentIdx, out var parentRec)) break;
+                var parentSig = stubs.ToSig(module, parentRec);
+                if (parentSig is GenericInstanceTypeSignature pGi && mem.TypeDefOf(pGi) == declTd)
+                {
+                    matchingRecvGen = pGi;
+                    break;
+                }
+                curTd = mem.TypeDefOf(parentSig);
+                if (curTd == declTd) break;
+            }
+        }
+
+        if (matchingRecvGen is null
+            || HasOpenGenericParam(matchingRecvGen)
+            || matchingRecvGen.TypeArguments.Count != targetGen.TypeArguments.Count
+            || SignatureComparer.Default.Equals(targetGen, matchingRecvGen))
+            return false;
+
+        var rebound = new MemberReference(new TypeSpecification(matchingRecvGen), baseMr.Name, baseMr.Signature as MemberSignature);
+        target = target is MethodSpecification ms
+            ? new MethodSpecification(rebound, ms.Signature)
+            : rebound;
+        shape = MethodShape.Create(md, reg, stubs, mem, module, methodIndex, specIndex, classArgsOverride: [.. matchingRecvGen.TypeArguments]);
+        return true;
+    }
+
+    private static bool HasOpenGenericParam(TypeSignature sig) => sig switch
+    {
+        GenericParameterSignature => true,
+        GenericInstanceTypeSignature gi => gi.TypeArguments.Any(HasOpenGenericParam),
+        TypeSpecificationSignature ts => HasOpenGenericParam(ts.BaseType),
+        _ => false,
+    };
 
     /// <summary>Static type of the receiver of an instance call, as a typedef index, or -1.</summary>
     public int ReceiverTypeDef()

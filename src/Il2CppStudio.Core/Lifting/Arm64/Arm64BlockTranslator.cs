@@ -992,9 +992,16 @@ internal sealed class Arm64BlockTranslator
                 AddressExpr a => _mem.TypeDefOf(a.Target.Type),
                 _ => _mem.TypeDefOf(x0.Type),
             };
+            var recvType = x0 switch
+            {
+                NewObjExpr n => n.Type,
+                AddressExpr a => a.Target.Type,
+                _ => x0.Type,
+            };
             var s = IcfResolver.Choose(candidates, recvTd, _sym.Metadata, _sym.Registration, _sym.Names, ctx.Log,
                 receiverIsNewObject: x0 is NewObjExpr { IsMaterialized: false }
-                                     || (_method.Name == ".ctor" && x0 is ArgExpr { Parameter.Index: -1 } or AddressExpr { Target: ThisStructExpr }));
+                                     || (_method.Name == ".ctor" && x0 is ArgExpr { Parameter.Index: -1 } or AddressExpr { Target: ThisStructExpr }),
+                receiverType: recvType, stubs: _stubs, module: _module);
             if (EmitManagedCall(ctx, s.MethodIndex, s.MethodSpecIndex, null)) return;
         }
 
@@ -1075,7 +1082,7 @@ internal sealed class Arm64BlockTranslator
                 _regs[0] = new LocalExpr(boxLocal);
                 return;
             }
-            if (!sig.IsValueType && (detectedKind == Arm64HelperKind.ObjectNew || !_regs.ContainsKey(1)))
+            if (!sig.IsValueType && sig is not SzArrayTypeSignature and not ArrayTypeSignature)
             {
                 Elided++;
                 ClobberVolatiles();
@@ -1255,6 +1262,7 @@ internal sealed class Arm64BlockTranslator
         var xIdx = 0;
         var vIdx = 0;
         Expr? thisVal = shape.IsStatic ? null : explicitThis ?? (xIdx < 8 ? GetRegRaw(xIdx++) : new NativeExpr("this"));
+        CallEmitter.RebindReceiverGeneric(ref target, ref shape, thisVal, _sym.Metadata, _sym.Registration, _stubs, _mem, _module, methodIndex, specIndex);
         if (thisVal is NewObjExpr { IsMaterialized: false } pending && _sym.Metadata.GetString(_sym.Metadata.Methods[methodIndex].NameIndex) == ".ctor")
         {
             for (var i = 0; i < shape.Parameters.Count; i++) EmitCallParam(ctx, shape.Parameters[i], ref xIdx, ref vIdx);

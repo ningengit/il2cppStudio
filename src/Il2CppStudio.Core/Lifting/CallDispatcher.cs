@@ -30,7 +30,8 @@ public sealed class CallDispatcher(NativeSymbolizer sym, CallEmitter emitter, Re
                 var recv = ArgumentLocations.Abi == NativeAbi.Win32 ? emitter.Win32ThisCandidate() : regs.Get(ArgumentLocations.IntArg(0));
                 var s = IcfResolver.Choose(sym.Map.CandidatesAt(target), emitter.ReceiverTypeDef(), sym.Metadata, sym.Registration, sym.Names, ctx.Log,
                     receiverIsNewObject: recv is NewObjExpr { IsMaterialized: false }
-                                         || InConstructor && recv is ArgExpr { Parameter.Index: -1 });
+                                         || InConstructor && recv is ArgExpr { Parameter.Index: -1 },
+                    receiverType: emitter.ReceiverType(), stubs: emitter.Stubs, module: emitter.Module);
                 if (emitter.Emit(ctx, s.MethodIndex, s.MethodSpecIndex, null)) return false;
             }
             return HandleUnknown(ctx, target, ins.IP, resultNullTested);

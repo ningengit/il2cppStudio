@@ -82,6 +82,8 @@ public static class CompileFixups
                 dir.ReplaceWith(dir.Expression.Detach());
 
         FixRemainingCompilePatterns(tree);
+        FixLeakedTypeParameters(tree);
+        PurgeDiscardsAndDeadStatements(tree);
         CompileHygiene.RefreshUnsafe(tree);
     }
 
@@ -102,11 +104,19 @@ public static class CompileFixups
             if (call.Target is not MemberReferenceExpression target) continue;
             var args = call.Arguments.ToList();
             if (target.MemberName == "get_Item" && args.Count >= 1 && call.Annotation<InvocationResolveResult>()?.Member is IMethod { IsAccessor: true })
-                call.ReplaceWith(new IndexerExpression(target.Target.Detach(), args.Select(a => a.Detach())));
+            {
+                Expression rep = new IndexerExpression(target.Target.Detach(), args.Select(a => a.Detach()));
+                if (call.Annotation<ResolveResult>() is { } rr) rep.AddAnnotation(rr);
+                call.ReplaceWith(rep);
+            }
             else if (target.MemberName == "set_Item" && args.Count >= 2 && call.Annotation<InvocationResolveResult>()?.Member is IMethod { IsAccessor: true })
                 call.ReplaceWith(new AssignmentExpression(new IndexerExpression(target.Target.Detach(), args.Take(args.Count - 1).Select(a => a.Detach())), args[^1].Detach()));
             else if (target.MemberName.StartsWith("get_", StringComparison.Ordinal) && args.Count == 0 && IsAccessor(call))
-                call.ReplaceWith(new MemberReferenceExpression(target.Target.Detach(), target.MemberName[4..]));
+            {
+                Expression rep = new MemberReferenceExpression(target.Target.Detach(), target.MemberName[4..]);
+                if (call.Annotation<ResolveResult>() is { } rr) rep.AddAnnotation(rr);
+                call.ReplaceWith(rep);
+            }
             else if (target.MemberName.StartsWith("set_", StringComparison.Ordinal) && args.Count == 1 && IsAccessor(call))
                 call.ReplaceWith(new AssignmentExpression(new MemberReferenceExpression(target.Target.Detach(), target.MemberName[4..]), args[0].Detach()));
             else if (target.MemberName.StartsWith("add_", StringComparison.Ordinal) && args.Count == 1 && IsAccessor(call))
@@ -115,6 +125,8 @@ public static class CompileFixups
                 call.ReplaceWith(new AssignmentExpression(new MemberReferenceExpression(target.Target.Detach(), target.MemberName[7..]), AssignmentOperatorType.Subtract, args[0].Detach()));
             else if (target.MemberName is ".ctor" or "_ctor" && call.Parent is ExpressionStatement s)
                 RewriteCtorStatement(call, target, args, s);
+            else if (target.MemberName is ".cctor" or "_cctor" && call.Parent is ExpressionStatement sCctor)
+                sCctor.Remove();
             else if (target.MemberName == "CreateString")
                 call.ReplaceWith(new ObjectCreateExpression(new PrimitiveType("string"), args.Select(a => a.Detach())));
             else if (target.MemberName == "GetTextContainerLocalCorners" && args.Count == 0 && call.Parent is ExpressionStatement)
@@ -267,24 +279,81 @@ public static class CompileFixups
             s.Remove();
             return;
         }
-        if (target.Target is InvocationExpression { Target: MemberReferenceExpression { MemberName: "Reinterpret" } reinterp } outer && reinterp.TypeArguments.Count == 1 && args.Count == 2)
+        if (target.Target is InvocationExpression { Target: MemberReferenceExpression { MemberName: "Reinterpret" } reinterp } outer
+            && reinterp.TypeArguments.Count == 1
+            && outer.Arguments.FirstOrDefault() is IdentifierExpression or MemberReferenceExpression)
         {
-            var fn = UnwrapLdftn(args[1]);
-            var loc = outer.Arguments.FirstOrDefault();
-            if (fn is IdentifierExpression or MemberReferenceExpression && loc is IdentifierExpression or MemberReferenceExpression)
+            var ctorType = reinterp.TypeArguments.First();
+            var loc = outer.Arguments.First();
+            var isDelegate = args.Count == 2 && (ctorType.Annotation<TypeResolveResult>()?.Type.Kind == TypeKind.Delegate
+                || !ReferenceEquals(UnwrapLdftn(args[1]), args[1]));
+            Expression? rhs = null;
+            if (isDelegate)
             {
-                var delArg = args[0] is NullReferenceExpression ? fn.Clone()
-                    : fn is IdentifierExpression fid ? new MemberReferenceExpression(args[0].Detach(), fid.Identifier)
-                    : fn is MemberReferenceExpression fmr && fmr.Target is TypeReferenceExpression ? new MemberReferenceExpression(args[0].Detach(), fmr.MemberName)
-                    : fn.Clone();
-                Expression rhs = new ObjectCreateExpression(reinterp.TypeArguments.First().Clone(), delArg);
+                var fn = UnwrapLdftn(args[1]);
+                if (fn is IdentifierExpression or MemberReferenceExpression)
+                {
+                    var recv = args[0];
+                    while (true)
+                    {
+                        while (recv is ParenthesizedExpression pe) recv = pe.Expression;
+                        if (recv is CastExpression { Type: PrimitiveType { Keyword: "object" } } objCast) { recv = objCast.Expression; continue; }
+                        if (recv is InvocationExpression { Target: MemberReferenceExpression { MemberName: "Reinterpret" } mr, Arguments.Count: 1 }
+                            && mr.TypeArguments.FirstOrDefault() is PrimitiveType { Keyword: "object" })
+                        {
+                            recv = mr.Parent is InvocationExpression inv ? inv.Arguments.First() : recv;
+                            continue;
+                        }
+                        break;
+                    }
+                    if (recv is not NullReferenceExpression and not DefaultValueExpression and not PrimitiveExpression { Value: 0 or 0L }
+                        && recv.Annotation<ResolveResult>()?.Type is { IsReferenceType: false })
+                    {
+                        rhs = new InvocationExpression(
+                            new MemberReferenceExpression(new TypeReferenceExpression(new MemberType(new MemberType(new SimpleType("Il2CppStudio"), "Native"), "NativeIntrinsics")),
+                                "Reinterpret", ctorType.Clone()),
+                            new DefaultValueExpression(new SimpleType("nint")));
+                    }
+                    else
+                    {
+                        var delArg = recv is NullReferenceExpression or DefaultValueExpression or PrimitiveExpression { Value: 0 or 0L }
+                            ? fn.Clone()
+                            : fn is IdentifierExpression fid ? new MemberReferenceExpression(recv.Detach(), fid.Identifier)
+                            : fn is MemberReferenceExpression fmr && fmr.Target is TypeReferenceExpression ? new MemberReferenceExpression(recv.Detach(), fmr.MemberName)
+                            : fn.Clone();
+                        rhs = new ObjectCreateExpression(ctorType.Clone(), delArg);
+                    }
+                }
+            }
+            else if (ctorType.Annotation<TypeResolveResult>()?.Type.GetDefinition()?.IsAbstract == true
+                || (s.GetParent<SyntaxTree>() is { } stTree && IsAbstractTypeInTree(stTree, ctorType)))
+            {
+                rhs = new InvocationExpression(
+                    new MemberReferenceExpression(new TypeReferenceExpression(new MemberType(new MemberType(new SimpleType("Il2CppStudio"), "Native"), "NativeIntrinsics")),
+                        "Reinterpret", ctorType.Clone()),
+                    new ObjectCreateExpression(new PrimitiveType("object")));
+            }
+            else
+            {
+                var oce = new ObjectCreateExpression(ctorType.Clone());
+                foreach (var a in args) oce.Arguments.Add(a.Detach());
+                rhs = oce;
+            }
+            if (rhs is not null)
+            {
                 var locType = loc.Annotation<ResolveResult>()?.Type;
-                if (locType is not null && locType.Kind != TypeKind.Delegate && !locType.IsKnownType(KnownTypeCode.Object))
+                var ctorResolved = ctorType.Annotation<TypeResolveResult>()?.Type;
+                var needsReinterp = locType is not null
+                    && !locType.IsKnownType(KnownTypeCode.Object)
+                    && locType.Kind != TypeKind.Unknown
+                    && !(isDelegate && locType.Kind == TypeKind.Delegate)
+                    && !(ctorResolved is not null && locType.Equals(ctorResolved));
+                if (needsReinterp)
                 {
                     var astBuilder = new TypeSystemAstBuilder();
                     rhs = new InvocationExpression(
                         new MemberReferenceExpression(new TypeReferenceExpression(new MemberType(new MemberType(new SimpleType("Il2CppStudio"), "Native"), "NativeIntrinsics")),
-                            "Reinterpret", astBuilder.ConvertType(locType)),
+                            "Reinterpret", astBuilder.ConvertType(locType!)),
                         rhs);
                 }
                 s.Expression = new AssignmentExpression(loc.Detach(), rhs);
@@ -370,10 +439,15 @@ public static class CompileFixups
                 else s.Remove();
                 continue;
             }
-            if (s.Expression is AssignmentExpression { Left: MemberReferenceExpression lm } && Unwrap(lm.Target) is DefaultValueExpression)
-            { s.Remove(); continue; }
-            if (s.Expression is AssignmentExpression { Left: IndexerExpression li } && Unwrap(li.Target) is DefaultValueExpression)
-            { s.Remove(); continue; }
+            if (s.Expression is AssignmentExpression daRval && HasRvalueRoot(daRval.Left))
+            {
+                var rhs = Unwrap(daRval.Right);
+                if (!IsReinterpretCall(rhs) && rhs is InvocationExpression or ObjectCreateExpression && !IsDelegateCreation(rhs))
+                    s.Expression = rhs.Detach();
+                else
+                    s.Remove();
+                continue;
+            }
 
             var expr = UnwrapParens(s.Expression);
             if (!IsReinterpretCall(expr) && expr is not (BinaryOperatorExpression or UnaryOperatorExpression { Operator: not (UnaryOperatorType.Increment or UnaryOperatorType.Decrement or UnaryOperatorType.PostIncrement or UnaryOperatorType.PostDecrement or UnaryOperatorType.Await) }
@@ -388,6 +462,18 @@ public static class CompileFixups
                 && !IsDelegateCreation(sideEffects[0]))
                 s.Expression = sideEffects[0].Detach();
             else s.Remove();
+        }
+    }
+
+    private static bool HasRvalueRoot(Expression e)
+    {
+        while (true)
+        {
+            e = Unwrap(e);
+            if (e is DefaultValueExpression or NullReferenceExpression) return true;
+            if (e is MemberReferenceExpression mre) { e = mre.Target; continue; }
+            if (e is IndexerExpression ie) { e = ie.Target; continue; }
+            return false;
         }
     }
 
@@ -458,7 +544,7 @@ public static class CompileFixups
         foreach (var oce in tree.Descendants.OfType<ObjectCreateExpression>().ToList())
         {
             if (oce.Parent is null) continue;
-            var def = oce.Annotation<ResolveResult>()?.Type.GetDefinition();
+            var def = oce.Annotation<ResolveResult>()?.Type.GetDefinition() ?? oce.Type.Annotation<TypeResolveResult>()?.Type.GetDefinition();
             var isAbstract = def?.IsAbstract == true || IsAbstractTypeInTree(tree, oce.Type);
             if (!isAbstract) continue;
             AstNode a = oce;
@@ -685,6 +771,9 @@ public static class CompileFixups
                 m.ReplaceWith(new IndexerExpression(m.Target.Detach(), new PrimitiveExpression(0)));
         }
 
+        static bool IsSystemNamespace(string ns) =>
+            ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal);
+
         foreach (var s in tree.Descendants.OfType<ExpressionStatement>().ToList())
         {
             if (s.Parent is null || s.Expression is not AssignmentExpression { Left: MemberReferenceExpression lm2 } bclAssign) continue;
@@ -692,7 +781,7 @@ public static class CompileFixups
             var tType = (lm2.Target.Annotation<ResolveResult>() ?? unwrappedTarget.Annotation<ResolveResult>())?.Type
                 ?? (unwrappedTarget as CastExpression)?.Type.Annotation<TypeResolveResult>()?.Type;
             if (tType is not null && tType.Kind != TypeKind.Unknown
-                && tType.Namespace.StartsWith("System", StringComparison.Ordinal)
+                && IsSystemNamespace(tType.Namespace)
                 && !tType.GetMembers(mem => mem.Name == lm2.MemberName).Any())
             {
                 if (bclAssign.Right.DescendantsAndSelf.Any(n => n is InvocationExpression or ObjectCreateExpression))
@@ -701,6 +790,284 @@ public static class CompileFixups
                     s.Remove();
             }
         }
+
+        IType? InferExprType(Expression e)
+        {
+            var unwrapped = UnwrapParens(e);
+            var direct = (e.Annotation<ResolveResult>() ?? unwrapped.Annotation<ResolveResult>())?.Type
+                ?? (unwrapped as CastExpression)?.Type.Annotation<TypeResolveResult>()?.Type
+                ?? (unwrapped as DefaultValueExpression)?.Type.Annotation<TypeResolveResult>()?.Type
+                ?? (unwrapped as TypeReferenceExpression)?.Type.Annotation<TypeResolveResult>()?.Type;
+            if (direct is not null && direct.Kind != TypeKind.Unknown) return direct;
+            if (unwrapped is MemberReferenceExpression innerMr && InferExprType(innerMr.Target) is { } parentT)
+                return parentT.GetMembers(m => m.Name == innerMr.MemberName).FirstOrDefault()?.ReturnType;
+            return null;
+        }
+
+        static bool IsBooleanContext(Expression e) => e.Parent switch
+        {
+            IfElseStatement ifs when ifs.Condition == e => true,
+            WhileStatement ws when ws.Condition == e => true,
+            DoWhileStatement dws when dws.Condition == e => true,
+            ConditionalExpression ce when ce.Condition == e => true,
+            UnaryOperatorExpression uo when uo.Operator == UnaryOperatorType.Not && uo.Expression == e => true,
+            BinaryOperatorExpression boe when boe.Operator is BinaryOperatorType.ConditionalAnd or BinaryOperatorType.ConditionalOr => true,
+            _ => false,
+        };
+
+        static IType? ArgumentType(InvocationExpression inv, IMethod m, Expression arg)
+        {
+            var idx = inv.Arguments.TakeWhile(a => a != arg).Count();
+            if ((uint)idx >= (uint)m.Parameters.Count) return null;
+            var pt = m.Parameters[idx].Type;
+            return pt is ByReferenceType br ? br.ElementType : pt;
+        }
+
+        foreach (var mr in tree.Descendants.OfType<MemberReferenceExpression>().ToList())
+        {
+            if (mr.Parent is null || (mr.Parent is AssignmentExpression a0 && a0.Left == mr)
+                || (mr.Parent is InvocationExpression invB && invB.Target == mr))
+                continue;
+            var enclosingTd0 = mr.GetParent<TypeDeclaration>()?.GetSymbol() as ITypeDefinition;
+            var tType = InferExprType(mr.Target);
+            if (tType is null || tType.Kind == TypeKind.Unknown
+                || !IsSystemNamespace(tType.Namespace)
+                || tType.GetNestedTypes().Any(nt => nt.Name == mr.MemberName)
+                || tType.GetMembers(mem => mem.Name == mr.MemberName
+                    && (mem.Accessibility == Accessibility.Public
+                        || (mem.Accessibility is Accessibility.Protected or Accessibility.ProtectedOrInternal
+                            && enclosingTd0 is not null && tType.GetDefinition() is { } td0
+                            && (enclosingTd0.Equals(td0) || IsStrictDerivedType(enclosingTd0, td0))))).Any())
+                continue;
+            if (mr.Parent is DirectionExpression dir)
+            {
+                AstType dirType = dir.Parent is InvocationExpression invD && invD.Annotation<InvocationResolveResult>()?.Member is IMethod mD
+                    && ArgumentType(invD, mD, dir) is { Kind: not (TypeKind.Unknown or TypeKind.Null) } argTD
+                    ? astBuilder.ConvertType(argTD)
+                    : new PrimitiveType("int");
+                dir.ReplaceWith(MakeRefDefaultExpr(dirType));
+                continue;
+            }
+            Expression replacement = mr.Parent switch
+            {
+                _ when IsBooleanContext(mr) => new PrimitiveExpression(false),
+                CastExpression ce when ce.Expression == mr
+                    && ce.Type.Annotation<TypeResolveResult>()?.Type is { Kind: not (TypeKind.Unknown or TypeKind.Null) } ct =>
+                    new DefaultValueExpression(astBuilder.ConvertType(ct)),
+                InvocationExpression invArg when invArg.Annotation<InvocationResolveResult>()?.Member is IMethod invM
+                    && ArgumentType(invArg, invM, mr) is { Kind: not (TypeKind.Unknown or TypeKind.Null) } argT =>
+                    new DefaultValueExpression(astBuilder.ConvertType(argT)),
+                AssignmentExpression ae when ae.Right == mr
+                    && ae.Left.Annotation<ResolveResult>()?.Type is { Kind: not (TypeKind.Unknown or TypeKind.Null) } lt =>
+                    new DefaultValueExpression(astBuilder.ConvertType(lt)),
+                VariableInitializer vi when vi.Parent is VariableDeclarationStatement vds
+                    && vds.Type is not SimpleType { Identifier: "var" } =>
+                    new DefaultValueExpression(vds.Type.Clone()),
+                BinaryOperatorExpression boe
+                    when (boe.Left == mr ? boe.Right : boe.Left).Annotation<ResolveResult>()?.Type.Kind == TypeKind.Null =>
+                    new NullReferenceExpression(),
+                BinaryOperatorExpression boe
+                    when (boe.Left == mr ? boe.Right : boe.Left).Annotation<ResolveResult>()?.Type is { Kind: not (TypeKind.Unknown or TypeKind.Null) } ot =>
+                    new DefaultValueExpression(astBuilder.ConvertType(ot)),
+                _ => new PrimitiveExpression(0),
+            };
+            mr.ReplaceWith(replacement);
+        }
+
+        foreach (var mr in tree.Descendants.OfType<MemberReferenceExpression>().ToList())
+        {
+            if (mr.Parent is null) continue;
+            var parentInv = mr.Parent is InvocationExpression inv0 && inv0.Target == mr ? inv0 : null;
+            var member = parentInv?.Annotation<InvocationResolveResult>()?.Member
+                ?? mr.Annotation<MemberResolveResult>()?.Member;
+            if (member is null || member.DeclaringTypeDefinition is not { } declTd) continue;
+            var enclosingTd = mr.GetParent<TypeDeclaration>()?.GetSymbol() as ITypeDefinition;
+            if (enclosingTd is null) continue;
+
+            var crossAsm = member.ParentModule != enclosingTd.ParentModule;
+            // ReferencePublicizer publicizes all fields and non-virtual members in cross-assembly references;
+            // valid-identifier cross-assembly fields remain bindable, while unspeakable names (<...>) get escaped by
+            // IdentifierEscaper in C# source and no longer match metadata in referenced DLLs.
+            if (crossAsm && member is IField
+                && string.Equals(IdentifierEscaper.Escape(member.Name), member.Name, StringComparison.Ordinal))
+                continue;
+            var lockedProtectedOverride = member.Accessibility == Accessibility.Protected && member.IsOverride
+                && InheritanceHelper.GetBaseMembers(member, includeImplementedInterfaces: false).Any(bm => bm.ParentModule != enclosingTd.ParentModule);
+            if ((crossAsm || lockedProtectedOverride) && member.Accessibility != Accessibility.Public)
+            {
+                var derivedOk = !lockedProtectedOverride && member.Accessibility is Accessibility.Protected or Accessibility.ProtectedOrInternal
+                    && (enclosingTd.Equals(declTd) || IsStrictDerivedType(enclosingTd, declTd));
+                if (!derivedOk)
+                {
+                    if (parentInv is not null)
+                    {
+                        var nativeCall = new InvocationExpression(
+                            new MemberReferenceExpression(new TypeReferenceExpression(new MemberType(new MemberType(new SimpleType("Il2CppStudio"), "Native"), "NativeIntrinsics")), "CallNative"),
+                            new PrimitiveExpression($"inaccessible:{member.DeclaringType.Name}.{member.Name}"),
+                            new PrimitiveExpression(0L), new PrimitiveExpression(0L), new PrimitiveExpression(0L), new PrimitiveExpression(0L));
+                        if (parentInv.Parent is ExpressionStatement)
+                            parentInv.ReplaceWith(nativeCall);
+                        else if (!member.ReturnType.IsKnownType(KnownTypeCode.Void))
+                            parentInv.ReplaceWith(new InvocationExpression(
+                                new MemberReferenceExpression(new TypeReferenceExpression(new MemberType(new MemberType(new SimpleType("Il2CppStudio"), "Native"), "NativeIntrinsics")),
+                                    "Reinterpret", astBuilder.ConvertType(member.ReturnType)),
+                                nativeCall));
+                        else
+                            parentInv.ReplaceWith(nativeCall);
+                    }
+                    else if (mr.Parent is AssignmentExpression ae && ae.Left == mr && ae.Parent is ExpressionStatement es)
+                    {
+                        if (ae.Right.DescendantsAndSelf.Any(n => n is InvocationExpression or ObjectCreateExpression))
+                            es.Expression = ae.Right.Detach();
+                        else
+                            es.Remove();
+                    }
+                    else if (mr.Parent is not DirectionExpression && !member.ReturnType.IsKnownType(KnownTypeCode.Void))
+                    {
+                        mr.ReplaceWith(new DefaultValueExpression(astBuilder.ConvertType(member.ReturnType)));
+                    }
+                    continue;
+                }
+            }
+
+            if (mr.Target is ThisReferenceExpression or BaseReferenceExpression) continue;
+            if (member.IsStatic || !(member.Accessibility == Accessibility.Protected || (crossAsm && member.Accessibility == Accessibility.ProtectedOrInternal))) continue;
+            if (!IsStrictDerivedType(enclosingTd, declTd)) continue;
+            var tgtT = mr.Target.Annotation<ResolveResult>()?.Type
+                ?? (mr.Target as DefaultValueExpression)?.Type.Annotation<TypeResolveResult>()?.Type;
+            if (tgtT is null || tgtT.Equals(enclosingTd) || IsStrictDerivedType(tgtT, enclosingTd)) continue;
+            mr.Target = new ParenthesizedExpression(new CastExpression(
+                astBuilder.ConvertType(enclosingTd),
+                new CastExpression(new PrimitiveType("object"), mr.Target.Detach())));
+        }
+
+        foreach (var vds in tree.Descendants.OfType<VariableDeclarationStatement>().ToList())
+        {
+            if (vds.Type.Annotation<TypeResolveResult>()?.Type.GetDefinition()?.IsStatic != true) continue;
+            vds.Type = new PrimitiveType("object");
+            foreach (var v in vds.Variables)
+                if (v.Initializer is DefaultValueExpression) v.Initializer = new NullReferenceExpression();
+        }
+        foreach (var dve in tree.Descendants.OfType<DefaultValueExpression>().ToList())
+            if (dve.Parent is not null && dve.Type.Annotation<TypeResolveResult>()?.Type.GetDefinition()?.IsStatic == true)
+                dve.ReplaceWith(new NullReferenceExpression());
+
+        foreach (var u in tree.Descendants.OfType<UnaryOperatorExpression>().Where(u => u.Operator == UnaryOperatorType.BitNot).ToList())
+        {
+            if (u.Parent is null) continue;
+            var ut = u.Expression.Annotation<ResolveResult>()?.Type;
+            if (ut is { Kind: TypeKind.Struct }
+                && ut.GetDefinition()?.KnownTypeCode is null or KnownTypeCode.None
+                && !ut.GetMethods(m => m.Name == "op_OnesComplement").Any())
+            {
+                u.Expression = new InvocationExpression(
+                    new MemberReferenceExpression(new TypeReferenceExpression(new MemberType(new MemberType(new SimpleType("Il2CppStudio"), "Native"), "NativeIntrinsics")),
+                        "Reinterpret", new PrimitiveType("long")),
+                    u.Expression.Detach());
+            }
+        }
+
+        foreach (var c in tree.Descendants.OfType<CastExpression>().ToList())
+        {
+            if (c.Parent is null) continue;
+            var isBoolOrBoolIdx = c.Expression.Annotation<ResolveResult>()?.Type.IsKnownType(KnownTypeCode.Boolean) == true
+                || (c.Expression is IndexerExpression ie && InferExprType(ie.Target) is { } colT
+                    && ((colT as ArrayType)?.ElementType ?? (colT.TypeArguments.Count == 1 ? colT.TypeArguments[0] : null))?.IsKnownType(KnownTypeCode.Boolean) == true);
+            if (isBoolOrBoolIdx
+                && (c.Type.Annotation<TypeResolveResult>()?.Type ?? c.Annotation<ResolveResult>()?.Type) is { Kind: TypeKind.Class } dst
+                && !dst.IsKnownType(KnownTypeCode.Object) && !dst.IsKnownType(KnownTypeCode.ValueType))
+            {
+                c.ReplaceWith(new InvocationExpression(
+                    new MemberReferenceExpression(new TypeReferenceExpression(new MemberType(new MemberType(new SimpleType("Il2CppStudio"), "Native"), "NativeIntrinsics")),
+                        "Reinterpret", c.Type.Clone()),
+                    c.Expression.Detach()));
+            }
+        }
+
+        RenameCollidingEventBackingFields(tree);
+    }
+
+    private static void RenameCollidingEventBackingFields(SyntaxTree tree)
+    {
+        foreach (var td in tree.Descendants.OfType<TypeDeclaration>())
+        {
+            var customEvents = td.Members.OfType<CustomEventDeclaration>().Select(e => e.Name).ToHashSet(StringComparer.Ordinal);
+            if (customEvents.Count == 0) continue;
+
+            var taken = td.Members.SelectMany(m => m switch
+            {
+                FieldDeclaration f => f.Variables.Select(v => v.Name),
+                _ => [m.Name],
+            }).Where(n => !string.IsNullOrEmpty(n)).ToHashSet(StringComparer.Ordinal);
+
+            void RewriteEventFieldRefs(string evName, string backing)
+            {
+                foreach (var id in td.Descendants.OfType<IdentifierExpression>().ToList())
+                {
+                    if (id.Identifier != evName) continue;
+                    if (id.GetParent<TypeDeclaration>() != td) continue;
+                    if (HasLocalOrParam(id, evName)) continue;
+                    var inAccessor = id.GetParent<CustomEventDeclaration>() is { } ced && ced.Name == evName;
+                    if (!inAccessor && id.Parent is AssignmentExpression ae && ae.Left == id
+                        && ae.Operator is AssignmentOperatorType.Add or AssignmentOperatorType.Subtract)
+                        continue;
+                    id.Identifier = backing;
+                }
+
+                foreach (var mr in td.Descendants.OfType<MemberReferenceExpression>().ToList())
+                {
+                    if (mr.MemberName != evName) continue;
+                    if (mr.GetParent<TypeDeclaration>() != td) continue;
+                    var tdSym = td.GetSymbol() as ITypeDefinition;
+                    var isOwnTarget = mr.Target is ThisReferenceExpression
+                        || (mr.Target is TypeReferenceExpression tre
+                            && (tre.Type is SimpleType st && st.Identifier == td.Name
+                                || tre.Type is MemberType mt && mt.MemberName == td.Name))
+                        || (mr.Target.Annotation<ResolveResult>()?.Type.GetDefinition() is { } tgtDef
+                            && (tdSym is not null ? Equals(tgtDef, tdSym) : tgtDef.Name == td.Name));
+                    if (!isOwnTarget) continue;
+                    var inAccessor = mr.GetParent<CustomEventDeclaration>() is { } ced && ced.Name == evName;
+                    if (!inAccessor && mr.Parent is AssignmentExpression ae && ae.Left == mr
+                        && ae.Operator is AssignmentOperatorType.Add or AssignmentOperatorType.Subtract)
+                        continue;
+                    mr.MemberName = backing;
+                }
+            }
+
+            foreach (var fd in td.Members.OfType<FieldDeclaration>().ToList())
+            {
+                foreach (var variable in fd.Variables)
+                {
+                    var name = variable.Name;
+                    if (customEvents.Contains(name))
+                    {
+                        var backing = $"_backing_{name}";
+                        while (!taken.Add(backing)) backing = "_" + backing;
+                        variable.Name = backing;
+                        RewriteEventFieldRefs(name, backing);
+                    }
+                    else if (name.StartsWith("m_", StringComparison.Ordinal) && customEvents.Contains(name[2..]))
+                    {
+                        RewriteEventFieldRefs(name[2..], name);
+                    }
+                }
+            }
+        }
+    }
+
+    private static bool HasLocalOrParam(IdentifierExpression id, string name)
+    {
+        for (AstNode? cur = id.Parent; cur is not null && cur is not TypeDeclaration; cur = cur.Parent)
+        {
+            if (cur is MethodDeclaration m && m.Parameters.Any(p => p.Name == name)) return true;
+            if (cur is ConstructorDeclaration c && c.Parameters.Any(p => p.Name == name)) return true;
+            if (cur is Accessor acc && name == "value") return true;
+            if (cur is LambdaExpression lam && lam.Parameters.Any(p => p.Name == name)) return true;
+            if (cur is AnonymousMethodExpression anon && anon.Parameters.Any(p => p.Name == name)) return true;
+            if (cur is BlockStatement bs && bs.Statements.OfType<VariableDeclarationStatement>().Any(v => v.Variables.Any(vi => vi.Name == name)))
+                return true;
+        }
+        return false;
     }
 
     private static bool IsStringTarget(Expression target)

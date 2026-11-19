@@ -463,16 +463,18 @@ internal sealed partial class WasmMethodEmit
     private void EmitManagedCall(List<NativeSymbol> symbols, WValue[] args, WasmFuncType ft)
     {
         int recvTd = -1;
+        TypeSignature? recvType = null;
         bool recvNew = false;
         foreach (var a in args)
         {
             if (a.Expr is FrameAddrExpr || a.Expr is MarkerExpr || a.Expr is ConstExpr) continue;
-            if (a.Expr is NewObjExpr no) { recvNew = !no.IsMaterialized; recvTd = _mem.TypeDefOf(no.Type); break; }
-            if (a.Expr.Type is { } rt && Expr.KindOf(rt) == ValueKind.Ref) { recvTd = _mem.TypeDefOf(rt); break; }
+            if (a.Expr is NewObjExpr no) { recvNew = !no.IsMaterialized; recvType = no.Type; recvTd = _mem.TypeDefOf(no.Type); break; }
+            if (a.Expr.Type is { } rt && Expr.KindOf(rt) == ValueKind.Ref) { recvType = rt; recvTd = _mem.TypeDefOf(rt); break; }
         }
         var sym = symbols.Count == 1
             ? symbols[0]
-            : IcfResolver.Choose(symbols, recvTd, _md, _reg, owner.Symbolizer.Names, ctx.Log, receiverIsNewObject: recvNew);
+            : IcfResolver.Choose(symbols, recvTd, _md, _reg, owner.Symbolizer.Names, ctx.Log, receiverIsNewObject: recvNew,
+                receiverType: recvType, stubs: _stubs, module: _module);
         var methodIndex = sym.MethodIndex < 0 && sym.MethodSpecIndex >= 0 && (uint)sym.MethodSpecIndex < (uint)_reg.MethodSpecs.Count
             ? _reg.MethodSpecs[sym.MethodSpecIndex].MethodDefinitionIndex
             : sym.MethodIndex;
@@ -500,6 +502,8 @@ internal sealed partial class WasmMethodEmit
         if (target is null) return false;
         var callee = MethodShape.Create(_md, _reg, _stubs, _mem, _module, methodIndex, specIndex);
         var argPos = callee.HasReturnBuffer ? 1 : 0;
+        if (!callee.IsStatic && argPos < args.Length)
+            CallEmitter.RebindReceiverGeneric(ref target, ref callee, args[argPos].Expr, _md, _reg, _stubs, _mem, _module, methodIndex, specIndex);
 
         // Pending object_new followed by .ctor -> newobj
         if (!callee.IsStatic && argPos < args.Length && args[argPos].Expr is NewObjExpr { IsMaterialized: false } pending

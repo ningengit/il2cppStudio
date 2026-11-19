@@ -31,7 +31,7 @@ public static class AccessRelaxer
 
         foreach (var decl in tree.Descendants.OfType<EntityDeclaration>().ToList())
         {
-            if (decl is DestructorDeclaration) continue;
+            if (decl is DestructorDeclaration || decl is ConstructorDeclaration cd && cd.Modifiers.HasFlag(Modifiers.Static)) continue;
             var symbol = decl.GetSymbol();
             if (symbol is not IEntity entity) continue;
             var token = (uint)MetadataTokens.GetToken(entity.MetadataToken);
@@ -147,6 +147,9 @@ public static class AccessRelaxer
 
             foreach (var member in tree.Descendants.OfType<EntityDeclaration>())
             {
+                if (member.Ancestors.OfType<TypeDeclaration>().Any(anc =>
+                    anc.Parent is TypeDeclaration && (anc.Modifiers & Access) is Modifiers.Private or Modifiers.None))
+                    continue;
                 var acc = member.Modifiers & Access;
                 var isInternalOrPublic = acc.HasFlag(Modifiers.Public) || acc.HasFlag(Modifiers.Internal);
                 var isProtected = acc.HasFlag(Modifiers.Protected);

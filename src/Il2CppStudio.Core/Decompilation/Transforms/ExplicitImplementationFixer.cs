@@ -10,11 +10,20 @@ namespace Il2CppStudio.Core.Decompilation.Transforms;
 /// </summary>
 public static class ExplicitImplementationFixer
 {
+    private static string StripExternAlias(string name) =>
+        name.IndexOf("::", StringComparison.Ordinal) is > 0 and var c
+        && !name.StartsWith("global::", StringComparison.Ordinal)
+            ? name[(c + 2)..]
+            : name;
+
     public static void Apply(SyntaxTree tree)
     {
+        foreach (var st in tree.Descendants.OfType<SimpleType>()) st.Identifier = StripExternAlias(st.Identifier);
+        foreach (var mt in tree.Descendants.OfType<MemberType>()) mt.MemberName = StripExternAlias(mt.MemberName);
         foreach (var member in tree.Descendants.OfType<EntityDeclaration>().ToList())
         {
             if (member is not (MethodDeclaration or PropertyDeclaration or EventDeclaration) || Split(member.Name) is not var (iface, name)) continue;
+            iface = StripExternAlias(iface);
             if (member is MethodDeclaration { PrivateImplementationType.IsNull: false } or PropertyDeclaration { PrivateImplementationType.IsNull: false }) continue;
             if (member is MethodDeclaration m && ((name.StartsWith("get_", StringComparison.Ordinal) && m.Parameters.Count == 0)
                 || (name.StartsWith("set_", StringComparison.Ordinal) && m.Parameters.Count == 1)))
@@ -48,6 +57,7 @@ public static class ExplicitImplementationFixer
         foreach (var access in tree.Descendants.OfType<MemberReferenceExpression>().ToList())
         {
             if (access.Parent is null || Split(access.MemberName) is not var (iface, name)) continue;
+            iface = StripExternAlias(iface);
             var target = access.Target is ThisReferenceExpression or BaseReferenceExpression ? new ThisReferenceExpression() : access.Target.Detach();
             if (ContainsOpenTypeParam(iface))
             {

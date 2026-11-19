@@ -582,9 +582,11 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             if (_sym.Map.SymbolAt(targetVa) is not null)
             {
                 var r0 = ReadReg("r0");
-                var td = r0 is NewObjExpr no ? _mem.TypeDefOf(no.Type) : _mem.TypeDefOf(r0.Type);
+                var recvType = r0 is NewObjExpr no ? no.Type : r0 is AddressExpr ae ? ae.Target.Type : r0.Type;
+                var td = _mem.TypeDefOf(recvType);
                 var s = IcfResolver.Choose(_sym.Map.CandidatesAt(targetVa), td, _sym.Metadata, _sym.Registration, _sym.Names, ctx.Log,
-                    receiverIsNewObject: r0 is NewObjExpr { IsMaterialized: false });
+                    receiverIsNewObject: r0 is NewObjExpr { IsMaterialized: false },
+                    receiverType: recvType, stubs: _stubs, module: _module);
                 if (EmitManagedCall(ctx, s.MethodIndex, s.MethodSpecIndex)) return;
             }
             if (ReadReg("r0") is MarkerExpr { Marker: MarkerKind.MethodInfo or MarkerKind.TypeInfo or MarkerKind.Il2CppType })
@@ -619,10 +621,14 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             var rIdx = 0;
             var retPtr = shape.HasReturnBuffer ? ReadReg($"r{rIdx++}") : null;
             var thisExpr = shape.IsStatic ? null : ReadReg($"r{rIdx++}");
+            CallEmitter.RebindReceiverGeneric(ref target, ref shape, thisExpr, _sym.Metadata, _sym.Registration, _stubs, _mem, _module, methodIndex, specIndex);
 
             if (thisExpr is not null)
             {
-                var declSig = _stubs.TypeRefFor(_module, _sym.Metadata.Methods[methodIndex].DeclaringType)?.ToTypeSignature(shape.DeclaringIsValueType);
+                var baseTarget = target is MethodSpecification ms ? ms.Method : target;
+                var declSig = baseTarget is MemberReference { Parent: TypeSpecification { Signature: { } ts } }
+                    ? ts
+                    : _stubs.TypeRefFor(_module, _sym.Metadata.Methods[methodIndex].DeclaringType)?.ToTypeSignature(shape.DeclaringIsValueType);
                 if (shape.DeclaringIsValueType) new AddressExpr(thisExpr).Emit(ctx);
                 else if (thisExpr is ConstExpr { Value: 0 }) ctx.IL.Add(CilOpCodes.Ldnull);
                 else if (declSig is not null) Expr.EmitAs(ctx, thisExpr, declSig);
