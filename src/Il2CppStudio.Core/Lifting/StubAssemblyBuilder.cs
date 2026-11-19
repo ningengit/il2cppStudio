@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using AsmResolver;
 using AsmResolver.DotNet;
 using AsmResolver.DotNet.Builder;
@@ -19,7 +20,8 @@ public sealed class StubModule
     public required string AssemblyName { get; init; }
     public required ModuleDefinition Module { get; init; }
     public required NativeIntrinsics Intrinsics { get; init; }
-    public HashSet<int> LiftedMethods { get; } = [];
+    public ConcurrentDictionary<int, byte> LiftedMethods { get; } = new();
+    public void MarkLifted(int methodIndex) => LiftedMethods.TryAdd(methodIndex, 0);
 }
 
 /// <summary>Static helper methods emitted into each stub module; lifted code calls them for native-only operations.</summary>
@@ -511,9 +513,14 @@ public sealed class StubAssemblyBuilder
     private TypeSignature MetadataOnlySig(ModuleDefinition ctx, int typeIndex)
     {
         var f = ctx.CorLibTypeFactory;
-        _byvalToTypeDef ??= _md.TypeDefinitions.Select((td, i) => (td.ByvalTypeIndex, i)).Where(x => x.ByvalTypeIndex >= 0)
-            .GroupBy(x => x.ByvalTypeIndex).ToDictionary(g => g.Key, g => g.First().i);
-        if (!_byvalToTypeDef.TryGetValue(typeIndex, out var def)) return f.Object;
+        var map = Volatile.Read(ref _byvalToTypeDef);
+        if (map is null)
+        {
+            var built = _md.TypeDefinitions.Select((td, i) => (td.ByvalTypeIndex, i)).Where(x => x.ByvalTypeIndex >= 0)
+                .GroupBy(x => x.ByvalTypeIndex).ToDictionary(g => g.Key, g => g.First().i);
+            map = Interlocked.CompareExchange(ref _byvalToTypeDef, built, null) ?? built;
+        }
+        if (!map.TryGetValue(typeIndex, out var def)) return f.Object;
         var td = _md.TypeDefinitions[def];
         if (_md.GetString(td.NamespaceIndex) == "System" && f.FromName("System", _md.GetString(td.NameIndex)) is { } corlib) return corlib;
         if (td.GenericContainerIndex >= 0) return f.Object;   // open generic definition: arguments unknown without the binary

@@ -20,6 +20,8 @@ public static partial class OutputScrubber
 
     public static string Scrub(string code, string assembly, DecompilationErrorLog? log)
     {
+        if (!code.Contains("IL_", StringComparison.Ordinal) && !code.Contains("/*", StringComparison.Ordinal))
+            return code;
         var sb = new StringBuilder(code.Length);
         string member = "<type>";
         string? rva = null;

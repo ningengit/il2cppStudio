@@ -8,26 +8,30 @@ namespace Il2CppStudio.Core.Decompilation.Transforms;
 /// </summary>
 public static class WhileConditionRestorer
 {
-    public static void Apply(SyntaxTree tree)
+    public static bool Apply(SyntaxTree tree)
     {
+        var changed = false;
         foreach (var body in tree.Descendants.OfType<MethodDeclaration>().Select(m => m.Body).Where(b => !b.IsNull).ToList())
         {
-            InlineReadOnlyLiterals(body);
+            changed |= InlineReadOnlyLiterals(body);
             foreach (var w in body.Descendants.OfType<WhileStatement>().ToList())
             {
                 if (w.Condition is not PrimitiveExpression { Value: true } || w.EmbeddedStatement is not BlockStatement wb) continue;
                 if (wb.Statements.FirstOrDefault() is not IfElseStatement { FalseStatement.IsNull: true } ifs || !IsBreak(ifs.TrueStatement)) continue;
                 w.Condition = ConditionTools.Negate(ifs.Condition.Detach());
                 ifs.Remove();
+                changed = true;
             }
         }
+        return changed;
     }
 
     private static bool IsBreak(Statement s) =>
         s is BreakStatement || s is BlockStatement { Statements.Count: 1 } b && b.Statements.Single() is BreakStatement;
 
-    private static void InlineReadOnlyLiterals(BlockStatement body)
+    private static bool InlineReadOnlyLiterals(BlockStatement body)
     {
+        var changed = false;
         foreach (var decl in body.Descendants.OfType<VariableDeclarationStatement>().Where(d => d.Variables.Count == 1).ToList())
         {
             var v = decl.Variables.Single();
@@ -36,7 +40,9 @@ public static class WhileConditionRestorer
             if (uses.Count == 0 || uses.Any(IsMutated)) continue;
             foreach (var u in uses) u.ReplaceWith(lit.Clone());
             decl.Remove();
+            changed = true;
         }
+        return changed;
     }
 
     private static bool IsMutated(IdentifierExpression id) =>

@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using AsmArm64;
 using AsmResolver.DotNet.Code.Cil;
 using AsmResolver.DotNet.Signatures;
@@ -34,7 +35,9 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
     Runtime.RuntimeHelperMap? helpers = null) : IMethodLifter
 {
     private readonly Dictionary<string, int> _typeIndex = MemoryResolver.BuildTypeIndex(sym.Model);
-    private readonly Dictionary<ulong, Arm64HelperKind> _helperCache = [];
+    private readonly ConcurrentDictionary<ulong, Arm64HelperKind> _helperCache = new();
+
+    public bool SupportsParallelLifting => true;
 
     public LiftResult Lift(int methodIndex)
     {
@@ -88,7 +91,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
 
             body.Instructions.OptimizeMacros();
             method.CilMethodBody = body;
-            stub.LiftedMethods.Add(methodIndex);
+            stub.MarkLifted(methodIndex);
 
             return new LiftResult(methodIndex, true, insns.Count, body.Instructions.Count, tr.Unsupported, tr.Unresolved, tr.Elided, null)
             {

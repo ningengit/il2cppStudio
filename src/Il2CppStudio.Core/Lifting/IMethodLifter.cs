@@ -7,6 +7,9 @@ namespace Il2CppStudio.Core.Lifting;
 /// </summary>
 public interface IMethodLifter
 {
+    /// <summary>True when <see cref="Lift"/> can run concurrently across distinct method indices.</summary>
+    bool SupportsParallelLifting => false;
+
     /// <summary>Lifts the method once; a failed lift leaves the explanatory <c>throw null</c> placeholder body.</summary>
     LiftResult Lift(int methodIndex);
 }

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Il2CppStudio.Core.Diagnostics;
 
 namespace Il2CppStudio.Core.Decompilation;
@@ -15,6 +16,8 @@ public sealed class BclReferenceProvider
     {
         "mscorlib", "netstandard", "System", "Mono.Security", "Microsoft.CSharp",
     };
+
+    private readonly ConcurrentDictionary<string, string?> _found = new(StringComparer.OrdinalIgnoreCase);
 
     public IReadOnlyList<string> SearchDirectories { get; }
 
@@ -54,9 +57,9 @@ public sealed class BclReferenceProvider
         return BclNames.Contains(name) || BclPrefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase));
     }
 
-    public string? Find(string assemblyName)
+    public string? Find(string assemblyName) => _found.GetOrAdd(assemblyName, name =>
     {
-        var file = assemblyName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ? assemblyName : assemblyName + ".dll";
+        var file = name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ? name : name + ".dll";
         foreach (var d in SearchDirectories)
         {
             var p = Path.Combine(d, file);
@@ -65,5 +68,5 @@ public sealed class BclReferenceProvider
             if (File.Exists(facade)) return facade;
         }
         return null;
-    }
+    });
 }

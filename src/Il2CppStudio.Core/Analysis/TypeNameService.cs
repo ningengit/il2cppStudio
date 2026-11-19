@@ -115,8 +115,13 @@ public sealed class TypeNameService(GlobalMetadata md, MetadataModel model, Il2C
     /// </summary>
     private int CorlibTypeDef(Il2CppTypeEnum e)
     {
-        _corlib ??= BuildCorlibMap();
-        return _corlib.TryGetValue(e, out var i) ? i : -1;
+        var corlib = Volatile.Read(ref _corlib);
+        if (corlib is null)
+        {
+            var built = BuildCorlibMap();
+            corlib = Interlocked.CompareExchange(ref _corlib, built, null) ?? built;
+        }
+        return corlib.TryGetValue(e, out var i) ? i : -1;
     }
 
     private Dictionary<Il2CppTypeEnum, int> BuildCorlibMap()

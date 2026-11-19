@@ -80,7 +80,7 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
 
             body.Instructions.OptimizeMacros();
             method.CilMethodBody = body;
-            stub.LiftedMethods.Add(methodIndex);
+            stub.MarkLifted(methodIndex);
             return new LiftResult(methodIndex, true, insns.Count, body.Instructions.Count, tr.Unsupported, tr.Unresolved, tr.Elided, null) { Notes = notes };
         }
         catch (Exception ex)

@@ -28,6 +28,8 @@ public sealed class WasmLifter(NativeSymbolizer sym, StubAssemblyBuilder stubs, 
     /// <summary>Function index → the function-table slots (IL2CPP method pointers) that reference it.</summary>
     private Dictionary<uint, List<ulong>>? _slotsByFunction;
 
+    public bool SupportsParallelLifting => true;
+
     public LiftResult Lift(int methodIndex)
     {
         ArgumentLocations.Abi = NativeAbi.Wasm32;
@@ -66,7 +68,7 @@ public sealed class WasmLifter(NativeSymbolizer sym, StubAssemblyBuilder stubs, 
             emit.Run(funcType, locals, insns);
             body.Instructions.OptimizeMacros();
             method.CilMethodBody = body;
-            stub.LiftedMethods.Add(methodIndex);
+            stub.MarkLifted(methodIndex);
             var result = new LiftResult(methodIndex, true, insns.Count, body.Instructions.Count, emit.Unresolved, 0, emit.Elided, null)
             {
                 Notes = notes,
@@ -93,19 +95,20 @@ public sealed class WasmLifter(NativeSymbolizer sym, StubAssemblyBuilder stubs, 
     /// <summary>All metadata methods whose native pointer is a table slot naming <paramref name="function"/>.</summary>
     internal List<NativeSymbol> SymbolsFor(uint function)
     {
-        if (_slotsByFunction is null)
+        var map = Volatile.Read(ref _slotsByFunction);
+        if (map is null)
         {
-            var map = new Dictionary<uint, List<ulong>>();
+            var built = new Dictionary<uint, List<ulong>>();
             foreach (var symbol in sym.Map.Symbols.Values)
             {
                 if (wasm.FunctionBody(symbol.Va, out var fi).IsEmpty) continue;
-                if (!map.TryGetValue(fi, out var list)) map[fi] = list = [];
+                if (!built.TryGetValue(fi, out var list)) built[fi] = list = [];
                 if (!list.Contains(symbol.Va)) list.Add(symbol.Va);
             }
-            _slotsByFunction = map;
+            map = Interlocked.CompareExchange(ref _slotsByFunction, built, null) ?? built;
         }
         var symbols = new List<NativeSymbol>();
-        if (!_slotsByFunction.TryGetValue(function, out var slots)) return symbols;
+        if (!map.TryGetValue(function, out var slots)) return symbols;
         foreach (var slot in slots)
             foreach (var candidate in sym.Map.CandidatesAt(slot))
                 if (!symbols.Contains(candidate)) symbols.Add(candidate);

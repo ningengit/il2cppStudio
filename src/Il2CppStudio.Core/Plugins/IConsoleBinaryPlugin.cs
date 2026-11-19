@@ -1,5 +1,6 @@
 using Il2CppStudio.Core.Binary;
 using Il2CppStudio.Core.Diagnostics;
+using Il2CppStudio.Core.IO;
 
 namespace Il2CppStudio.Core.Plugins;
 
@@ -41,12 +42,13 @@ public static class ConsoleBinaryPluginRegistry
     public static IBinaryImage? TryOpen(string filePath, IDiagnosticSink sink)
     {
         if (!File.Exists(filePath)) return null;
-        var bytes = File.ReadAllBytes(filePath);
-        ReadOnlySpan<byte> head = bytes.AsSpan(0, Math.Min(16, bytes.Length));
+        using var mapped = MappedFile.Open(filePath);
+        var span = mapped.Span;
+        var head = span[..Math.Min(16, span.Length)];
         foreach (var plugin in Plugins)
         {
             if (plugin.CanLoad(head, filePath))
-                return plugin.Load(filePath, bytes, sink);
+                return plugin.Load(filePath, mapped.Memory, sink);
         }
         return null;
     }

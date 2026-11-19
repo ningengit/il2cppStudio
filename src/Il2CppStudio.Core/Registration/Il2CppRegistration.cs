@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using Il2CppStudio.Core.Binary;
 using Il2CppStudio.Core.Diagnostics;
@@ -39,7 +40,9 @@ public sealed partial class Il2CppRegistration
     public IReadOnlyDictionary<ulong, MetadataUsage> MetadataUsages { get; private set; } = new Dictionary<ulong, MetadataUsage>();
 
     private readonly Dictionary<ulong, int> _typeIndexByVa = [];
-    private readonly Dictionary<ulong, Il2CppTypeRecord> _typeCache = [];
+    private readonly ConcurrentDictionary<ulong, Il2CppTypeRecord> _typeCache = new();
+
+    private ulong _codeGenModulesArrayVa;
 
     public VirtualReader Reader { get; }
     private readonly GlobalMetadata _md;
@@ -54,11 +57,70 @@ public sealed partial class Il2CppRegistration
 
     public static Il2CppRegistration Load(IBinaryImage image, GlobalMetadata md, IDiagnosticSink sink)
     {
-        var reg = new Il2CppRegistration(new VirtualReader(image), md, sink);
+        var reader = new VirtualReader(image);
+        if (RegistrationCache.TryRead(image, md, out var cached))
+        {
+            var fast = new Il2CppRegistration(reader, md, sink);
+            if (fast.TryLoadFromCache(in cached))
+                return fast;
+        }
+
+        var reg = new Il2CppRegistration(reader, md, sink);
         reg.LocateMetadataRegistration();
         reg.LocateCodeRegistration();
         reg.ScanMetadataUsages();
+        if (reg.IsComplete)
+        {
+            var usages = reg.MetadataUsages as Dictionary<ulong, MetadataUsage>
+                ?? new Dictionary<ulong, MetadataUsage>(reg.MetadataUsages);
+            RegistrationCache.TryWrite(image, md,
+                new CachedRegistration(reg.MetadataRegistrationVa, reg.CodeRegistrationVa, reg._codeGenModulesArrayVa, usages));
+        }
         return reg;
+    }
+
+    private bool TryLoadFromCache(in CachedRegistration cached)
+    {
+        if (!Reader.IsMapped(cached.MetadataRegistrationVa) || !Reader.IsMapped(cached.CodeRegistrationVa))
+            return false;
+
+        var typeDefCount = (ulong)_md.TypeDefinitions.Length;
+        if (At(cached.MetadataRegistrationVa, 10) != typeDefCount || At(cached.MetadataRegistrationVa, 12) != typeDefCount)
+            return false;
+        var typesCount = At(cached.MetadataRegistrationVa, 6);
+        if (typesCount == 0 || typesCount > 2_000_000 || !Reader.IsMapped(At(cached.MetadataRegistrationVa, 7)))
+            return false;
+
+        if (_md.Version.HasCodegenIndices)
+        {
+            var methodCount = _md.Methods.Length == 0 ? 0UL : (ulong)(_md.Methods.Max(m => m.MethodIndex) + 1);
+            if (methodCount == 0
+                || At(cached.CodeRegistrationVa, 0) != methodCount
+                || At(cached.CodeRegistrationVa, 8) != (ulong)_md.AttributeTypeRanges.Length
+                || !Reader.IsMapped(At(cached.CodeRegistrationVa, 1)))
+                return false;
+
+            ParseMetadataRegistration(cached.MetadataRegistrationVa);
+            if (!ParseCodeRegistrationV24(cached.CodeRegistrationVa, methodCount))
+                return false;
+        }
+        else
+        {
+            if (cached.CodeGenModulesArrayVa == 0 || !Reader.IsMapped(cached.CodeGenModulesArrayVa))
+                return false;
+            var firstModule = P(cached.CodeGenModulesArrayVa);
+            if (!Reader.IsMapped(firstModule) || Reader.ReadCString(P(firstModule)) is null)
+                return false;
+
+            ParseMetadataRegistration(cached.MetadataRegistrationVa);
+            CodeRegistrationVa = cached.CodeRegistrationVa;
+            _codeGenModulesArrayVa = cached.CodeGenModulesArrayVa;
+            ParseCodeRegistration(cached.CodeGenModulesArrayVa, _md.Images.Length);
+        }
+
+        MetadataUsages = cached.MetadataUsages;
+        EmitMetadataUsagesDiagnostic(cached.MetadataUsages, _md.Version.HasMetadataUsageTables);
+        return IsComplete;
     }
 
     // ------------------------------------------------------------------ type access
@@ -126,21 +188,8 @@ public sealed partial class Il2CppRegistration
         var candidates = new List<ulong>();
         foreach (var (start, end, _) in Reader.DataRanges())
         {
-            var words = Words(start, end);
-            var pos = 0;
-            while (pos < words.Length - 4)
-            {
-                var hit = words.AsSpan(pos).IndexOf(typeDefCount);
-                if (hit < 0) break;
-                var i = pos + hit;
-                pos = i + 1;
-                if (i + 3 >= words.Length || i < 10) continue;
-                if (words[i + 2] != typeDefCount) continue;
-                if (!Reader.IsMapped(words[i + 1]) || !Reader.IsMapped(words[i + 3])) continue;
-                var typesCount = words[i - 4];
-                if (typesCount == 0 || typesCount > 2_000_000 || !Reader.IsMapped(words[i - 3])) continue;
-                candidates.Add(start + (ulong)((i - 10) * Ptr));
-            }
+            if (Ptr == 8) ScanMetadataCandidates(Words64(start, end), start, typeDefCount, candidates);
+            else ScanMetadataCandidates(Words32(start, end), start, (uint)typeDefCount, candidates);
         }
 
         if (candidates.Count == 0)
@@ -153,7 +202,32 @@ public sealed partial class Il2CppRegistration
             _sink.Warn(DiagnosticCategory.Registration, DiagnosticCodes.RegistrationAmbiguous,
                 $"{candidates.Count} MetadataRegistration candidates; using the first at 0x{candidates[0]:X}.", new() { VirtualAddress = candidates[0] });
 
-        var va = MetadataRegistrationVa = candidates[0];
+        ParseMetadataRegistration(candidates[0]);
+    }
+
+    private void ScanMetadataCandidates<TWord>(ReadOnlySpan<TWord> words, ulong start, TWord target, List<ulong> candidates)
+        where TWord : unmanaged, IEquatable<TWord>
+    {
+        var typeDefCount = WordToU64(target);
+        var pos = 0;
+        while (pos < words.Length - 4)
+        {
+            var hit = words[pos..].IndexOf(target);
+            if (hit < 0) break;
+            var i = pos + hit;
+            pos = i + 1;
+            if (i + 3 >= words.Length || i < 10) continue;
+            if (WordToU64(words[i + 2]) != typeDefCount) continue;
+            if (!Reader.IsMapped(WordToU64(words[i + 1])) || !Reader.IsMapped(WordToU64(words[i + 3]))) continue;
+            var typesCount = WordToU64(words[i - 4]);
+            if (typesCount == 0 || typesCount > 2_000_000 || !Reader.IsMapped(WordToU64(words[i - 3]))) continue;
+            candidates.Add(start + (ulong)((i - 10) * Ptr));
+        }
+    }
+
+    private void ParseMetadataRegistration(ulong va)
+    {
+        MetadataRegistrationVa = va;
         ulong F(int i) => At(va, i);
 
         GenericInstVas = ReadPointerArray(F(3), (int)Math.Min(F(2), 1_000_000));
@@ -187,34 +261,50 @@ public sealed partial class Il2CppRegistration
         var imageNames = _md.Images.Select(i => _md.GetString(i.NameIndex)).ToHashSet(StringComparer.Ordinal);
         foreach (var (start, end, _) in Reader.DataRanges())
         {
-            var words = Words(start, end);
-            var pos = 0;
-            while (pos < words.Length - 2)
-            {
-                var hit = words.AsSpan(pos).IndexOf(imageCount);
-                if (hit < 0) break;
-                var i = pos + hit;
-                pos = i + 1;
-                if (i + 1 >= words.Length) break;
-                var arrayVa = words[i + 1];
-                if (!Reader.IsMapped(arrayVa)) continue;
-                var firstModule = P(arrayVa);
-                if (!Reader.IsMapped(firstModule)) continue;
-                var name = Reader.ReadCString(P(firstModule));
-                if (name is null || !imageNames.Contains(name)) continue;
+            var found = Ptr == 8
+                ? TryFindCodeRegistration(Words64(start, end), start, imageCount, imageNames, out var fieldVa, out var arrayVa)
+                : TryFindCodeRegistration(Words32(start, end), start, (uint)imageCount, imageNames, out fieldVa, out arrayVa);
+            if (!found) continue;
 
-                var fieldVa = start + (ulong)(i * Ptr);
-                // codeGenModulesCount index: v31+ = 15, v27-v29 = 13, v24.3-24.4 (genericAdjustorThunks) = 15, v24.2 = 14.
-                var fieldIndex = _md.Version.Major >= 31 ? 15
-                    : _md.Version.IsV24 ? PickV24CodeRegFieldIndex(fieldVa)
-                    : 13;
-                CodeRegistrationVa = fieldVa - (ulong)(fieldIndex * Ptr);
-                ParseCodeRegistration(arrayVa, (int)imageCount);
-                return;
-            }
+            // codeGenModulesCount index: v31+ = 15, v27-v29 = 13, v24.3-24.4 (genericAdjustorThunks) = 15, v24.2 = 14.
+            var fieldIndex = _md.Version.Major >= 31 ? 15
+                : _md.Version.IsV24 ? PickV24CodeRegFieldIndex(fieldVa)
+                : 13;
+            CodeRegistrationVa = fieldVa - (ulong)(fieldIndex * Ptr);
+            _codeGenModulesArrayVa = arrayVa;
+            ParseCodeRegistration(arrayVa, (int)imageCount);
+            return;
         }
         _sink.Error(DiagnosticCategory.Registration, DiagnosticCodes.RegistrationNotFound,
             "Il2CppCodeRegistration not found; method addresses are unavailable.", new() { File = Reader.Image.Path });
+    }
+
+    private bool TryFindCodeRegistration<TWord>(
+        ReadOnlySpan<TWord> words, ulong start, TWord target, HashSet<string> imageNames, out ulong fieldVa, out ulong arrayVa)
+        where TWord : unmanaged, IEquatable<TWord>
+    {
+        var pos = 0;
+        while (pos < words.Length - 2)
+        {
+            var hit = words[pos..].IndexOf(target);
+            if (hit < 0) break;
+            var i = pos + hit;
+            pos = i + 1;
+            if (i + 1 >= words.Length) break;
+            var arr = WordToU64(words[i + 1]);
+            if (!Reader.IsMapped(arr)) continue;
+            var firstModule = P(arr);
+            if (!Reader.IsMapped(firstModule)) continue;
+            var name = Reader.ReadCString(P(firstModule));
+            if (name is null || !imageNames.Contains(name)) continue;
+
+            fieldVa = start + (ulong)(i * Ptr);
+            arrayVa = arr;
+            return true;
+        }
+        fieldVa = 0;
+        arrayVa = 0;
+        return false;
     }
 
     private int PickV24CodeRegFieldIndex(ulong fieldVa)
@@ -258,10 +348,9 @@ public sealed partial class Il2CppRegistration
     {
         if (_md.Version.HasMetadataUsageTables)
         {
-            MetadataUsages = ReadMetadataUsagesV24();
-            _sink.Info(DiagnosticCategory.Registration, DiagnosticCodes.MetadataUsagesScanned,
-                $"{MetadataUsages.Count:N0} runtime metadata globals recovered from v24 metadataUsages " +
-                $"({MetadataUsages.Values.Count(u => u.Kind == MetadataUsageKind.StringLiteral):N0} string literals, {MetadataUsages.Values.Count(u => u.Kind == MetadataUsageKind.TypeInfo):N0} TypeInfo).");
+            var v24Map = ReadMetadataUsagesV24();
+            MetadataUsages = v24Map;
+            EmitMetadataUsagesDiagnostic(v24Map, fromV24Table: true);
             return;
         }
         var map = new Dictionary<ulong, MetadataUsage>();
@@ -277,20 +366,38 @@ public sealed partial class Il2CppRegistration
         foreach (var (start, end, writable) in Reader.DataRanges())
         {
             if (!writable) continue;
-            var words = Words(start, end);
-            for (var i = 0; i < words.Length; i++)
-            {
-                var v = words[i];
-                if ((v & 1) == 0 || v > uint.MaxValue) continue;
-                var kind = (int)((v >> 29) & 7);
-                if (kind == 0) continue;
-                var index = (int)((v & 0x1FFFFFFE) >> 1);
-                if (index >= limits[kind]) continue;
-                var va = start + (ulong)(i * Ptr);
-                map[va] = new MetadataUsage(va, (MetadataUsageKind)kind, index);
-            }
+            if (Ptr == 8) ScanUsageWords(Words64(start, end), start, limits, map);
+            else ScanUsageWords(Words32(start, end), start, limits, map);
         }
         MetadataUsages = map;
+        EmitMetadataUsagesDiagnostic(map, fromV24Table: false);
+    }
+
+    private void ScanUsageWords<TWord>(ReadOnlySpan<TWord> words, ulong start, int[] limits, Dictionary<ulong, MetadataUsage> map)
+        where TWord : unmanaged
+    {
+        for (var i = 0; i < words.Length; i++)
+        {
+            var v = WordToU64(words[i]);
+            if ((v & 1) == 0 || v > uint.MaxValue) continue;
+            var kind = (int)((v >> 29) & 7);
+            if (kind == 0) continue;
+            var index = (int)((v & 0x1FFFFFFE) >> 1);
+            if (index >= limits[kind]) continue;
+            var va = start + (ulong)(i * Ptr);
+            map[va] = new MetadataUsage(va, (MetadataUsageKind)kind, index);
+        }
+    }
+
+    private void EmitMetadataUsagesDiagnostic(IReadOnlyDictionary<ulong, MetadataUsage> map, bool fromV24Table)
+    {
+        if (fromV24Table)
+        {
+            _sink.Info(DiagnosticCategory.Registration, DiagnosticCodes.MetadataUsagesScanned,
+                $"{map.Count:N0} runtime metadata globals recovered from v24 metadataUsages " +
+                $"({map.Values.Count(u => u.Kind == MetadataUsageKind.StringLiteral):N0} string literals, {map.Values.Count(u => u.Kind == MetadataUsageKind.TypeInfo):N0} TypeInfo).");
+            return;
+        }
         _sink.Info(DiagnosticCategory.Registration, DiagnosticCodes.MetadataUsagesScanned,
             $"{map.Count:N0} runtime metadata globals recovered ({map.Values.Count(u => u.Kind == MetadataUsageKind.StringLiteral):N0} string literals, " +
             $"{map.Values.Count(u => u.Kind == MetadataUsageKind.TypeInfo):N0} TypeInfo, {map.Values.Count(u => u.Kind is MetadataUsageKind.MethodDef or MetadataUsageKind.MethodRef):N0} methods).");

@@ -7,6 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Il2CppStudio.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="AsmResolver.PE" />
     <PackageReference Include="AsmResolver.PE.File" />
     <PackageReference Include="AsmResolver.DotNet" />

@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using AsmArm64;
 using AsmResolver.DotNet;
 using AsmResolver.DotNet.Code.Cil;
@@ -28,7 +29,7 @@ internal sealed class Arm64BlockTranslator
     private readonly IDiagnosticSink _sink;
     private readonly List<string> _notes;
     private readonly ulong _funcStart, _funcEnd;
-    private readonly Dictionary<ulong, Arm64HelperKind> _helperCache;
+    private readonly ConcurrentDictionary<ulong, Arm64HelperKind> _helperCache;
     private readonly Dictionary<int, Expr> _regs = [];
     private readonly Dictionary<long, Expr> _slots = [];
     private readonly Dictionary<(int Reg, string TypeName), CilLocalVariable> _spillLocals = [];
@@ -51,12 +52,12 @@ internal sealed class Arm64BlockTranslator
         NativeSymbolizer sym, StubAssemblyBuilder stubs, ModuleDefinition module, MethodDefinition method,
         MethodShape shape, MemoryResolver mem, CilMethodBody body, Runtime.RuntimeHelperMap? helpers,
         Func<ulong, DiagnosticLocation> loc, IDiagnosticSink sink, List<string> notes, ulong funcStart, ulong funcEnd,
-        Dictionary<ulong, Arm64HelperKind>? helperCache = null)
+        ConcurrentDictionary<ulong, Arm64HelperKind>? helperCache = null)
     {
         _sym = sym; _stubs = stubs; _module = module; _method = method; _shape = shape;
         _mem = mem; _body = body; _f = module.CorLibTypeFactory; _helpers = helpers;
         _loc = loc; _sink = sink; _notes = notes; _funcStart = funcStart; _funcEnd = funcEnd;
-        _helperCache = helperCache ?? [];
+        _helperCache = helperCache ?? new();
     }
 
     private CilLocalVariable NewLocal(TypeSignature type)

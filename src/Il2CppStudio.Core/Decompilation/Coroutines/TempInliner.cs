@@ -8,8 +8,9 @@ namespace Il2CppStudio.Core.Decompilation.Coroutines;
 /// </summary>
 public static class TempInliner
 {
-    public static void Run(BlockStatement body)
+    public static bool Run(BlockStatement body)
     {
+        var everChanged = false;
         bool changed;
         do
         {
@@ -41,8 +42,10 @@ public static class TempInliner
                 uses[0].ReplaceWith(replacement);
                 decl.Remove();
                 changed = true;
+                everChanged = true;
             }
         } while (changed);
+        return everChanged;
     }
 
     private static bool IsPureDecl(Statement s) =>

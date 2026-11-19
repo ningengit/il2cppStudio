@@ -54,17 +54,32 @@ public sealed class LiftingBodyProvider(IMethodLifter driver, IDiagnosticSink si
 
     public int EnsureLifted(IEnumerable<int> methodIndices)
     {
-        var ordered = methodIndices.Distinct().Order().ToArray();
+        var todo = methodIndices.Distinct().Where(m => !_results.ContainsKey(m)).Order().ToArray();
+        if (todo.Length == 0) return 0;
         var lifted = 0;
-        lock (_gate)
+        if (driver.SupportsParallelLifting && todo.Length > 1)
         {
-            foreach (var m in ordered)
+            Parallel.ForEach(todo, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, m =>
             {
-                if (_results.ContainsKey(m)) continue;
+                if (_results.ContainsKey(m)) return;
                 var r = driver.Lift(m);
                 _results[m] = r;
                 Log(m, r);
-                if (r.Success) lifted++;
+                if (r.Success) Interlocked.Increment(ref lifted);
+            });
+        }
+        else
+        {
+            lock (_gate)
+            {
+                foreach (var m in todo)
+                {
+                    if (_results.ContainsKey(m)) continue;
+                    var r = driver.Lift(m);
+                    _results[m] = r;
+                    Log(m, r);
+                    if (r.Success) lifted++;
+                }
             }
         }
         if (lifted > 0)

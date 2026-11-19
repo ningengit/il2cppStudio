@@ -15,32 +15,52 @@ public sealed partial class Il2CppRegistration
 {
     private bool LocateCodeRegistrationV24()
     {
-        var methodCount = (ulong)(_md.Methods.Max(m => m.MethodIndex) + 1);
+        var methodCount = _md.Methods.Length == 0 ? 0UL : (ulong)(_md.Methods.Max(m => m.MethodIndex) + 1);
         var attrCount = (ulong)_md.AttributeTypeRanges.Length;
         if (methodCount == 0) return false;
         foreach (var (start, end, _) in Reader.DataRanges())
         {
-            var words = Words(start, end);
-            var pos = 0;
-            while (pos < words.Length - 14)
-            {
-                var hit = words.AsSpan(pos).IndexOf(methodCount);
-                if (hit < 0) break;
-                var i = pos + hit;
-                pos = i + 1;
-                if (i + 13 >= words.Length || !Reader.IsMapped(words[i + 1])) continue;
-                if (words[i + 8] != attrCount || words[i + 4] > 5_000_000) continue;
-                CodeRegistrationVa = start + (ulong)(i * Ptr);
-                var pointers = CodePointers(ReadPointerArray(words[i + 1], (int)methodCount));
-                GenericMethodPointers = CodePointers(ReadPointerArray(words[i + 5], (int)words[i + 4]));
-                CodeGenModules = SynthesizeModules(pointers);
-                _sink.Info(DiagnosticCategory.Registration, DiagnosticCodes.RegistrationFound,
-                    $"CodeRegistration (v{_md.Version}) at RVA 0x{CodeRegistrationVa - Reader.ImageBase:X}: {pointers.Length:N0} method pointers, " +
-                    $"{GenericMethodPointers.Count:N0} generic method pointers.", new() { Rva = CodeRegistrationVa - Reader.ImageBase, VirtualAddress = CodeRegistrationVa });
-                return true;
-            }
+            var va = Ptr == 8
+                ? FindCodeRegistrationV24(Words64(start, end), start, methodCount, attrCount)
+                : FindCodeRegistrationV24(Words32(start, end), start, (uint)methodCount, attrCount);
+            if (va != 0)
+                return ParseCodeRegistrationV24(va, methodCount);
         }
         return false;
+    }
+
+    private ulong FindCodeRegistrationV24<TWord>(ReadOnlySpan<TWord> words, ulong start, TWord target, ulong attrCount)
+        where TWord : unmanaged, IEquatable<TWord>
+    {
+        var pos = 0;
+        while (pos < words.Length - 14)
+        {
+            var hit = words[pos..].IndexOf(target);
+            if (hit < 0) break;
+            var i = pos + hit;
+            pos = i + 1;
+            if (i + 13 >= words.Length || !Reader.IsMapped(WordToU64(words[i + 1]))) continue;
+            if (WordToU64(words[i + 8]) != attrCount || WordToU64(words[i + 4]) > 5_000_000) continue;
+            return start + (ulong)(i * Ptr);
+        }
+        return 0;
+    }
+
+    private bool ParseCodeRegistrationV24(ulong codeRegVa, ulong methodCount)
+    {
+        var ptrsVa = At(codeRegVa, 1);
+        var gmpCount = At(codeRegVa, 4);
+        var gmpVa = At(codeRegVa, 5);
+        if (!Reader.IsMapped(ptrsVa) || gmpCount > 5_000_000) return false;
+
+        CodeRegistrationVa = codeRegVa;
+        var pointers = CodePointers(ReadPointerArray(ptrsVa, (int)methodCount));
+        GenericMethodPointers = CodePointers(ReadPointerArray(gmpVa, (int)gmpCount));
+        CodeGenModules = SynthesizeModules(pointers);
+        _sink.Info(DiagnosticCategory.Registration, DiagnosticCodes.RegistrationFound,
+            $"CodeRegistration (v{_md.Version}) at RVA 0x{CodeRegistrationVa - Reader.ImageBase:X}: {pointers.Length:N0} method pointers, " +
+            $"{GenericMethodPointers.Count:N0} generic method pointers.", new() { Rva = CodeRegistrationVa - Reader.ImageBase, VirtualAddress = CodeRegistrationVa });
+        return true;
     }
 
     /// <summary>One module per image; MethodPointers[rid - 1] = methodPointers[methodDef.MethodIndex].</summary>

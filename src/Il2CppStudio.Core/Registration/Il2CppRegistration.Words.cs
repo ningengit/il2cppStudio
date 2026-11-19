@@ -1,10 +1,11 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Il2CppStudio.Core.Registration;
 
 /// <summary>
 /// Pointer-size abstraction: every registration structure is an array of pointer-sized words (8 bytes on x64/ARM64,
-/// 4 on x86/ARMv7). Scans run over a widened <c>ulong[]</c> view so one code path serves both widths.
+/// 4 on x86/ARMv7). Scanning operates directly on zero-copy <see cref="ReadOnlySpan{T}"/> views over the mapped binary.
 /// </summary>
 public sealed partial class Il2CppRegistration
 {
@@ -23,14 +24,19 @@ public sealed partial class Il2CppRegistration
 
     private ulong At(ulong va, int index) => Reader.ReadPointer(va + (ulong)(index * Ptr));
 
-    /// <summary>The pointer-aligned words of a data range, widened to 64-bit.</summary>
-    private ulong[] Words(ulong start, ulong end)
+    private ReadOnlySpan<ulong> Words64(ulong start, ulong end)
     {
         var span = Reader.Slice(start, (int)(end - start));
-        if (Ptr == 8) return MemoryMarshal.Cast<byte, ulong>(span[..(span.Length & ~7)]).ToArray();
-        var narrow = MemoryMarshal.Cast<byte, uint>(span[..(span.Length & ~3)]);
-        var wide = new ulong[narrow.Length];
-        for (var i = 0; i < narrow.Length; i++) wide[i] = narrow[i];
-        return wide;
+        return MemoryMarshal.Cast<byte, ulong>(span[..(span.Length & ~7)]);
     }
+
+    private ReadOnlySpan<uint> Words32(ulong start, ulong end)
+    {
+        var span = Reader.Slice(start, (int)(end - start));
+        return MemoryMarshal.Cast<byte, uint>(span[..(span.Length & ~3)]);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong WordToU64<TWord>(TWord word) where TWord : unmanaged =>
+        Unsafe.SizeOf<TWord>() == 8 ? Unsafe.BitCast<TWord, ulong>(word) : Unsafe.BitCast<TWord, uint>(word);
 }

@@ -24,6 +24,8 @@ public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs
 {
     private readonly Dictionary<string, int> _typeIndex = MemoryResolver.BuildTypeIndex(sym.Model);
 
+    public bool SupportsParallelLifting => true;
+
     public LiftResult Lift(int methodIndex)
     {
         ArgumentLocations.Abi = abi;   // per-thread: argument registers, volatile set, struct passing rules
@@ -81,7 +83,7 @@ public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs
 
             body.Instructions.OptimizeMacros();
             method.CilMethodBody = body;
-            stub.LiftedMethods.Add(methodIndex);
+            stub.MarkLifted(methodIndex);
             var result = new LiftResult(methodIndex, true, fn.Instructions.Count, body.Instructions.Count,
                 blocks.Unsupported, calls.Unresolved, graph.ElidedGuards + branch.ElidedChecks + calls.Elided, null) { Notes = notes, LoadsMaterialized = loads.Materialized };
             sink.Verbose(DiagnosticCategory.Lifting, DiagnosticCodes.LiftCompleted,
