@@ -1,6 +1,6 @@
 # Il2CppStudio
 
-Il2CppStudio is a high-performance, 100% MIT-licensed C# decompiler and binary analysis tool built specifically for Unity IL2CPP games. Designed to eliminate the need for 4,000 different programs and Python scripts just to decompile something, its goal is to take you from a game binary or console archive straight to readable, compilable C# code.
+Il2CppStudio is a high-performance, 100% MIT-licensed C# decompiler and binary analysis tool built specifically for Unity IL2CPP games. Designed to eliminate the need for 4,000 different programs and Python scripts just to decompile something, its goal is to take you from a game binary or console archive straight to readable, compilable C# code. I'd be happy if you'd tell me any bugs or errors you come across so i can fix them.
 
 The tool itself is vibe-coded (and I admit it!), so it won't always output textbook-perfect C# on every edge case yet, but it already compiles massive commercial `Assembly-CSharp` projects with zero errors and operates at blazing speeds.
 
