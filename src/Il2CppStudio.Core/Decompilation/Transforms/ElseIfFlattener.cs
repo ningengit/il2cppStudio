@@ -20,16 +20,20 @@ public static class ElseIfFlattener
     public static int Apply(SyntaxTree tree)
     {
         var changes = 0;
-        foreach (var body in tree.Descendants.OfType<EntityDeclaration>().Select(e => e.GetChildByRole(Roles.Body)).Where(b => !b.IsNull).ToList())
+        AstWalk.Visit<EntityDeclaration>(tree, e =>
         {
-            foreach (var ifs in body.Descendants.OfType<IfElseStatement>().Reverse().ToList())
+            var body = e.GetChildByRole(Roles.Body);
+            if (body.IsNull) return;
+            var ifsList = AstWalk.Collect<IfElseStatement>(body);
+            for (var i = ifsList.Count - 1; i >= 0; i--)
             {
+                var ifs = ifsList[i];
                 if (ifs.Parent is null) continue;
                 changes += Hoist(ifs.TrueStatement, body) + Hoist(ifs.FalseStatement, body);
                 if (TrySwap(ifs)) changes++;
                 if (UnwrapElse(ifs)) changes++;
             }
-        }
+        });
         return changes;
     }
 

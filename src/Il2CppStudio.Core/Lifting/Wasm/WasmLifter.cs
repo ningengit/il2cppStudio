@@ -41,10 +41,23 @@ public sealed class WasmLifter(NativeSymbolizer sym, StubAssemblyBuilder stubs, 
         var slot = sym.Map.GetMethodVa(methodIndex);
         if (method is null || slot == 0 || method.IsAbstract) return new(methodIndex, false, 0, 0, 0, 0, 0, "no native code");
         if (!wasm.TryGetFunction(slot, out var function, out var funcType)) return new(methodIndex, false, 0, 0, 0, 0, 0, "no native code");
+        if (TryUnwrapAdjustorThunk(function, out var inner)
+            && wasm.TryGetFunctionType(inner, out var innerFt)
+            && !wasm.FunctionBody(inner).IsEmpty)
+        {
+            function = inner;
+            funcType = innerFt;
+        }
         var bodyBytes = wasm.FunctionBody(function);
         if (bodyBytes.IsEmpty) return new(methodIndex, false, 0, 0, 0, 0, 0, "no native code");
+        var loc = (ulong ip) => new DiagnosticLocation { Rva = ip, MethodName = sym.MethodName(methodIndex) };
         if (!WasmBinaryImage.TryReadLocals(bodyBytes, out var locals, out var codeStart))
+        {
+            var rawHex = Convert.ToHexString(bodyBytes[..Math.Min(16, bodyBytes.Length)]);
+            sink.Warn(DiagnosticCategory.Lifting, DiagnosticCodes.DisassemblyFailed,
+                $"Wasm decode failed at body offset +0x0: raw bytes [{rawHex}] — malformed local declarations", loc(slot));
             return new(methodIndex, false, 0, 0, 0, 0, 0, "malformed local declarations");
+        }
         List<WasmInstruction> insns;
         try
         {
@@ -52,10 +65,13 @@ public sealed class WasmLifter(NativeSymbolizer sym, StubAssemblyBuilder stubs, 
         }
         catch (Exception ex)
         {
+            var rawSlice = codeStart < bodyBytes.Length ? bodyBytes[codeStart..Math.Min(bodyBytes.Length, codeStart + 16)] : [];
+            var rawHex = Convert.ToHexString(rawSlice);
+            sink.Warn(DiagnosticCategory.Lifting, DiagnosticCodes.DisassemblyFailed,
+                $"Wasm decode failed at body offset +0x{codeStart:X}: raw bytes [{rawHex}] — {ex.Message}", loc(slot), ex);
             return new(methodIndex, false, 0, 0, 0, 0, 0, $"wasm decode failed: {ex.Message}");
         }
 
-        var loc = (ulong ip) => new DiagnosticLocation { Rva = ip, MethodName = sym.MethodName(methodIndex) };
         var notes = new List<string>();
         try
         {
@@ -102,8 +118,9 @@ public sealed class WasmLifter(NativeSymbolizer sym, StubAssemblyBuilder stubs, 
             foreach (var symbol in sym.Map.Symbols.Values)
             {
                 if (wasm.FunctionBody(symbol.Va, out var fi).IsEmpty) continue;
-                if (!built.TryGetValue(fi, out var list)) built[fi] = list = [];
-                if (!list.Contains(symbol.Va)) list.Add(symbol.Va);
+                AddSlot(built, fi, symbol.Va);
+                if (TryUnwrapAdjustorThunk(fi, out var inner))
+                    AddSlot(built, inner, symbol.Va);
             }
             map = Interlocked.CompareExchange(ref _slotsByFunction, built, null) ?? built;
         }
@@ -113,6 +130,58 @@ public sealed class WasmLifter(NativeSymbolizer sym, StubAssemblyBuilder stubs, 
             foreach (var candidate in sym.Map.CandidatesAt(slot))
                 if (!symbols.Contains(candidate)) symbols.Add(candidate);
         return symbols;
+    }
+
+    private static void AddSlot(Dictionary<uint, List<ulong>> map, uint fi, ulong slot)
+    {
+        if (!map.TryGetValue(fi, out var list)) map[fi] = list = [];
+        if (!list.Contains(slot)) list.Add(slot);
+    }
+
+    /// <summary>
+    /// Recognizes IL2CPP value-type unboxing/adjustor thunks (<c>local.get 0; i32.const 8|16; i32.add; ...; call inner; end</c>)
+    /// so lifting and call symbolization target the real unboxed value-type method body.
+    /// </summary>
+    private bool TryUnwrapAdjustorThunk(uint functionIndex, out uint targetFunction)
+    {
+        targetFunction = 0;
+        var body = wasm.FunctionBody(functionIndex);
+        if (body.Length is 0 or > 48) return false;
+        if (!WasmBinaryImage.TryReadLocals(body, out var locals, out var codeStart) || locals.Count != 0) return false;
+
+        List<WasmInstruction> insns;
+        try { insns = Disassembler.Disassemble(body[codeStart..].ToArray(), (uint)codeStart); }
+        catch { return false; }
+
+        if (insns.Count < 5 || insns[^1].Mnemonic != WasmMnemonic.End) return false;
+        var tail = insns[^2].Mnemonic == WasmMnemonic.Return ? insns.Count - 2 : insns.Count - 1;
+        if (tail < 4 || insns[tail - 1].Mnemonic != WasmMnemonic.Call || insns[tail - 1].Operands is not { Length: > 0 })
+            return false;
+
+        var callTarget = Convert.ToUInt32(insns[tail - 1].Operands[0]);
+        if (callTarget == functionIndex) return false;
+
+        var sawAdjust = false;
+        for (var i = 0; i < tail - 1; i++)
+        {
+            var m = insns[i].Mnemonic;
+            if (m is WasmMnemonic.Block or WasmMnemonic.Loop or WasmMnemonic.If or WasmMnemonic.Else
+                or WasmMnemonic.Br or WasmMnemonic.BrIf or WasmMnemonic.BrTable
+                or WasmMnemonic.Call or WasmMnemonic.CallIndirect)
+                return false;
+
+            if (i + 2 < tail - 1
+                && m == WasmMnemonic.LocalGet && insns[i].Operands is { Length: > 0 } && Convert.ToUInt32(insns[i].Operands[0]) == 0
+                && insns[i + 1].Mnemonic == WasmMnemonic.I32Const && insns[i + 1].Operands is { Length: > 0 }
+                && Convert.ToInt64(insns[i + 1].Operands[0]) is 8 or 16
+                && insns[i + 2].Mnemonic == WasmMnemonic.I32Add)
+            {
+                sawAdjust = true;
+            }
+        }
+        if (!sawAdjust) return false;
+        targetFunction = callTarget;
+        return true;
     }
 
     internal NativeSymbolizer Symbolizer => sym;
@@ -169,10 +238,12 @@ internal sealed class BlockFrame(WasmMnemonic kind, int baseHeight, WasmFuncType
     public bool ThenFellThrough { get; set; }
     public Dictionary<int, Expr>? SavedSubst { get; set; }
     public Dictionary<int, TypeSignature?>? SavedPointee { get; set; }
+    public Dictionary<int, int>? SavedDisp { get; set; }
     public Dictionary<int, CilLocalVariable>? SavedLocals { get; set; }
     public Dictionary<int, Expr>? SavedParamValue { get; set; }
     public Dictionary<int, Expr>? ThenEndSubst { get; set; }
     public Dictionary<int, TypeSignature?>? ThenEndPointee { get; set; }
+    public Dictionary<int, int>? ThenEndDisp { get; set; }
     public Dictionary<int, CilLocalVariable>? ThenEndLocals { get; set; }
     public Dictionary<int, Expr>? ThenEndParamValue { get; set; }
     public int ResultCount => Sig.ResultCount;

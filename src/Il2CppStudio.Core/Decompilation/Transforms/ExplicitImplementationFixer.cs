@@ -18,12 +18,56 @@ public static class ExplicitImplementationFixer
 
     public static void Apply(SyntaxTree tree)
     {
-        foreach (var st in tree.Descendants.OfType<SimpleType>()) st.Identifier = StripExternAlias(st.Identifier);
-        foreach (var mt in tree.Descendants.OfType<MemberType>()) mt.MemberName = StripExternAlias(mt.MemberName);
-        foreach (var member in tree.Descendants.OfType<EntityDeclaration>().ToList())
+        var flags = AstWalk.ScanFlags(tree);
+        Apply(tree, in flags);
+    }
+
+    internal static void Apply(SyntaxTree tree, in TreeFlags flags)
+    {
+        var explicitDecls = new List<(EntityDeclaration Member, string Iface, string Name)>();
+        var explicitAccesses = new List<(MemberReferenceExpression Access, string Iface, string Name)>();
+        var stateMachines = flags.HasCompilerGeneratedTypes || AstWalk.HasAny<TypeDeclaration>(tree)
+            ? new List<(TypeDeclaration Type, string Iface)>()
+            : null;
+
+        AstWalk.ForEachNode(tree, n =>
         {
-            if (member is not (MethodDeclaration or PropertyDeclaration or EventDeclaration) || Split(member.Name) is not var (iface, name)) continue;
-            iface = StripExternAlias(iface);
+            switch (n)
+            {
+                case SimpleType st:
+                    var strippedSt = StripExternAlias(st.Identifier);
+                    if (!ReferenceEquals(strippedSt, st.Identifier)) st.Identifier = strippedSt;
+                    break;
+                case MemberType mt:
+                    var strippedMt = StripExternAlias(mt.MemberName);
+                    if (!ReferenceEquals(strippedMt, mt.MemberName)) mt.MemberName = strippedMt;
+                    break;
+                case MethodDeclaration or PropertyDeclaration or EventDeclaration when Split(((EntityDeclaration)n).Name) is var (iface, name):
+                    explicitDecls.Add(((EntityDeclaration)n, iface, name));
+                    break;
+                case MemberReferenceExpression mr when Split(mr.MemberName) is var (iface, name):
+                    explicitAccesses.Add((mr, iface, name));
+                    break;
+                case TypeDeclaration td when stateMachines is not null && td.BaseTypes.Count > 0:
+                    string? smIface = null;
+                    foreach (var bt in td.BaseTypes)
+                    {
+                        var candidate = StateMachineInterfaceName(bt);
+                        if (candidate is not null)
+                        {
+                            smIface = candidate;
+                            if (candidate == "System.Runtime.CompilerServices.IAsyncStateMachine") break;
+                        }
+                    }
+                    if (smIface is not null)
+                        stateMachines.Add((td, smIface));
+                    break;
+            }
+        });
+
+        foreach (var (member, rawIface, name) in explicitDecls)
+        {
+            var iface = StripExternAlias(rawIface);
             if (member is MethodDeclaration { PrivateImplementationType.IsNull: false } or PropertyDeclaration { PrivateImplementationType.IsNull: false }) continue;
             if (member is MethodDeclaration m && ((name.StartsWith("get_", StringComparison.Ordinal) && m.Parameters.Count == 0)
                 || (name.StartsWith("set_", StringComparison.Ordinal) && m.Parameters.Count == 1)))
@@ -54,10 +98,11 @@ public static class ExplicitImplementationFixer
                 case CustomEventDeclaration e: e.PrivateImplementationType = new SimpleType(iface); break;
             }
         }
-        foreach (var access in tree.Descendants.OfType<MemberReferenceExpression>().ToList())
+
+        foreach (var (access, rawIface, name) in explicitAccesses)
         {
-            if (access.Parent is null || Split(access.MemberName) is not var (iface, name)) continue;
-            iface = StripExternAlias(iface);
+            if (access.Parent is null) continue;
+            var iface = StripExternAlias(rawIface);
             var target = access.Target is ThisReferenceExpression or BaseReferenceExpression ? new ThisReferenceExpression() : access.Target.Detach();
             if (ContainsOpenTypeParam(iface))
             {
@@ -70,34 +115,35 @@ public static class ExplicitImplementationFixer
             access.Target = new ParenthesizedExpression(new CastExpression(new SimpleType(iface), target));
             access.MemberName = name;
         }
-        FixStateMachines(tree);
+
+        if (stateMachines is not null)
+        {
+            foreach (var (type, iface) in stateMachines)
+            {
+                var isAsync = iface.EndsWith("IAsyncStateMachine", StringComparison.Ordinal);
+                foreach (var m in type.Members.OfType<MethodDeclaration>())
+                {
+                    var explicitName = m.Name == "MoveNext" && m.Parameters.Count == 0 || isAsync && m.Name == "SetStateMachine";
+                    if (!explicitName || !m.PrivateImplementationType.IsNull || (m.Modifiers & Modifiers.Public) != 0) continue;
+                    m.Modifiers = Modifiers.None;
+                    m.PrivateImplementationType = new SimpleType(iface);
+                }
+            }
+        }
     }
+
+    private static string? StateMachineInterfaceName(AstType bt) => bt switch
+    {
+        SimpleType { TypeArguments.Count: 0, Identifier: "IAsyncStateMachine" } => "System.Runtime.CompilerServices.IAsyncStateMachine",
+        SimpleType { TypeArguments.Count: 0, Identifier: "IEnumerator" } => "System.Collections.IEnumerator",
+        MemberType { TypeArguments.Count: 0, MemberName: "IAsyncStateMachine" } => "System.Runtime.CompilerServices.IAsyncStateMachine",
+        MemberType { TypeArguments.Count: 0, MemberName: "IEnumerator", Target: MemberType { MemberName: "Collections", Target: SimpleType { Identifier: "System" or "global::System" } or MemberType { MemberName: "System" } } } => "System.Collections.IEnumerator",
+        _ => null,
+    };
 
     private static bool ContainsOpenTypeParam(string iface) =>
         iface.Contains("<TKey", StringComparison.Ordinal) || iface.Contains("TValue>", StringComparison.Ordinal)
         || iface.Contains("<T>", StringComparison.Ordinal);
-
-    /// <summary>
-    /// Compiler-generated state machines implement <c>IEnumerator.MoveNext</c> / <c>IAsyncStateMachine.MoveNext</c> and
-    /// <c>SetStateMachine</c> with private methods plus MethodImpl records; in C# that is an explicit implementation.
-    /// </summary>
-    private static void FixStateMachines(SyntaxTree tree)
-    {
-        foreach (var type in tree.Descendants.OfType<TypeDeclaration>())
-        {
-            var bases = type.BaseTypes.Select(b => b.ToString()).ToList();
-            var iface = bases.Any(b => b.EndsWith("IAsyncStateMachine", StringComparison.Ordinal)) ? "System.Runtime.CompilerServices.IAsyncStateMachine"
-                : bases.Any(b => b is "IEnumerator" or "System.Collections.IEnumerator") ? "System.Collections.IEnumerator" : null;
-            if (iface is null) continue;
-            foreach (var m in type.Members.OfType<MethodDeclaration>())
-            {
-                var explicitName = m.Name == "MoveNext" && m.Parameters.Count == 0 || iface.EndsWith("IAsyncStateMachine", StringComparison.Ordinal) && m.Name == "SetStateMachine";
-                if (!explicitName || !m.PrivateImplementationType.IsNull || (m.Modifiers & Modifiers.Public) != 0) continue;
-                m.Modifiers = Modifiers.None;
-                m.PrivateImplementationType = new SimpleType(iface);
-            }
-        }
-    }
 
     /// <summary>"System.Collections.Generic.IEnumerator&lt;System.Object&gt;.Current" → (interface, "Current"); null for plain names.</summary>
     public static (string Interface, string Name)? Split(string member)

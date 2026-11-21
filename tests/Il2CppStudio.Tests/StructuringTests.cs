@@ -76,6 +76,15 @@ public sealed class StructuringTests(TemplateBuildFixture fx)
     }
 
     [Fact]
+    public void Loops_BullyActivate_RestoresMagnitudeWhileCondition()
+    {
+        var cs = Render("BullyScript", "Activate");
+        Assert.Contains("while ((transform.position - player.position).magnitude < 20f)", cs);
+        Assert.DoesNotContain("while (true)", cs);
+        Assert.DoesNotContain("Math.Sqrt", cs);
+    }
+
+    [Fact]
     public void Iterator_KeptStateMachineResetThrowsNotSupported()
     {
         // WarpText is not reconstructed yet; the kept class must still show the compiler's Reset body.

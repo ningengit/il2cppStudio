@@ -94,8 +94,13 @@ public sealed partial class Il2CppRegistration
     {
         var map = new Dictionary<ulong, MetadataUsage>();
         if (MetadataRegistrationVa == 0) return map;
-        var count = At(MetadataRegistrationVa, 14);
-        var table = ReadPointerArray(At(MetadataRegistrationVa, 15), (int)Math.Min(count, 5_000_000));
+        var tableVa = At(MetadataRegistrationVa, 15);
+        var needed = At(MetadataRegistrationVa, 14);
+        foreach (var pair in _md.MetadataUsagePairs)
+            if (pair.DestinationIndex + 1UL > needed) needed = pair.DestinationIndex + 1UL;
+        var maxCount = (int)Math.Min(needed, 5_000_000UL);
+        var avail = Reader.IsMapped(tableVa) ? Reader.Slice(tableVa, maxCount * Ptr).Length / Ptr : 0;
+        var table = ReadPointerArray(tableVa, Math.Min(maxCount, avail));
         foreach (var pair in _md.MetadataUsagePairs)
         {
             if (pair.DestinationIndex >= table.Length) continue;

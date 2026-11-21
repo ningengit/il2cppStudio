@@ -9,9 +9,12 @@ namespace Il2CppStudio.Core.Decompilation.Transforms;
 /// </summary>
 public static class StringEqualitySugar
 {
-    public static void Apply(SyntaxTree tree)
+    public static void Apply(SyntaxTree tree) => Apply(tree, AstWalk.ScanFlags(tree));
+
+    internal static void Apply(SyntaxTree tree, in TreeFlags flags)
     {
-        foreach (var call in tree.Descendants.OfType<InvocationExpression>().ToList())
+        if (!flags.HasStringEquals) return;
+        foreach (var call in AstWalk.Collect<InvocationExpression>(tree))
         {
             if (call.Parent is null || call.Arguments.Count != 2 || call.Arguments.Any(a => a is NamedArgumentExpression)) continue;
             if (call.Target is not MemberReferenceExpression { MemberName: "Equals", Target: var t } || !IsStringType(t)) continue;

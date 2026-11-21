@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.Input;
 using Il2CppStudio.Core.Diagnostics;
 using Il2CppStudio.Core.Metadata;
 using Il2CppStudio.Core.Workspace;
+using Il2CppStudio.Gui.Services;
 
 namespace Il2CppStudio.Gui.ViewModels;
 
@@ -28,7 +29,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty] private string _title = "Il2CppStudio";
     [ObservableProperty] private string _modeLabel = "No folder loaded";
-    [ObservableProperty] private string _status = "File → Load Folder… to open an IL2CPP build.";
+    [ObservableProperty] private string _status = "Drop a game file/folder here, or use File → Load File / Load Folder…";
     [ObservableProperty] private string _searchText = "";
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private bool _substituteBcl = true;
@@ -71,16 +72,55 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (Ui is null) return;
         var file = await Ui.PickFileAsync("Select an APK, XAPK, PS4 PKG/PRX, Switch NSP/main, IL2CPP binary, WebGL wasm, or global-metadata.dat");
-        if (file is not null) await LoadFolderAsync(file);
+        if (file is null) return;
+        await LoadPathAsync(file);
     }
 
-    public async Task LoadFolderAsync(string folder)
+    public async Task LoadPathAsync(string path)
+    {
+        if (Ui is null || string.IsNullOrWhiteSpace(path)) return;
+
+        string? keysetPath = null;
+        string? ps4Passcode = null;
+
+        if (SwitchNspExtractor.IsNspPath(path) && SwitchNspExtractor.RequiresKeyset(path))
+        {
+            var settings = UserSettings.Load();
+            keysetPath = SwitchKeySet.ResolveDefaultPath(settings.SwitchKeysetPath);
+            if (keysetPath is null)
+            {
+                keysetPath = await Ui.PickKeysetFileAsync("Select Nintendo Switch keyset (prod.keys / dev.keys)");
+                if (keysetPath is null) return;
+                settings.SwitchKeysetPath = keysetPath;
+                settings.Save();
+            }
+        }
+        else if (Ps4PkgExtractor.IsPkgPath(path) && Ps4PkgExtractor.NeedsUserKey(path))
+        {
+            ps4Passcode = await Ui.PromptTextAsync(
+                "PS4 Package Key Required",
+                "This PS4 .pkg is encrypted with a non-default key. Enter a 64-character hex EKPFS key or 32-character passcode:",
+                "64-hex EKPFS or 32-char passcode");
+            if (string.IsNullOrWhiteSpace(ps4Passcode)) return;
+        }
+
+        await LoadFolderAsync(path, keysetPath, ps4Passcode);
+    }
+
+    public Task LoadFolderAsync(string folder) => LoadFolderAsync(folder, null, null);
+
+    public async Task LoadFolderAsync(string folder, string? switchKeysetPath, string? ps4Passcode)
     {
         await RunBusy($"Loading {folder}…", () =>
         {
             _ws?.Dispose();
             _ws = null;
-            var ws = Il2CppWorkspace.Load(folder, _sink, new WorkspaceOptions { SubstituteBcl = SubstituteBcl });
+            var ws = Il2CppWorkspace.Load(folder, _sink, new WorkspaceOptions
+            {
+                SubstituteBcl = SubstituteBcl,
+                SwitchKeysetPath = switchKeysetPath,
+                Ps4PkgPasscode = ps4Passcode,
+            });
             WorkspaceSetup.Attach(ws);
             _ws = ws;
         });

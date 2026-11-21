@@ -12,20 +12,34 @@ public static class IdentifierEscaper
 {
     public static void Apply(SyntaxTree tree)
     {
-        foreach (var id in tree.Descendants.OfType<Identifier>().ToList())
+        AstWalk.Visit<Identifier>(tree, static id =>
         {
-            if (id.Parent is SimpleType && id.Name.Contains('.')) continue;   // explicit-implementation interface type (see ExplicitImplementationFixer)
+            if (id.Parent is SimpleType && id.Name.Contains('.')) return;   // explicit-implementation interface type (see ExplicitImplementationFixer)
             var escaped = Escape(id.Name);
             if (!ReferenceEquals(escaped, id.Name)) id.Name = escaped;
-        }
+        });
     }
 
     public static string Escape(string name)
     {
-        if (name.Length == 0 || IsStart(name[0]) && name.All(IsPart)) return name;   // keywords are @-escaped by the printer
-        var chars = name.Select(c => IsPart(c) ? c : '_').ToArray();
-        var result = new string(chars);
-        return IsStart(result[0]) ? result : "_" + result;
+        if (name.Length == 0) return name;
+        if (IsStart(name[0]))
+        {
+            var allValid = true;
+            for (var i = 1; i < name.Length; i++)
+            {
+                if (!IsPart(name[i])) { allValid = false; break; }
+            }
+            if (allValid) return name;   // keywords are @-escaped by the printer
+        }
+        var prepend = char.IsDigit(name[0]);
+        return string.Create(prepend ? name.Length + 1 : name.Length, name, static (dst, src) =>
+        {
+            var off = 0;
+            if (char.IsDigit(src[0])) dst[off++] = '_';
+            for (var i = 0; i < src.Length; i++)
+                dst[off + i] = IsPart(src[i]) ? src[i] : '_';
+        });
     }
 
     private static bool IsStart(char c) => char.IsLetter(c) || c == '_';

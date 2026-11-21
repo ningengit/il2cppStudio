@@ -9,9 +9,12 @@ namespace Il2CppStudio.Core.Decompilation.Transforms;
 /// </summary>
 public static class BankersRoundRecognizer
 {
-    public static void Apply(SyntaxTree tree)
+    public static void Apply(SyntaxTree tree) => Apply(tree, AstWalk.ScanFlags(tree));
+
+    internal static void Apply(SyntaxTree tree, in TreeFlags flags)
     {
-        foreach (var block in tree.Descendants.OfType<BlockStatement>().ToList())
+        if (!flags.HasCallNative) return;
+        foreach (var block in AstWalk.Collect<BlockStatement>(tree))
         {
             var stmts = block.Statements.ToList();
             for (var i = 0; i + 2 < stmts.Count; i++)
@@ -27,7 +30,7 @@ public static class BankersRoundRecognizer
                 var castAssign = stmts.Skip(i + 3).OfType<ExpressionStatement>().FirstOrDefault(s =>
                     s.Expression is AssignmentExpression { Operator: AssignmentOperatorType.Assign, Right: CastExpression { Type: PrimitiveType { Keyword: "int" }, Expression: IdentifierExpression } });
                 if (castAssign?.Expression is not AssignmentExpression { Left: IdentifierExpression targetVar, Right: CastExpression { Expression: IdentifierExpression resVar } }) continue;
-                if (!ifs.Descendants.OfType<AssignmentExpression>().Any(a => a.Left is IdentifierExpression id && id.Identifier == resVar.Identifier)) continue;
+                if (!AstWalk.HasAny(ifs, n => n is AssignmentExpression a && a.Left is IdentifierExpression id && id.Identifier == resVar.Identifier)) continue;
 
                 Expression arg = floatArg.Clone();
                 Statement? argDecl = i > 0 && stmts[i - 1] is VariableDeclarationStatement { Variables.Count: 1 } prev
@@ -38,30 +41,56 @@ public static class BankersRoundRecognizer
                     new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Mathf")), "RoundToInt"), arg);
                 castAssign.Expression = new AssignmentExpression(targetVar.Clone(), roundCall);
 
-                var deadTemps = ifs.Descendants.OfType<IdentifierExpression>()
-                    .Select(id => id.Identifier).ToHashSet();
+                var deadTemps = new HashSet<string>(StringComparer.Ordinal);
+                AstWalk.Visit<IdentifierExpression>(ifs, id => deadTemps.Add(id.Identifier));
                 stmts[i].Remove();
                 dblDecl.Remove();
                 ifs.Remove();
                 argDecl?.Remove();
                 if (block.GetParent<MethodDeclaration>()?.Body is { } methodBody)
-                    foreach (var d in methodBody.Descendants.OfType<VariableDeclarationStatement>().Where(d => d.Variables.Count == 1 && deadTemps.Contains(d.Variables.Single().Name)).ToList())
-                        if (!methodBody.Descendants.OfType<IdentifierExpression>().Any(id => id.Identifier == d.Variables.Single().Name))
+                {
+                    var remainingIds = new HashSet<string>(StringComparer.Ordinal);
+                    AstWalk.Visit<IdentifierExpression>(methodBody, id => remainingIds.Add(id.Identifier));
+                    foreach (var d in AstWalk.Collect<VariableDeclarationStatement>(methodBody))
+                        if (d.Variables.Count == 1 && deadTemps.Contains(d.Variables.Single().Name)
+                            && !remainingIds.Contains(d.Variables.Single().Name))
                             d.Remove();
+                }
             }
         }
     }
 
-    private static bool IsStackOutNativeCall(InvocationExpression call) =>
-        call.Target is MemberReferenceExpression { MemberName: "CallNative" }
-        && call.Arguments.Any(a => a.ToString().Contains("&stack[", StringComparison.Ordinal));
+    private static bool IsStackOutNativeCall(InvocationExpression call)
+    {
+        if (call.Target is not MemberReferenceExpression { MemberName: "CallNative" }) return false;
+        foreach (var a in call.Arguments)
+            if (AstWalk.HasAny(a, static n => n is UnaryOperatorExpression { Operator: UnaryOperatorType.AddressOf, Expression: IndexerExpression { Target: IdentifierExpression { Identifier: "stack" } } }))
+                return true;
+        return false;
+    }
 
     private static bool IsBankersRoundBranch(IfElseStatement ifs, string dName)
     {
-        var calls = ifs.Descendants.OfType<InvocationExpression>()
-            .Select(c => (c.Target as MemberReferenceExpression)?.MemberName).OfType<string>().ToHashSet();
-        return calls.Contains("Floor") && calls.Contains("Ceiling")
-            && ifs.Descendants.OfType<IdentifierExpression>().Any(id => id.Identifier == dName)
-            && ifs.Descendants.OfType<BinaryOperatorExpression>().Any(b => b.Operator == BinaryOperatorType.BitwiseAnd && b.Right is PrimitiveExpression { Value: 1 });
+        var hasFloor = false;
+        var hasCeiling = false;
+        var hasD = false;
+        var hasMask1 = false;
+        AstWalk.ForEachNode(ifs, n =>
+        {
+            switch (n)
+            {
+                case InvocationExpression { Target: MemberReferenceExpression mr }:
+                    if (mr.MemberName == "Floor") hasFloor = true;
+                    else if (mr.MemberName == "Ceiling") hasCeiling = true;
+                    break;
+                case IdentifierExpression id when id.Identifier == dName:
+                    hasD = true;
+                    break;
+                case BinaryOperatorExpression { Operator: BinaryOperatorType.BitwiseAnd, Right: PrimitiveExpression { Value: 1 } }:
+                    hasMask1 = true;
+                    break;
+            }
+        });
+        return hasFloor && hasCeiling && hasD && hasMask1;
     }
 }

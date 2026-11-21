@@ -1,5 +1,8 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text;
+using System.Threading.Channels;
 using Il2CppStudio.Core.Decompilation;
 using Il2CppStudio.Core.Diagnostics;
 using Il2CppStudio.Core.Metadata;
@@ -20,9 +23,32 @@ public sealed record ExportSummary(
 /// </summary>
 public static class ExportService
 {
+    private sealed class AssemblyPlan(
+        AssemblyModel asm,
+        string dir,
+        string csDir,
+        string ilDir,
+        int image,
+        bool substituted,
+        List<TypeModel> topLevel,
+        int lifted)
+    {
+        public readonly AssemblyModel Asm = asm;
+        public readonly string Dir = dir;
+        public readonly string CsDir = csDir;
+        public readonly string IlDir = ilDir;
+        public readonly int Image = image;
+        public readonly bool Substituted = substituted;
+        public readonly List<TypeModel> TopLevel = topLevel;
+        public readonly int Lifted = lifted;
+        public string? StubPath;
+        public string? CppPath;
+    }
+
     public static ExportSummary ExportAll(Il2CppWorkspace ws, string outDir, bool includeIl = true, Func<AssemblyModel, bool>? filter = null,
         IProgress<string>? progress = null, CancellationToken ct = default)
     {
+        ExportProfiler.Reset();
         var sw = Stopwatch.StartNew();
         Directory.CreateDirectory(outDir);
 
@@ -32,7 +58,6 @@ public static class ExportService
         var sharedBcl = new BclReferenceProvider(ws.Options.BclReferenceDirectory, ws.Environment.UnityVersion, null, NullDiagnosticSink.Instance);
         var materializedRefs = new ConcurrentDictionary<string, Lazy<string?>>(StringComparer.OrdinalIgnoreCase);
         var refsDir = Path.GetFullPath(Path.Combine(outDir, "_references"));
-        var progressGate = new Lock();
 
         var assemblies = ws.Model.Assemblies
             .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
@@ -53,20 +78,183 @@ public static class ExportService
                         Collect(t);
             }
             if (allMethods.Count > 0)
+            {
+                var tLift = ExportProfiler.Start();
                 provider.EnsureLifted(allMethods);
+                ExportProfiler.RecordPreLift(tLift);
+            }
             preLifted = true;
         }
 
-        var results = new List<ExportedAssembly>(assemblies.Count);
-        foreach (var asm in assemblies)
+        var plans = new AssemblyPlan[assemblies.Count];
+        for (var i = 0; i < assemblies.Count; i++)
         {
-            ct.ThrowIfCancellationRequested();
-            progress?.Report($"Exporting {asm.Name}…");
-            results.Add(ExportAssemblyCore(ws, asm, Path.Combine(outDir, WorkspaceSerializer.Sanitize(asm.Name)),
-                refsDir, sharedBcl, materializedRefs, includeIl, preLifted, maxDecompileDegree: null, ct));
+            var asm = assemblies[i];
+            var dir = Path.Combine(outDir, WorkspaceSerializer.Sanitize(asm.Name));
+            var image = ws.Stubs.FindImage(asm.ImageName);
+            var substituted = ws.SubstituteBcl && BclReferenceProvider.IsBclAssembly(asm.Name);
+            var topLevel = asm.Namespaces.SelectMany(n => n.Types).ToList();
+            var lifted = 0;
+            if (!substituted && ws.BodyProvider is { } bp)
+            {
+                var all = new List<int>();
+                void CollectAsm(TypeModel t) { all.AddRange(t.Methods.Select(m => m.Index)); foreach (var n in t.NestedTypes) CollectAsm(n); }
+                topLevel.ForEach(CollectAsm);
+                lifted = preLifted && bp is Lifting.LiftingBodyProvider lbp
+                    ? all.Distinct().Count(m => lbp.Results.TryGetValue(m, out var r) && r.Success)
+                    : bp.EnsureLifted(all);
+            }
+            plans[i] = new AssemblyPlan(asm, dir, Path.Combine(dir, "csharp"), Path.Combine(dir, "il"), image, substituted, topLevel, lifted);
         }
 
+        var createdDirs = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+        void EnsureDir(string path)
+        {
+            if (createdDirs.TryAdd(path, 0))
+                Directory.CreateDirectory(path);
+        }
+
+        foreach (var p in plans)
+        {
+            EnsureDir(p.Dir);
+            if (p.Image < 0) continue;
+            foreach (var type in p.TopLevel)
+            {
+                var nsDir = type.Namespace.Length == 0 ? "-" : WorkspaceSerializer.Sanitize(type.Namespace);
+                EnsureDir(Path.Combine(p.CsDir, nsDir));
+                if (includeIl && !p.Substituted)
+                    EnsureDir(Path.Combine(p.IlDir, nsDir));
+            }
+        }
+
+        var writeChannel = Channel.CreateBounded<(string Path, string Content)>(new BoundedChannelOptions(512)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = false,
+            SingleWriter = false,
+        });
+        var writerTasks = new Task[4];
+        for (var w = 0; w < writerTasks.Length; w++)
+        {
+            writerTasks[w] = Task.Run(async () =>
+            {
+                await foreach (var (path, content) in writeChannel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+                {
+                    var tIo = ExportProfiler.Start();
+                    WriteUtf8Fast(path, content);
+                    ExportProfiler.RecordFileWrite(tIo);
+                }
+            }, CancellationToken.None);
+        }
+
+        void EnqueueWrite(string path, string content)
+        {
+            var item = (path, content);
+            while (!writeChannel.Writer.TryWrite(item))
+            {
+                ct.ThrowIfCancellationRequested();
+                if (!writeChannel.Writer.WaitToWriteAsync(ct).AsTask().GetAwaiter().GetResult())
+                    throw new OperationCanceledException(ct);
+            }
+        }
+
+        var failedInTry = false;
+        try
+        {
+            var parallelOpts = new ParallelOptions { CancellationToken = ct };
+
+            progress?.Report($"Generating headers and decompiling {plans.Length} assemblies…");
+            Parallel.ForEach(plans, parallelOpts, p =>
+            {
+                try
+                {
+                    var cppPath = Path.Combine(p.Dir, WorkspaceSerializer.Sanitize(p.Asm.Name) + ".h");
+                    var tCpp = ExportProfiler.Start();
+                    var header = ws.Cpp.GenerateImageHeader(p.Asm);
+                    ExportProfiler.RecordCppHeader(tCpp);
+                    EnqueueWrite(cppPath, header);
+                    p.CppPath = cppPath;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    ws.Sink.Warn(DiagnosticCategory.Extraction, DiagnosticCodes.ExtractionEntryFailed,
+                        $"C++ header for {p.Asm.Name}: {ex.Message}", new() { AssemblyName = p.Asm.Name }, ex);
+                }
+            });
+
+            Parallel.ForEach(plans, parallelOpts, p =>
+            {
+                if (p.Substituted || p.Image < 0) return;
+                if (ws.Decompiler.GetStubImage(p.Image) is { } bytes)
+                {
+                    var stubPath = Path.Combine(p.Dir, p.Asm.ImageName);
+                    File.WriteAllBytes(stubPath, bytes);
+                    p.StubPath = stubPath;
+                }
+            });
+
+            var batchPlans = new List<AssemblyPlan>(plans.Length);
+            var requests = new List<DecompilerService.BatchImageRequest>(plans.Length);
+            foreach (var p in plans)
+            {
+                if (p.Image < 0) continue;
+                batchPlans.Add(p);
+                requests.Add(new DecompilerService.BatchImageRequest(
+                    p.Image, p.Asm.ImageName, p.TopLevel, includeIl && !p.Substituted, p.Substituted));
+            }
+            if (requests.Count > 0)
+            {
+                ws.Decompiler.DecompileImagesBatch(requests, (reqIdx, type, cs, il) =>
+                {
+                    var plan = batchPlans[reqIdx];
+                    var rel = Path.Combine(type.Namespace.Length == 0 ? "-" : WorkspaceSerializer.Sanitize(type.Namespace), WorkspaceSerializer.Sanitize(type.Name));
+                    EnqueueWrite(Path.Combine(plan.CsDir, rel + ".cs"), cs);
+                    if (il.Length > 0) EnqueueWrite(Path.Combine(plan.IlDir, rel + ".il"), il);
+                }, ct);
+            }
+
+            foreach (var p in plans)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (p.Image < 0 || p.Substituted) continue;
+                try
+                {
+                    var tRefs = ExportProfiler.Start();
+                    var refs = ProjectReferences.Materialize(ws, p.Asm, refsDir, sharedBcl, materializedRefs);
+                    ProjectFileWriter.Write(p.Dir, p.Asm.Name, refs);
+                    ExportProfiler.RecordProjectRefs(tRefs);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    ws.Sink.Warn(DiagnosticCategory.Extraction, DiagnosticCodes.ExtractionEntryFailed,
+                        $"Project file for {p.Asm.Name}: {ex.Message}", new() { AssemblyName = p.Asm.Name }, ex);
+                }
+            }
+        }
+        catch
+        {
+            failedInTry = true;
+            throw;
+        }
+        finally
+        {
+            writeChannel.Writer.TryComplete();
+            try
+            {
+                Task.WhenAll(writerTasks).GetAwaiter().GetResult();
+            }
+            catch when (failedInTry)
+            {
+            }
+        }
+
+        var results = new List<ExportedAssembly>(plans.Length);
+        foreach (var p in plans)
+            results.Add(new ExportedAssembly(p.Asm.Name, p.Substituted, p.Asm.TypeCount, p.Lifted, p.StubPath, p.CsDir, p.CppPath));
+
+        var tArt = ExportProfiler.Start();
         var artifacts = ws.ExportArtifacts(Path.Combine(outDir, "_artifacts"), includeRawSections: true);
+        ExportProfiler.RecordArtifacts(tArt);
         foreach (var log in ws.Decompiler.ErrorLog.WriteAll(outDir))
             ws.Sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.ExportCompleted, $"Error log written: {log}", new() { File = log });
         var collector = ws.Sink as DiagnosticCollector;
@@ -79,7 +267,31 @@ public static class ExportService
         WorkspaceSerializer.WriteJson(Path.Combine(outDir, "export-summary.json"), summary);
         ws.Sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.ExportCompleted,
             $"Exported {results.Count} assemblies to '{outDir}' in {sw.Elapsed.TotalSeconds:F1}s.", new() { File = outDir });
+        ExportProfiler.Report(sw.Elapsed);
         return summary;
+    }
+
+    private static void WriteUtf8Fast(string path, string content)
+    {
+        if (content.Length == 0)
+        {
+            using var emptyHandle = File.OpenHandle(path, FileMode.Create, FileAccess.Write, FileShare.None, FileOptions.None);
+            return;
+        }
+
+        var maxBytes = Encoding.UTF8.GetMaxByteCount(content.Length);
+        var buf = ArrayPool<byte>.Shared.Rent(maxBytes);
+        try
+        {
+            var count = Encoding.UTF8.GetBytes(content.AsSpan(), buf);
+            using var handle = File.OpenHandle(path, FileMode.Create, FileAccess.Write, FileShare.None, FileOptions.None);
+            if (count > 0)
+                RandomAccess.Write(handle, buf.AsSpan(0, count), 0);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buf);
+        }
     }
 
     public static ExportedAssembly ExportAssembly(Il2CppWorkspace ws, AssemblyModel asm, string dir, bool includeIl, CancellationToken ct = default) =>
@@ -108,7 +320,9 @@ public static class ExportService
         try
         {
             cppPath = Path.Combine(dir, WorkspaceSerializer.Sanitize(asm.Name) + ".h");
+            var tCpp = ExportProfiler.Start();
             timer.Measure("c++ header", () => File.WriteAllText(cppPath, ws.Cpp.GenerateImageHeader(asm)));
+            ExportProfiler.RecordCppHeader(tCpp);
         }
         catch (Exception ex)
         {
@@ -155,16 +369,20 @@ public static class ExportService
             ws.Decompiler.DecompileImage(image, topLevel, includeIl && !substituted, (type, cs, il) =>
             {
                 var rel = Path.Combine(type.Namespace.Length == 0 ? "-" : WorkspaceSerializer.Sanitize(type.Namespace), WorkspaceSerializer.Sanitize(type.Name));
+                var tIo = ExportProfiler.Start();
                 File.WriteAllText(Path.Combine(csDir, rel + ".cs"), cs);
                 if (il.Length > 0) File.WriteAllText(Path.Combine(ilDir, rel + ".il"), il);
+                ExportProfiler.RecordFileWrite(tIo);
             }, ct, maxDecompileDegree);
             timer.Add("decompile+write", decompileWatch.Elapsed);
             if (!substituted)
             {
                 try
                 {
+                    var tRefs = ExportProfiler.Start();
                     var refs = ProjectReferences.Materialize(ws, asm, refsDir, sharedBcl, materializedRefs);
                     ProjectFileWriter.Write(dir, asm.Name, refs);
+                    ExportProfiler.RecordProjectRefs(tRefs);
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {

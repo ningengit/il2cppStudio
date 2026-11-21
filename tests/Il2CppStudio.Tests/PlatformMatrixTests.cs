@@ -192,6 +192,7 @@ public sealed class PlatformMatrixTests
     [InlineData("template il2cpp 2022 linux")]
     [InlineData("template il2cpp 2018 win 32")]
     [InlineData("Template il2cpp webgl no brotli")]
+    [InlineData("template il2cpp 2019.3 webgl")]
     [InlineData("Template il2cpp android/Baldi's Basics Classic.arm64-v8a")]
     [InlineData("Template il2cpp android/Baldi's Basics Classic.armeabi-v7a")]
     public void MultiPlatform_LiftsAndDecompilesMethodBody(string build)
@@ -320,16 +321,21 @@ public sealed class PlatformMatrixTests
             var extractedXts = Ps4PkgExtractor.Extract(xtsPkgPath, sinkXts, ekpfs);
             Assert.NotNull(extractedXts);
             Assert.Equal(prxBytes, File.ReadAllBytes(Path.Combine(extractedXts!, "Media", "Modules", "Il2CppUserAssemblies.prx")));
+            Assert.False(Ps4PkgExtractor.NeedsUserKey(plainPkgPath));
+            Assert.True(Ps4PkgExtractor.NeedsUserKey(xtsPkgPath));
 
-            // 3. Real encrypted FPKG without EKPFS or external tool reports clear mode=0xD diagnostic (if present).
+            // 3. Real encrypted FPKG (testdata\Unity Game Ps4 template.pkg) decrypts and loads natively with zero prompts.
             var root = TemplateBuildFixture.RepositoryRoot;
             var realPkg = root is null ? null : Path.Combine(root, "testdata", "Unity Game Ps4 template.pkg");
-            if (realPkg is not null && File.Exists(realPkg) && Environment.GetEnvironmentVariable("IL2CPPSTUDIO_PKG_EKPFS") is null)
+            if (realPkg is not null && File.Exists(realPkg))
             {
+                Assert.False(Ps4PkgExtractor.NeedsUserKey(realPkg));
                 var sinkReal = Sink();
-                var res = Ps4PkgExtractor.Extract(realPkg, sinkReal);
-                if (res is null)
-                    Assert.Contains(sinkReal.Query(DiagnosticSeverity.Error), d => d.Message.Contains("mode=0xD", StringComparison.OrdinalIgnoreCase));
+                using var ws = Il2CppWorkspace.Load(realPkg, sinkReal);
+                WorkspaceSetup.Attach(ws);
+                Assert.NotNull(ws.Binary);
+                Assert.True(ws.Registration!.IsComplete);
+                Assert.True(ws.AddressMap!.ResolvedMethodCount > 1000);
             }
         }
         finally
@@ -372,6 +378,7 @@ public sealed class PlatformMatrixTests
 
             var encNspPath = Path.Combine(tmp, "encrypted.nsp");
             File.WriteAllBytes(encNspPath, BuildPfs0([("0000000000000000.nca", new byte[64])]));
+            Assert.True(SwitchNspExtractor.RequiresKeyset(encNspPath));
             var sinkEnc = Sink();
             Assert.Null(SwitchNspExtractor.Extract(encNspPath, sinkEnc));
             Assert.Contains(sinkEnc.Query(DiagnosticSeverity.Error), d => d.Message.Contains(".nca", StringComparison.OrdinalIgnoreCase));
@@ -380,6 +387,193 @@ public sealed class PlatformMatrixTests
         {
             if (Directory.Exists(tmp)) Directory.Delete(tmp, recursive: true);
         }
+    }
+
+    [Fact]
+    public void SwitchNspExtractor_DecryptsSyntheticNca3WithByokKeyset_KeyAreaAndTicket()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), $"il2cppstudio-byok-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tmp);
+        try
+        {
+            // Generate fresh random keys at runtime (zero hardcoded Nintendo keys).
+            var headerKey = RandomNumberGenerator.GetBytes(32);
+            var masterKey0 = RandomNumberGenerator.GetBytes(16);
+            var aesKekSrc = RandomNumberGenerator.GetBytes(16);
+            var aesKeySrc = RandomNumberGenerator.GetBytes(16);
+            var kakAppSrc = RandomNumberGenerator.GetBytes(16);
+            var titleKekSrc = RandomNumberGenerator.GetBytes(16);
+
+            Span<byte> s1 = stackalloc byte[16], s2 = stackalloc byte[16];
+            var kak0 = new byte[16];
+            AesEcbDecrypt(masterKey0, aesKekSrc, s1);
+            AesEcbDecrypt(s1, kakAppSrc, s2);
+            AesEcbDecrypt(s2, aesKeySrc, kak0);
+
+            var titleKek0 = new byte[16];
+            AesEcbDecrypt(masterKey0, titleKekSrc, titleKek0);
+
+            var keysPath = Path.Combine(tmp, "test.prod.keys");
+            File.WriteAllText(keysPath, string.Join('\n',
+                $"header_key = {Convert.ToHexStringLower(headerKey)}",
+                $"master_key_00 = {Convert.ToHexStringLower(masterKey0)}",
+                $"aes_kek_generation_source = {Convert.ToHexStringLower(aesKekSrc)}",
+                $"aes_key_generation_source = {Convert.ToHexStringLower(aesKeySrc)}",
+                $"key_area_key_application_source = {Convert.ToHexStringLower(kakAppSrc)}",
+                $"titlekek_source = {Convert.ToHexStringLower(titleKekSrc)}"));
+
+            var mainNso = new byte[0x180];
+            RandomNumberGenerator.Fill(mainNso);
+            "NSO0"u8.CopyTo(mainNso);
+            var metaBytes = new byte[] { 0xAF, 0x1B, 0xB1, 0xFA, 24, 0, 0, 0, 1, 2, 3, 4 };
+            var unityBundle = BuildUnityBundle("UnityFS\0", 8, "5.x.x", "2022.3.10f1");
+            var exefsPfs = BuildPfs0([("main", mainNso)]);
+            var romfs = BuildRomFs([("Data/Managed/Metadata/global-metadata.dat", metaBytes), ("Data/data.unity3d", unityBundle)]);
+
+            // Case A: NCA3 encrypted via KeyArea slot 2 (key_area_key_application_00).
+            var ctrKeyA = RandomNumberGenerator.GetBytes(16);
+            var ncaA = BuildSyntheticNca3(headerKey, kak0, ctrKeyA, rightsId: null, exefsPfs, romfs);
+            var nspA = Path.Combine(tmp, "game-keyarea.nsp");
+            File.WriteAllBytes(nspA, BuildPfs0([("program.nca", ncaA)]));
+
+            Assert.True(SwitchNspExtractor.RequiresKeyset(nspA));
+            Assert.False(SwitchNspExtractor.RequiresKeyset(Path.Combine(tmp, "missing.nsp")));
+            Assert.Null(SwitchNspExtractor.Extract(nspA, Sink()));
+
+            var filesA = GameFolderLocator.Locate(nspA, Sink(), new WorkspaceOptions { SwitchKeysetPath = keysPath });
+            Assert.NotNull(filesA.BinaryPath);
+            Assert.NotNull(filesA.MetadataPath);
+            Assert.Equal(mainNso, File.ReadAllBytes(filesA.BinaryPath!));
+            Assert.Equal(metaBytes, File.ReadAllBytes(filesA.MetadataPath!));
+            var envA = EnvironmentDetector.Detect(filesA.Root, filesA.DataFolder, filesA.BinaryPath, null, Sink());
+            Assert.Equal("2022.3.10f1", envA.UnityVersion);
+
+            // Case B: NCA3 encrypted via RightsId + ES Ticket V2 (.tik) common title key.
+            var rightsId = RandomNumberGenerator.GetBytes(16);
+            rightsId[15] = 0x01;
+            var titleKeyB = RandomNumberGenerator.GetBytes(16);
+            var encTitleKeyB = new byte[16];
+            AesEcbEncrypt(titleKek0, titleKeyB, encTitleKeyB);
+            var tik = BuildSyntheticTicketV2(encTitleKeyB, masterKeyRev: 1, rightsId);
+            var ncaB = BuildSyntheticNca3(headerKey, kak0, titleKeyB, rightsId, exefsPfs, romfs);
+            var nspB = Path.Combine(tmp, "game-ticket.nsp");
+            File.WriteAllBytes(nspB, BuildPfs0([("program.nca", ncaB), ("title.tik", tik)]));
+
+            Assert.True(SwitchNspExtractor.RequiresKeyset(nspB));
+            var filesB = GameFolderLocator.Locate(nspB, Sink(), new WorkspaceOptions { SwitchKeysetPath = keysPath });
+            Assert.NotNull(filesB.BinaryPath);
+            Assert.NotNull(filesB.MetadataPath);
+            Assert.Equal(mainNso, File.ReadAllBytes(filesB.BinaryPath!));
+            Assert.Equal(metaBytes, File.ReadAllBytes(filesB.MetadataPath!));
+        }
+        finally
+        {
+            if (Directory.Exists(tmp)) Directory.Delete(tmp, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void SwitchRealNsp_LoadsWithByokProdKeys_BothSiblingTitleKeysAndEmbeddedTikFallback()
+    {
+        var nsp = Target(Path.Combine("2019 unity game", "Pokemon Shining Pearl [010018E011D92000][v0].nsp"))!;
+        var prodKeys = Target(Path.Combine("Switch_ProdKeys", "prod.keys"))!;
+
+        // 1. User supplies prod.keys with sibling title.keys in the same folder.
+        var sinkWithSibling = Sink();
+        using (var ws = Il2CppWorkspace.Load(nsp, sinkWithSibling, new WorkspaceOptions { SwitchKeysetPath = prodKeys }))
+        {
+            Assert.NotNull(ws.Registration);
+            Assert.True(ws.Registration!.IsComplete);
+            Assert.True(ws.AddressMap?.ResolvedMethodCount > 10_000);
+            Assert.Equal("2019.4.27f1", ws.Environment.UnityVersion);
+            Assert.Empty(sinkWithSibling.Query(DiagnosticSeverity.Warning));
+            Assert.Empty(sinkWithSibling.Query(DiagnosticSeverity.Error));
+        }
+
+        // 2. Isolated prod.keys ONLY (no sibling title.keys): falls back cleanly to embedded .tik inside the .nsp.
+        var tmpKeysDir = Path.Combine(Path.GetTempPath(), $"il2cppstudio-byok-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tmpKeysDir);
+        try
+        {
+            var isolatedProdKeys = Path.Combine(tmpKeysDir, "prod.keys");
+            File.Copy(prodKeys, isolatedProdKeys);
+
+            var sinkTikOnly = Sink();
+            using var wsTik = Il2CppWorkspace.Load(nsp, sinkTikOnly, new WorkspaceOptions { SwitchKeysetPath = isolatedProdKeys });
+            Assert.NotNull(wsTik.Registration);
+            Assert.True(wsTik.Registration!.IsComplete);
+            Assert.True(wsTik.AddressMap?.ResolvedMethodCount > 10_000);
+            Assert.Equal("2019.4.27f1", wsTik.Environment.UnityVersion);
+            Assert.Empty(sinkTikOnly.Query(DiagnosticSeverity.Warning));
+            Assert.Empty(sinkTikOnly.Query(DiagnosticSeverity.Error));
+        }
+        finally
+        {
+            if (Directory.Exists(tmpKeysDir)) Directory.Delete(tmpKeysDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void WebGl2019_SplitFunctionTable_RecoversGenericPointersMetadataUsagesAndDecompilesCleanly()
+    {
+        if (Build("template il2cpp 2019.3 webgl") is not { } dir) return;
+        var sink = Sink();
+        using var ws = Il2CppWorkspace.Load(dir, sink);
+        WorkspaceSetup.Attach(ws);
+        var wasm = Assert.IsType<WasmBinaryImage>(ws.Binary);
+        Assert.True(wasm.IsSplitFunctionTable);
+        Assert.True(ws.Registration.GenericMethodPointers.Count > 10_000, $"Expected >10000 generic method pointers, got {ws.Registration.GenericMethodPointers.Count}");
+        Assert.True(ws.Registration.MetadataUsages.Count > 11_000, $"Expected >11000 metadata usages, got {ws.Registration.MetadataUsages.Count}");
+
+        string RenderType(string name) => ws.Render(ws.Model.Types.Single(t => t.Name == name && t.DeclaringType is null), null, CodeView.CSharp);
+
+        var cam = RenderType("CameraScript");
+        Assert.Contains("offset = ", cam);
+        Assert.DoesNotContain("m_CachedPtr", cam);
+        Assert.DoesNotContain("throw null;", cam);
+
+        var amb = RenderType("AmbienceScript");
+        Assert.Contains("Random.Range", amb);
+        Assert.Contains("PlayOneShot", amb);
+        Assert.DoesNotContain("throw null;", amb);
+
+        var click = RenderType("ClickableTest");
+        Assert.Contains("\"Player\"", click);
+        Assert.Contains("\"Notebook\"", click);
+        Assert.DoesNotContain("wasm_fn_", click);
+        Assert.DoesNotContain("throw null;", click);
+
+        var player = RenderType("PlayerScript");
+        Assert.Contains("Singleton<InputManager>", player);
+        Assert.Contains("\"Baldi\"", player);
+        Assert.Contains("\"Playtime\"", player);
+        Assert.Contains("frozenPosition = ", player);
+        Assert.DoesNotContain("throw null;", player);
+    }
+
+    [Fact]
+    public void WebGl2019_DirectWasmCodeUnityweb_LoadsAndLifts()
+    {
+        if (Build("template il2cpp 2019.3 webgl") is not { } dir) return;
+        var wasmPath = Path.Combine(dir, "Build", "Neuer Ordner.wasm.code.unityweb");
+        if (!File.Exists(wasmPath)) return;
+
+        using var ws = Il2CppWorkspace.Load(wasmPath, Sink());
+        WorkspaceSetup.Attach(ws);
+        Assert.IsType<WasmBinaryImage>(ws.Binary);
+        Assert.True(ws.Registration.GenericMethodPointers.Count > 10_000);
+        var click = ws.Render(ws.Model.Types.Single(t => t.Name == "ClickableTest" && t.DeclaringType is null), null, CodeView.CSharp);
+        Assert.Contains("\"Player\"", click);
+        Assert.DoesNotContain("throw null;", click);
+    }
+
+    [Fact]
+    public void WebGl2022_NonSplitFunctionTable_IsFalse()
+    {
+        if (Build("Template il2cpp webgl") is not { } dir) return;
+        using var ws = Il2CppWorkspace.Load(dir, Sink());
+        var wasm = Assert.IsType<WasmBinaryImage>(ws.Binary);
+        Assert.False(wasm.IsSplitFunctionTable);
     }
 
     private static byte[] BuildUnityBundle(string magic, int formatVer, string playerVer, string revision)
@@ -493,7 +687,8 @@ public sealed class PlatformMatrixTests
         var entryBlockOff = signed ? 32 : 0;
         var ptrsPerBlock = (int)(blockSize / (uint)entryStride);
         var totalInodes = nextIno;
-        var inodeBlocks = (int)((totalInodes * inodeSize + blockSize - 1) / blockSize);
+        var inodesPerBlock = (int)(blockSize / (uint)inodeSize);
+        var inodeBlocks = (totalInodes + inodesPerBlock - 1) / inodesPerBlock;
         var nextFreeBlock = 1 + inodeBlocks;
 
         var imgBlocks = new List<byte[]>();
@@ -514,9 +709,9 @@ public sealed class PlatformMatrixTests
                 imgBlocks.Add(blkBuf);
             }
 
-            var inoOff = ino * inodeSize;
-            var inoBlkIdx = 1 + inoOff / (int)blockSize;
-            var inoSpan = imgBlocks[inoBlkIdx].AsSpan(inoOff % (int)blockSize, inodeSize);
+            var inoBlkIdx = 1 + ino / inodesPerBlock;
+            var inoOffInBlk = (ino % inodesPerBlock) * inodeSize;
+            var inoSpan = imgBlocks[inoBlkIdx].AsSpan(inoOffInBlk, inodeSize);
             BinaryPrimitives.WriteUInt16LittleEndian(inoSpan.Slice(0, 2), (ushort)(inoDirChildren.ContainsKey(ino) ? 0x416D : 0x816D));
             BinaryPrimitives.WriteUInt64LittleEndian(inoSpan.Slice(8, 8), (ulong)data.Length);
             BinaryPrimitives.WriteUInt32LittleEndian(inoSpan.Slice(0x60, 4), (uint)alloc.Count);
@@ -535,15 +730,17 @@ public sealed class PlatformMatrixTests
             }
         }
 
-        // Write PFS superblock at block 0.
+        // Write PFS superblock at block 0 per orbis-pfs/src/header.rs (0x30=ndinode, 0x40=ndinodeblock, 0x48=superroot_ino).
         var super = imgBlocks[0].AsSpan();
         BinaryPrimitives.WriteUInt64LittleEndian(super.Slice(0, 8), 1);
         BinaryPrimitives.WriteUInt32LittleEndian(super.Slice(8, 4), 0x01332A0B);
         BinaryPrimitives.WriteUInt16LittleEndian(super.Slice(0x1C, 2), (ushort)(signed ? 1 : 0));
         BinaryPrimitives.WriteUInt32LittleEndian(super.Slice(0x20, 4), blockSize);
-        BinaryPrimitives.WriteUInt64LittleEndian(super.Slice(0x28, 8), (ulong)inodeBlocks);
+        BinaryPrimitives.WriteUInt64LittleEndian(super.Slice(0x28, 8), (ulong)imgBlocks.Count);
         BinaryPrimitives.WriteUInt64LittleEndian(super.Slice(0x30, 8), (ulong)totalInodes);
-        BinaryPrimitives.WriteUInt64LittleEndian(super.Slice(0x40, 8), 1);
+        BinaryPrimitives.WriteUInt64LittleEndian(super.Slice(0x38, 8), (ulong)(imgBlocks.Count - 1 - inodeBlocks));
+        BinaryPrimitives.WriteUInt64LittleEndian(super.Slice(0x40, 8), (ulong)inodeBlocks);
+        BinaryPrimitives.WriteUInt64LittleEndian(super.Slice(0x48, 8), 1);
 
         var output = new byte[imgBlocks.Count * (int)blockSize];
         for (var i = 0; i < imgBlocks.Count; i++)
@@ -765,5 +962,153 @@ public sealed class PlatformMatrixTests
         fileBytes.CopyTo(total.AsSpan((int)fileTableOff));
         dataBytes.CopyTo(total.AsSpan((int)payloadOff));
         return total;
+    }
+
+    private static void AesEcbEncrypt(ReadOnlySpan<byte> key, ReadOnlySpan<byte> src, Span<byte> dst)
+    {
+        using var aes = Aes.Create();
+        aes.Key = key.ToArray();
+        aes.EncryptEcb(src, dst, PaddingMode.None);
+    }
+
+    private static void AesEcbDecrypt(ReadOnlySpan<byte> key, ReadOnlySpan<byte> src, Span<byte> dst)
+    {
+        using var aes = Aes.Create();
+        aes.Key = key.ToArray();
+        aes.DecryptEcb(src, dst, PaddingMode.None);
+    }
+
+    private static byte[] BuildSyntheticTicketV2(byte[] encTitleKey, byte masterKeyRev, byte[] rightsId)
+    {
+        var tik = new byte[0x140 + 0x2C0];
+        BinaryPrimitives.WriteUInt32LittleEndian(tik.AsSpan(0, 4), 0x00010004); // RSA-2048 SHA-256 -> 0x140 sig block
+        var body = tik.AsSpan(0x140);
+        encTitleKey.CopyTo(body.Slice(0x40, 16));
+        body[0x140] = 2; // ticket format v2
+        body[0x141] = 0; // common AES title key
+        body[0x145] = masterKeyRev;
+        rightsId.CopyTo(body.Slice(0x160, 16));
+        return tik;
+    }
+
+    private static byte[] BuildSyntheticNca3(byte[] headerKey, byte[] kak0, byte[] ctrKey, byte[]? rightsId, byte[] exefsPfs, byte[] romfs)
+    {
+        static int AlignUp(int v, int a) => (v + a - 1) / a * a;
+
+        const int sectorSize = 0x200;
+        const int exefsPayloadOff = 0x200;
+        const int romfsPayloadOff = 0x200;
+        var sec0Plain = new byte[AlignUp(exefsPayloadOff + exefsPfs.Length, sectorSize)];
+        exefsPfs.CopyTo(sec0Plain.AsSpan(exefsPayloadOff));
+        var sec1Plain = new byte[AlignUp(romfsPayloadOff + romfs.Length, sectorSize)];
+        romfs.CopyTo(sec1Plain.AsSpan(romfsPayloadOff));
+
+        var sec0StartSector = 0xC00 / sectorSize; // 6
+        var sec0EndSector = sec0StartSector + sec0Plain.Length / sectorSize;
+        var sec1StartSector = sec0EndSector;
+        var sec1EndSector = sec1StartSector + sec1Plain.Length / sectorSize;
+
+        var totalBytes = sec1EndSector * sectorSize;
+        var nca = new byte[totalBytes];
+        var hdr = nca.AsSpan(0, 0xC00);
+        "NCA3"u8.CopyTo(hdr.Slice(0x200, 4));
+        hdr[0x205] = 0; // Program
+        hdr[0x206] = 0;
+        hdr[0x207] = 0; // KeyArea application
+        hdr[0x220] = 0; // KeyGen 0
+
+        if (rightsId is not null)
+            rightsId.CopyTo(hdr.Slice(0x230, 16));
+        else
+            AesEcbEncrypt(kak0, ctrKey, hdr.Slice(0x300 + 2 * 16, 16));
+
+        // FsEntry[0] & FsEntry[1]
+        BinaryPrimitives.WriteUInt32LittleEndian(hdr.Slice(0x240, 4), (uint)sec0StartSector);
+        BinaryPrimitives.WriteUInt32LittleEndian(hdr.Slice(0x244, 4), (uint)sec0EndSector);
+        BinaryPrimitives.WriteUInt32LittleEndian(hdr.Slice(0x250, 4), (uint)sec1StartSector);
+        BinaryPrimitives.WriteUInt32LittleEndian(hdr.Slice(0x254, 4), (uint)sec1EndSector);
+
+        // FsHeader[0]: PartitionFS + HierarchicalSha256 + AesCtr
+        var fsh0 = hdr.Slice(0x400, 0x200);
+        BinaryPrimitives.WriteUInt16LittleEndian(fsh0.Slice(0x00, 2), 2);
+        fsh0[0x02] = 1; // PartitionFS
+        fsh0[0x03] = 2; // HierarchicalSha256
+        fsh0[0x04] = 3; // AesCtr
+        BinaryPrimitives.WriteUInt32LittleEndian(fsh0.Slice(0x2C, 4), 2); // 2 layers
+        BinaryPrimitives.WriteUInt64LittleEndian(fsh0.Slice(0x40, 8), exefsPayloadOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(fsh0.Slice(0x48, 8), (ulong)exefsPfs.Length);
+        var ctr0 = RandomNumberGenerator.GetBytes(8);
+        ctr0.CopyTo(fsh0.Slice(0x140, 8));
+
+        // FsHeader[1]: RomFS + HierarchicalIntegrity(IVFC) + AesCtr
+        var fsh1 = hdr.Slice(0x600, 0x200);
+        BinaryPrimitives.WriteUInt16LittleEndian(fsh1.Slice(0x00, 2), 2);
+        fsh1[0x02] = 0; // RomFS
+        fsh1[0x03] = 3; // HierarchicalIntegrity
+        fsh1[0x04] = 3; // AesCtr
+        "IVFC"u8.CopyTo(fsh1.Slice(0x08, 4));
+        BinaryPrimitives.WriteUInt32LittleEndian(fsh1.Slice(0x14, 4), 7); // MaxLayers = 7 -> level 5 data
+        BinaryPrimitives.WriteUInt64LittleEndian(fsh1.Slice(0x18 + 5 * 0x18, 8), romfsPayloadOff);
+        BinaryPrimitives.WriteUInt64LittleEndian(fsh1.Slice(0x18 + 5 * 0x18 + 8, 8), (ulong)romfs.Length);
+        var ctr1 = RandomNumberGenerator.GetBytes(8);
+        ctr1.CopyTo(fsh1.Slice(0x140, 8));
+
+        // Encrypt section payloads in-place using AES-128-CTR and copy into NCA image.
+        CryptNcaCtr(sec0Plain, (long)sec0StartSector * sectorSize, ctrKey, ctr0);
+        CryptNcaCtr(sec1Plain, (long)sec1StartSector * sectorSize, ctrKey, ctr1);
+        sec0Plain.CopyTo(nca.AsSpan(sec0StartSector * sectorSize));
+        sec1Plain.CopyTo(nca.AsSpan(sec1StartSector * sectorSize));
+
+        // Encrypt 0xC00 header using Nintendo AES-128-XTS (big-endian sector tweak).
+        EncryptNintendoXts(nca.AsSpan(0, 0xC00), headerKey.AsSpan(0, 16), headerKey.AsSpan(16, 16));
+        return nca;
+    }
+
+    private static void CryptNcaCtr(Span<byte> buf, long sectionOffset, byte[] key, ReadOnlySpan<byte> sectionCtr)
+    {
+        using var aes = Aes.Create();
+        aes.Key = key;
+        Span<byte> ctr = stackalloc byte[16];
+        Span<byte> keystream = stackalloc byte[16];
+        for (var j = 0; j < 8; j++) ctr[j] = sectionCtr[7 - j];
+        for (var off = 0; off < buf.Length; off += 16)
+        {
+            BinaryPrimitives.WriteUInt64BigEndian(ctr.Slice(8, 8), (ulong)((sectionOffset + off) >> 4));
+            aes.EncryptEcb(ctr, keystream, PaddingMode.None);
+            var n = Math.Min(16, buf.Length - off);
+            for (var b = 0; b < n; b++) buf[off + b] ^= keystream[b];
+        }
+    }
+
+    private static void EncryptNintendoXts(Span<byte> buf, ReadOnlySpan<byte> dataKey, ReadOnlySpan<byte> tweakKey)
+    {
+        using var aesT = Aes.Create();
+        aesT.Key = tweakKey.ToArray();
+        using var aesD = Aes.Create();
+        aesD.Key = dataKey.ToArray();
+        Span<byte> tweakIn = stackalloc byte[16];
+        Span<byte> tweak = stackalloc byte[16];
+        Span<byte> tmp = stackalloc byte[16];
+        for (var secOff = 0; secOff + 0x200 <= buf.Length; secOff += 0x200)
+        {
+            tweakIn.Clear();
+            BinaryPrimitives.WriteUInt64BigEndian(tweakIn.Slice(8, 8), (ulong)(secOff / 0x200));
+            aesT.EncryptEcb(tweakIn, tweak, PaddingMode.None);
+            for (var b = 0; b < 0x200; b += 16)
+            {
+                var slice = buf.Slice(secOff + b, 16);
+                for (var i = 0; i < 16; i++) slice[i] ^= tweak[i];
+                aesD.EncryptEcb(slice, tmp, PaddingMode.None);
+                for (var i = 0; i < 16; i++) slice[i] = (byte)(tmp[i] ^ tweak[i]);
+                var carry = 0;
+                for (var i = 0; i < 16; i++)
+                {
+                    var next = (tweak[i] >> 7) & 1;
+                    tweak[i] = (byte)((tweak[i] << 1) | carry);
+                    carry = next;
+                }
+                if (carry != 0) tweak[0] ^= 0x87;
+            }
+        }
     }
 }

@@ -1,4 +1,5 @@
 using ICSharpCode.Decompiler.CSharp.Syntax;
+using Il2CppStudio.Core.Decompilation.Transforms;
 
 namespace Il2CppStudio.Core.Decompilation.Coroutines;
 
@@ -11,10 +12,14 @@ namespace Il2CppStudio.Core.Decompilation.Coroutines;
 /// </summary>
 public static class CoroutineTransform
 {
-    public static int Apply(SyntaxTree tree, Action<string, string>? report = null)
+    public static int Apply(SyntaxTree tree, Action<string, string>? report = null) =>
+        Apply(tree, AstWalk.ScanFlags(tree), report);
+
+    internal static int Apply(SyntaxTree tree, in TreeFlags flags, Action<string, string>? report = null)
     {
+        if (!flags.HasCompilerGeneratedTypes) return 0;
         var rebuilt = 0;
-        foreach (var type in tree.Descendants.OfType<TypeDeclaration>().ToList())
+        foreach (var type in AstWalk.Collect<TypeDeclaration>(tree))
         {
             if (StateMachineInfo.TryCreate(type) is not { } info || type.Parent is not TypeDeclaration outer) continue;
             var factory = outer.Members.OfType<MethodDeclaration>().FirstOrDefault(m => m.Name == info.MethodName && !m.Body.IsNull

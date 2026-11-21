@@ -47,7 +47,16 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         {
             var (start, end) = sym.Map.GetFunctionBounds(va, 0x4000);
             var code = sym.Registration.Reader.Slice(start, (int)Math.Min(end - start, 0x4000UL));
-            var insns = disasm.DisassembleInstructions(code, start, out var isThumb);
+            var insns = disasm.DisassembleInstructions(code, start, out var isThumb, out var decodedBytes);
+            if ((insns.Count == 0 && code.Length >= 2)
+                || (insns.Count > 0 && decodedBytes + 2 < code.Length - 4 && !IsArm32Terminator(insns[^1])))
+            {
+                var off = Math.Min(decodedBytes, code.Length);
+                var rawHex = Convert.ToHexString(code.Slice(off, Math.Min(8, code.Length - off)));
+                sink.Warn(DiagnosticCategory.Lifting, DiagnosticCodes.DisassemblyFailed,
+                    $"ARMv7/Thumb decode stopped at RVA 0x{start + (ulong)off - sym.Registration.Reader.ImageBase:X} (offset +0x{off:X}): raw bytes [{rawHex}]",
+                    loc(start + (ulong)off));
+            }
             if (insns.Count == 0) return new(methodIndex, false, 0, 0, 0, 0, 0, "empty function");
 
             var blocks = BuildBlocks(insns, sym);
@@ -89,6 +98,14 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             sink.Warn(DiagnosticCategory.Lifting, DiagnosticCodes.LiftFailed, $"ARMv7 lifting failed: {ex.Message}", loc(va), ex);
             return new(methodIndex, false, 0, 0, 0, 0, 0, ex.Message);
         }
+    }
+
+    private static bool IsArm32Terminator(CapstoneArmDisassembler.Arm32Insn ins)
+    {
+        var m = ins.Mnemonic;
+        return m is "b" or "bx" or "udf" or "bkpt"
+            || (m.StartsWith("pop", StringComparison.Ordinal) || m.StartsWith("ldm", StringComparison.Ordinal) || m.StartsWith("ldr", StringComparison.Ordinal))
+            && ins.Operands.Contains("pc", StringComparison.OrdinalIgnoreCase);
     }
 
     private static HashSet<int> FindElidedNullChecks(IReadOnlyList<CapstoneArmDisassembler.Arm32Insn> insns, NativeSymbolizer sym)

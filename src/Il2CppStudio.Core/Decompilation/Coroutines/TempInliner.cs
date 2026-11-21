@@ -1,4 +1,5 @@
 using ICSharpCode.Decompiler.CSharp.Syntax;
+using Il2CppStudio.Core.Decompilation.Transforms;
 
 namespace Il2CppStudio.Core.Decompilation.Coroutines;
 
@@ -15,31 +16,55 @@ public static class TempInliner
         do
         {
             changed = false;
-            foreach (var decl in body.Descendants.OfType<VariableDeclarationStatement>().ToList())
+            List<VariableDeclarationStatement>? decls = null;
+            Dictionary<string, List<IdentifierExpression>>? usesByName = null;
+            AstWalk.ForEachNode(body, n =>
             {
-                if (decl.Parent is not BlockStatement || decl.Variables.Count != 1) continue;
+                if (n is VariableDeclarationStatement { Variables.Count: 1 } d && d.Parent is BlockStatement)
+                {
+                    var v = d.Variables.Single();
+                    if (!v.Initializer.IsNull)
+                        (decls ??= []).Add(d);
+                }
+                else if (n is IdentifierExpression id)
+                {
+                    usesByName ??= new Dictionary<string, List<IdentifierExpression>>(StringComparer.Ordinal);
+                    if (!usesByName.TryGetValue(id.Identifier, out var list))
+                        usesByName[id.Identifier] = list = [];
+                    list.Add(id);
+                }
+            });
+            if (decls is null || usesByName is null) break;
+
+            foreach (var decl in decls)
+            {
+                if (decl.Parent is not BlockStatement || !AstWalk.IsAttachedTo(decl, body)) continue;
                 var v = decl.Variables.Single();
-                if (v.Initializer.IsNull) continue;
-                var uses = body.Descendants.OfType<IdentifierExpression>().Where(i => i.Identifier == v.Name).ToList();
-                if (uses.Count != 1 || IsWriteTarget(uses[0])) continue;
+                var attachedUses = usesByName.TryGetValue(v.Name, out var rawUses)
+                    ? rawUses.Where(u => AstWalk.IsAttachedTo(u, body)).ToList()
+                    : null;
+                if (attachedUses is null || attachedUses.Count != 1) continue;
+                var use = attachedUses[0];
+                if (IsWriteTarget(use)) continue;
+
                 var directAssign = decl.NextSibling is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign } da }
-                    && da.Right == uses[0] && (da.Left is IdentifierExpression || da.Left is MemberReferenceExpression { Target: ThisReferenceExpression or IdentifierExpression });
+                    && da.Right == use && (da.Left is IdentifierExpression || da.Left is MemberReferenceExpression { Target: ThisReferenceExpression or IdentifierExpression });
                 var directIf = decl.NextSibling is IfElseStatement ifs
-                    && (ifs.Condition == uses[0] || ifs.Condition is UnaryOperatorExpression { Operator: UnaryOperatorType.Not } u && u.Expression == uses[0]);
+                    && (ifs.Condition == use || ifs.Condition is UnaryOperatorExpression { Operator: UnaryOperatorType.Not } u && u.Expression == use);
                 if (!directAssign && !directIf && !IsPure(v.Initializer)) continue;
 
                 var names = Names(v.Initializer);
                 Statement? cursor = decl.NextSibling as Statement;
-                while (cursor is not null && !uses[0].Ancestors.Contains(cursor))
+                while (cursor is not null && !IsAncestor(use, cursor))
                 {
                     if (!IsPureDecl(cursor) || Writes(cursor, names)) { cursor = null; break; }
                     cursor = cursor.NextSibling as Statement;
                 }
-                if (cursor is null || WritesBefore(ScopeOfUse(cursor, uses[0]), uses[0], names)) continue;
+                if (cursor is null || WritesBefore(ScopeOfUse(cursor, use), use, names)) continue;
                 var replacement = v.Initializer.Detach();
-                if (replacement is BinaryOperatorExpression && uses[0].Parent is BinaryOperatorExpression or UnaryOperatorExpression)
+                if (replacement is BinaryOperatorExpression && use.Parent is BinaryOperatorExpression or UnaryOperatorExpression)
                     replacement = new ParenthesizedExpression(replacement);
-                uses[0].ReplaceWith(replacement);
+                use.ReplaceWith(replacement);
                 decl.Remove();
                 changed = true;
                 everChanged = true;
@@ -48,11 +73,18 @@ public static class TempInliner
         return everChanged;
     }
 
+    private static bool IsAncestor(AstNode node, AstNode potentialAncestor)
+    {
+        for (AstNode? a = node; a is not null; a = a.Parent)
+            if (a == potentialAncestor) return true;
+        return false;
+    }
+
     private static bool IsPureDecl(Statement s) =>
         s is VariableDeclarationStatement { Variables.Count: 1 } d && !d.Variables.Single().Initializer.IsNull && IsPure(d.Variables.Single().Initializer);
 
     private static AstNode ScopeOfUse(Statement s, AstNode use) =>
-        s is IfElseStatement ifs && use.Ancestors.Contains(ifs.Condition) ? ifs.Condition : s;
+        s is IfElseStatement ifs && IsAncestor(use, ifs.Condition) ? ifs.Condition : s;
 
     private static bool IsPure(Expression e) => e switch
     {
@@ -65,25 +97,74 @@ public static class TempInliner
         _ => false,
     };
 
-    private static HashSet<string> Names(Expression e) =>
-        e.DescendantsAndSelf.Select(n => n switch { IdentifierExpression i => i.Identifier, MemberReferenceExpression m => m.MemberName, _ => null })
-            .OfType<string>().ToHashSet();
+    private static HashSet<string> Names(Expression e)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        AddNames(e, names);
+        return names;
+    }
 
-    private static bool Writes(AstNode node, HashSet<string> names) =>
-        node.DescendantsAndSelf.OfType<AssignmentExpression>().Any(a => Names(a.Left).Overlaps(names))
-        || node.DescendantsAndSelf.OfType<UnaryOperatorExpression>().Any(u => u.Operator is UnaryOperatorType.Increment or UnaryOperatorType.Decrement
-               or UnaryOperatorType.PostIncrement or UnaryOperatorType.PostDecrement && Names(u.Expression).Overlaps(names))
-        || node.DescendantsAndSelf.OfType<DirectionExpression>().Any();
+    private static void AddNames(AstNode root, HashSet<string> names)
+    {
+        var stack = new Stack<AstNode>(8);
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var n = stack.Pop();
+            if (n is IdentifierExpression i) names.Add(i.Identifier);
+            else if (n is MemberReferenceExpression m) names.Add(m.MemberName);
+            var ch = n.LastChild;
+            while (ch is not null) { stack.Push(ch); ch = ch.PrevSibling; }
+        }
+    }
+
+    private static bool OverlapsNames(AstNode root, HashSet<string> names)
+    {
+        if (names.Count == 0) return false;
+        var stack = new Stack<AstNode>(8);
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var n = stack.Pop();
+            if (n is IdentifierExpression i && names.Contains(i.Identifier)) return true;
+            if (n is MemberReferenceExpression m && names.Contains(m.MemberName)) return true;
+            var ch = n.LastChild;
+            while (ch is not null) { stack.Push(ch); ch = ch.PrevSibling; }
+        }
+        return false;
+    }
+
+    private static bool Writes(AstNode node, HashSet<string> names)
+    {
+        var stack = new Stack<AstNode>(8);
+        stack.Push(node);
+        while (stack.Count > 0)
+        {
+            var n = stack.Pop();
+            if (n is DirectionExpression) return true;
+            if (n is AssignmentExpression a && OverlapsNames(a.Left, names)) return true;
+            if (n is UnaryOperatorExpression { Operator: UnaryOperatorType.Increment or UnaryOperatorType.Decrement
+                    or UnaryOperatorType.PostIncrement or UnaryOperatorType.PostDecrement } u && OverlapsNames(u.Expression, names)) return true;
+            var ch = n.LastChild;
+            while (ch is not null) { stack.Push(ch); ch = ch.PrevSibling; }
+        }
+        return false;
+    }
 
     private static bool WritesBefore(AstNode scope, AstNode use, HashSet<string> names)
     {
-        foreach (var n in scope.DescendantsAndSelf)
+        var stack = new Stack<AstNode>(16);
+        stack.Push(scope);
+        while (stack.Count > 0)
         {
+            var n = stack.Pop();
             if (n == use) break;
-            if (n is AssignmentExpression a && Names(a.Left).Overlaps(names)) return true;
-            if (n is UnaryOperatorExpression { Operator: UnaryOperatorType.Increment or UnaryOperatorType.Decrement
-                    or UnaryOperatorType.PostIncrement or UnaryOperatorType.PostDecrement } u && Names(u.Expression).Overlaps(names)) return true;
             if (n is DirectionExpression) return true;
+            if (n is AssignmentExpression a && OverlapsNames(a.Left, names)) return true;
+            if (n is UnaryOperatorExpression { Operator: UnaryOperatorType.Increment or UnaryOperatorType.Decrement
+                    or UnaryOperatorType.PostIncrement or UnaryOperatorType.PostDecrement } u && OverlapsNames(u.Expression, names)) return true;
+            var ch = n.LastChild;
+            while (ch is not null) { stack.Push(ch); ch = ch.PrevSibling; }
         }
         return false;
     }

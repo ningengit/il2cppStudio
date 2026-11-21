@@ -15,13 +15,31 @@ namespace Il2CppStudio.Core.Decompilation.Transforms;
 /// </summary>
 public static class InlinedGetterRestorer
 {
-    public static void Apply(SyntaxTree tree)
-    {
-        var curModule = tree.Descendants.OfType<TypeDeclaration>()
-            .Select(t => t.GetSymbol() as ITypeDefinition)
-            .FirstOrDefault(t => t is not null)?.ParentModule;
+    public static void Apply(SyntaxTree tree) => Apply(tree, AstWalk.ScanFlags(tree));
 
-        foreach (var access in tree.Descendants.OfType<MemberReferenceExpression>().ToList())
+    internal static void Apply(SyntaxTree tree, in TreeFlags flags)
+    {
+        if (!flags.HasBodies) return;
+        IModule? curModule = null;
+        var accesses = new List<MemberReferenceExpression>();
+        var invocations = new List<InvocationExpression>();
+        AstWalk.ForEachNode(tree, n =>
+        {
+            switch (n)
+            {
+                case TypeDeclaration td when curModule is null && td.GetSymbol() is ITypeDefinition tdef:
+                    curModule = tdef.ParentModule;
+                    break;
+                case MemberReferenceExpression mr:
+                    accesses.Add(mr);
+                    break;
+                case InvocationExpression inv:
+                    invocations.Add(inv);
+                    break;
+            }
+        });
+
+        foreach (var access in accesses)
         {
             if (access.Annotation<MemberResolveResult>()?.Member is IField { Accessibility: not Accessibility.Public } field)
             {
@@ -56,7 +74,9 @@ public static class InlinedGetterRestorer
                 var targetType = access.Target.Annotation<ResolveResult>()?.Type
                     ?? (access.Target is ParenthesizedExpression pe ? pe.Expression.Annotation<ResolveResult>()?.Type : null);
                 if (targetType?.GetDefinition() is { Kind: not TypeKind.Unknown } targetDef
-                    && !targetDef.GetMembers(m => m.Name == access.MemberName).Any())
+                    && !(targetDef.ParentModule?.Compilation is { } comp
+                        ? TypeSystemCache.For(comp).HasMember(targetDef, access.MemberName)
+                        : targetDef.GetMembers(m => m.Name == access.MemberName).Any()))
                 {
                     var key = Normalize(access.MemberName);
                     var isStatic = access.Target is TypeReferenceExpression;
@@ -71,7 +91,7 @@ public static class InlinedGetterRestorer
                 }
             }
         }
-        foreach (var inv in tree.Descendants.OfType<InvocationExpression>().ToList())
+        foreach (var inv in invocations)
         {
             if (inv.Target is not MemberReferenceExpression mref) continue;
             if ((inv.Annotation<InvocationResolveResult>()?.Member ?? mref.Annotation<MemberResolveResult>()?.Member) is not IMethod { Accessibility: not Accessibility.Public } method) continue;

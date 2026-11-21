@@ -54,13 +54,17 @@ public sealed partial class CapstoneArmDisassembler : ITextDisassembler, IDispos
         }
     }
 
-    public IReadOnlyList<Arm32Insn> DisassembleInstructions(ReadOnlySpan<byte> code, ulong va, out bool isThumb)
+    public IReadOnlyList<Arm32Insn> DisassembleInstructions(ReadOnlySpan<byte> code, ulong va, out bool isThumb) =>
+        DisassembleInstructions(code, va, out isThumb, out _);
+
+    public IReadOnlyList<Arm32Insn> DisassembleInstructions(ReadOnlySpan<byte> code, ulong va, out bool isThumb, out int decodedBytes)
     {
         lock (_decodeGate)
         {
             var thumbInsns = DecodeList(_handle, code, va, out var thumbBytes);
             var armInsns = DecodeList(_armHandle, code, va, out var armBytes);
             isThumb = thumbBytes >= armBytes;
+            decodedBytes = isThumb ? thumbBytes : armBytes;
             _lastMode = isThumb ? "Thumb-2" : "A32";
             return isThumb ? thumbInsns : armInsns;
         }
@@ -83,7 +87,7 @@ public sealed partial class CapstoneArmDisassembler : ITextDisassembler, IDispos
             var ops = Marshal.PtrToStringAnsi(p + opOff) ?? "";
             list.Add(new Arm32Insn(address, size, mnemonic, ops));
         }
-        decodedBytes = count == 0 ? 0 : (int)((ulong)Marshal.ReadInt64(insns + (count - 1) * stride, 8) - va);
+        decodedBytes = count == 0 ? 0 : (int)((list[^1].Address - va) + (ulong)list[^1].Size);
         if (count > 0) cs_free(insns, (nuint)count);
         return list;
     }

@@ -21,6 +21,8 @@ public readonly record struct WasmFuncType(byte[] Parameters, byte[] Results)
 /// <summary>A module global: value type, mutability and constant initializer bits.</summary>
 public readonly record struct WasmGlobal(byte ValueType, bool Mutable, long Init);
 
+public readonly record struct WasmDynCallCoeff(uint AndMask, int AddOffset);
+
 public sealed class WasmBinaryImage : IBinaryImage
 {
     private readonly byte[] _data;
@@ -33,6 +35,7 @@ public sealed class WasmBinaryImage : IBinaryImage
     private readonly List<(string Module, string Name)> _importFunctionNames = [];   // function imports, in index order
     private readonly List<uint> _definedFunctionTypes = [];             // code section entries, in index order
     private readonly List<WasmGlobal> _globals = [];                    // imported globals first, then defined
+    private readonly Dictionary<string, WasmDynCallCoeff> _dynCalls = new(StringComparer.Ordinal);
 
     public string Path { get; }
     public BinaryFormat Format => BinaryFormat.Wasm;
@@ -43,8 +46,17 @@ public sealed class WasmBinaryImage : IBinaryImage
     public ReadOnlyMemory<byte> Data => _combined ?? _data;
     public int ImportedFunctions { get; private set; }
     public int DefinedFunctions => _bodies.Count;
+    public bool IsSplitFunctionTable => _dynCalls.Count > 0;
+    public IReadOnlyDictionary<string, WasmDynCallCoeff> DynCallTables => _dynCalls;
 
-    private WasmBinaryImage(string path, byte[] data) { Path = path; _data = data; Parse(); FinishLayout(); }
+    private WasmBinaryImage(string path, byte[] data)
+    {
+        Path = path;
+        _data = data;
+        Parse();
+        FinishLayout();
+        ParseDynCallCoefficients();
+    }
 
     public static WasmBinaryImage Load(string path, IDiagnosticSink sink)
     {
@@ -52,9 +64,202 @@ public sealed class WasmBinaryImage : IBinaryImage
         if (data.Length < 8 || BitConverter.ToUInt32(data) != 0x6D736100) throw new InvalidDataException("Not a WebAssembly module (missing \\0asm magic).");
         var img = new WasmBinaryImage(path, data);
         sink.Info(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatDetected,
-            $"WebAssembly module: {img.ImportedFunctions:N0} imported + {img.DefinedFunctions:N0} defined functions, {img._table.Count:N0} table slots, {img.DataSegments:N0} data segments → linear memory 0x{img._memoryBase:X}+0x{(img._sections.FirstOrDefault()?.RawSize ?? 0):X}.",
+            $"WebAssembly module: {img.ImportedFunctions:N0} imported + {img.DefinedFunctions:N0} defined functions, {img._table.Count:N0} table slots{(img.IsSplitFunctionTable ? $" (split via {img._dynCalls.Count} dynCall tables)" : "")}, {img.DataSegments:N0} data segments → linear memory 0x{img._memoryBase:X}+0x{(img._sections.FirstOrDefault()?.RawSize ?? 0):X}.",
             new() { File = path });
         return img;
+    }
+
+    public bool TryGetDynCall(string signature, out WasmDynCallCoeff coeff) =>
+        _dynCalls.TryGetValue(signature, out coeff);
+
+    public bool TryResolveSplitTableSlot(string signature, ulong rawSlot, out uint resolvedSlot)
+    {
+        resolvedSlot = 0;
+        if (!_dynCalls.TryGetValue(signature, out var coeff)) return false;
+        var slot = unchecked((uint)(((uint)rawSlot & coeff.AndMask) + coeff.AddOffset));
+        if (!_table.ContainsKey(slot)) return false;
+        resolvedSlot = slot;
+        return true;
+    }
+
+    private readonly record struct DynSlotVal(bool IsSlot, uint AndMask, int AddOffset, bool IsConst, uint ConstVal)
+    {
+        public static DynSlotVal Slot() => new(true, uint.MaxValue, 0, false, 0);
+        public static DynSlotVal Const(uint c) => new(false, uint.MaxValue, 0, true, c);
+    }
+
+    private void ParseDynCallCoefficients()
+    {
+        foreach (var (name, rva) in _exports)
+        {
+            var sig = name.StartsWith("dynCall_", StringComparison.Ordinal) ? name[8..]
+                : name.StartsWith("_dynCall_", StringComparison.Ordinal) ? name[9..] : null;
+            if (string.IsNullOrEmpty(sig)) continue;
+            if (TryParseDynCallBody((uint)rva, out var coeff))
+                _dynCalls[sig] = coeff;
+        }
+        if (_dynCalls.Count == 0)
+            TryParseSiblingFrameworkDynCalls();
+        if (!_dynCalls.Values.Any(static c => c.AddOffset != 0 || c.AndMask != uint.MaxValue))
+            _dynCalls.Clear();
+    }
+
+    private bool TryParseDynCallBody(uint functionIndex, out WasmDynCallCoeff coeff)
+    {
+        coeff = default;
+        var body = FunctionBody(functionIndex);
+        if (body.IsEmpty || !TryReadLocals(body, out _, out var insOff)) return false;
+        List<WasmDisassembler.WasmInstruction> insns;
+        try { insns = WasmDisassembler.Disassembler.Disassemble(body[insOff..].ToArray(), (uint)insOff); }
+        catch { return false; }
+
+        var stack = new Stack<DynSlotVal>(8);
+        var locals = new Dictionary<uint, DynSlotVal> { [0] = DynSlotVal.Slot() };
+        DynSlotVal Pop() => stack.Count > 0 ? stack.Pop() : default;
+        DynSlotVal Peek() => stack.Count > 0 ? stack.Peek() : default;
+        static uint OpU32(WasmDisassembler.WasmInstruction ins) => ins.Operands is { Length: > 0 } ? Convert.ToUInt32(ins.Operands[0]) : 0u;
+
+        foreach (var ins in insns)
+        {
+            switch (ins.Mnemonic)
+            {
+                case WasmDisassembler.WasmMnemonic.Nop:
+                case WasmDisassembler.WasmMnemonic.Block:
+                case WasmDisassembler.WasmMnemonic.Loop:
+                case WasmDisassembler.WasmMnemonic.End:
+                    break;
+                case WasmDisassembler.WasmMnemonic.If:
+                case WasmDisassembler.WasmMnemonic.Else:
+                case WasmDisassembler.WasmMnemonic.Br:
+                case WasmDisassembler.WasmMnemonic.BrIf:
+                case WasmDisassembler.WasmMnemonic.BrTable:
+                case WasmDisassembler.WasmMnemonic.Return:
+                case WasmDisassembler.WasmMnemonic.Unreachable:
+                    return false;
+                case WasmDisassembler.WasmMnemonic.CallIndirect:
+                {
+                    var callee = Pop();
+                    if (!callee.IsSlot) return false;
+                    coeff = new WasmDynCallCoeff(callee.AndMask, callee.AddOffset);
+                    return true;
+                }
+                case WasmDisassembler.WasmMnemonic.LocalGet:
+                    stack.Push(locals.GetValueOrDefault(OpU32(ins)));
+                    break;
+                case WasmDisassembler.WasmMnemonic.LocalSet:
+                    locals[OpU32(ins)] = Pop();
+                    break;
+                case WasmDisassembler.WasmMnemonic.LocalTee:
+                {
+                    var v = Peek();
+                    locals[OpU32(ins)] = v;
+                    break;
+                }
+                case WasmDisassembler.WasmMnemonic.GlobalGet:
+                case WasmDisassembler.WasmMnemonic.MemorySize:
+                case WasmDisassembler.WasmMnemonic.I64Const:
+                case WasmDisassembler.WasmMnemonic.F32Const:
+                case WasmDisassembler.WasmMnemonic.F64Const:
+                    stack.Push(default);
+                    break;
+                case WasmDisassembler.WasmMnemonic.GlobalSet:
+                case WasmDisassembler.WasmMnemonic.Drop:
+                    _ = Pop();
+                    break;
+                case WasmDisassembler.WasmMnemonic.I32Const:
+                    stack.Push(DynSlotVal.Const(ins.Operands is { Length: > 0 } ? unchecked((uint)Convert.ToInt64(ins.Operands[0])) : 0u));
+                    break;
+                case WasmDisassembler.WasmMnemonic.I32And:
+                {
+                    var b = Pop(); var a = Pop();
+                    if (a.IsSlot && a.AddOffset == 0 && b.IsConst) stack.Push(a with { AndMask = a.AndMask & b.ConstVal });
+                    else if (b.IsSlot && b.AddOffset == 0 && a.IsConst) stack.Push(b with { AndMask = b.AndMask & a.ConstVal });
+                    else if (a.IsConst && b.IsConst) stack.Push(DynSlotVal.Const(a.ConstVal & b.ConstVal));
+                    else stack.Push(default);
+                    break;
+                }
+                case WasmDisassembler.WasmMnemonic.I32Add:
+                {
+                    var b = Pop(); var a = Pop();
+                    if (a.IsSlot && b.IsConst) stack.Push(a with { AddOffset = unchecked(a.AddOffset + (int)b.ConstVal) });
+                    else if (b.IsSlot && a.IsConst) stack.Push(b with { AddOffset = unchecked(b.AddOffset + (int)a.ConstVal) });
+                    else if (a.IsConst && b.IsConst) stack.Push(DynSlotVal.Const(unchecked(a.ConstVal + b.ConstVal)));
+                    else stack.Push(default);
+                    break;
+                }
+                case WasmDisassembler.WasmMnemonic.I32Sub:
+                {
+                    var b = Pop(); var a = Pop();
+                    if (a.IsSlot && b.IsConst) stack.Push(a with { AddOffset = unchecked(a.AddOffset - (int)b.ConstVal) });
+                    else if (a.IsConst && b.IsConst) stack.Push(DynSlotVal.Const(unchecked(a.ConstVal - b.ConstVal)));
+                    else stack.Push(default);
+                    break;
+                }
+                case WasmDisassembler.WasmMnemonic.I32Or:
+                {
+                    var b = Pop(); var a = Pop();
+                    if (a.IsSlot && b.IsConst && (a.AndMask & b.ConstVal) == 0) stack.Push(a with { AddOffset = unchecked(a.AddOffset + (int)b.ConstVal) });
+                    else if (b.IsSlot && a.IsConst && (b.AndMask & a.ConstVal) == 0) stack.Push(b with { AddOffset = unchecked(b.AddOffset + (int)a.ConstVal) });
+                    else if (a.IsConst && b.IsConst) stack.Push(DynSlotVal.Const(a.ConstVal | b.ConstVal));
+                    else stack.Push(default);
+                    break;
+                }
+                case WasmDisassembler.WasmMnemonic.Call:
+                {
+                    if (!TryGetFunctionType(OpU32(ins), out var ft)) return false;
+                    for (var i = 0; i < ft.ParameterCount; i++) _ = Pop();
+                    for (var i = 0; i < ft.ResultCount; i++) stack.Push(default);
+                    break;
+                }
+                case WasmDisassembler.WasmMnemonic.Select:
+                    _ = Pop(); _ = Pop(); _ = Pop();
+                    stack.Push(default);
+                    break;
+                case >= WasmDisassembler.WasmMnemonic.I32Store and <= WasmDisassembler.WasmMnemonic.I64Store32:
+                    _ = Pop(); _ = Pop();
+                    break;
+                case (>= WasmDisassembler.WasmMnemonic.I32Load and <= WasmDisassembler.WasmMnemonic.I64Load32_U)
+                    or WasmDisassembler.WasmMnemonic.MemoryGrow
+                    or WasmDisassembler.WasmMnemonic.I32Eqz or WasmDisassembler.WasmMnemonic.I64Eqz
+                    or (>= WasmDisassembler.WasmMnemonic.I32Clz and <= WasmDisassembler.WasmMnemonic.I32PopCnt)
+                    or (>= WasmDisassembler.WasmMnemonic.I64Clz and <= WasmDisassembler.WasmMnemonic.I64PopCnt)
+                    or (>= WasmDisassembler.WasmMnemonic.F32Abs and <= WasmDisassembler.WasmMnemonic.F32Sqrt)
+                    or (>= WasmDisassembler.WasmMnemonic.F64Abs and <= WasmDisassembler.WasmMnemonic.F64Sqrt)
+                    or (>= WasmDisassembler.WasmMnemonic.I32Wrap_I64 and <= WasmDisassembler.WasmMnemonic.Proposed_I64Extend32_S):
+                    _ = Pop();
+                    stack.Push(default);
+                    break;
+                default:
+                    _ = Pop(); _ = Pop();
+                    stack.Push(default);
+                    break;
+            }
+        }
+        return false;
+    }
+
+    private void TryParseSiblingFrameworkDynCalls()
+    {
+        if (string.IsNullOrEmpty(Path)) return;
+        var dir = System.IO.Path.GetDirectoryName(Path);
+        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
+        foreach (var fw in Directory.EnumerateFiles(dir, "*.framework*"))
+        {
+            if (fw.EndsWith(".map", StringComparison.OrdinalIgnoreCase)) continue;
+            try
+            {
+                var bytes = WasmFiles.ReadDecompressed(fw);
+                var text = System.Text.Encoding.UTF8.GetString(bytes);
+                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                    text, @"dynCall_([A-Za-z0-9_]+)\b[^=;{]{0,120}\(\s*\w+\s*&\s*(\d+)\s*\)\s*\+\s*(\d+)"))
+                {
+                    if (uint.TryParse(m.Groups[2].Value, out var mask) && int.TryParse(m.Groups[3].Value, out var off))
+                        _dynCalls[m.Groups[1].Value] = new WasmDynCallCoeff(mask, off);
+                }
+                if (_dynCalls.Count > 0) return;
+            }
+            catch { /* optional fallback */ }
+        }
     }
 
     public IReadOnlyList<(string Name, ulong Rva)> GetSymbols() => _exports;

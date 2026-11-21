@@ -35,11 +35,13 @@ internal sealed partial class WasmMethodEmit(
     private readonly Dictionary<int, Expr> _paramValue = [];                 // wasm local → the value it starts with
     private readonly Dictionary<int, Expr> _subst = [];                      // wasm local → pure substitutable value
     private readonly Dictionary<int, TypeSignature?> _localPointee = [];      // wasm local holding a raw struct pointer
+    private readonly Dictionary<int, int> _localDisp = [];                   // wasm local → byte displacement on _subst
     private readonly Dictionary<int, int> _setCount = [];
     private readonly Dictionary<int, FrameSlotState> _slots = [];
     private CilLocalVariable? _retBuf;
     private int _frameBase = -1;
     private int _frameSize;
+    private int _spGlobal = -1;
     private int _start;
     private bool _reachable = true;
     private WasmFuncType _sig = new([], []);
@@ -153,19 +155,43 @@ internal sealed partial class WasmMethodEmit(
         _ = declaredLocalCount;
     }
 
-    /// <summary>Recognizes IL2CPP's stack-frame prologue: <c>global.get 0; i32.const N; i32.sub; local.tee P; global.set 0</c>.</summary>
+    /// <summary>Recognizes IL2CPP/Emscripten stack-frame prologues on upstream clang (5-insn) or fastcomp (6-insn).</summary>
     private void DetectFrameBase()
     {
         _start = 0;
-        if (_insns.Count < 5) return;
-        if (_insns[0].Mnemonic != WasmMnemonic.GlobalGet || Convert.ToUInt32(_insns[0].Operands[0]) != 0) return;
-        if (_insns[1].Mnemonic != WasmMnemonic.I32Const || _insns[2].Mnemonic != WasmMnemonic.I32Sub) return;
-        if (_insns[3].Mnemonic is not (WasmMnemonic.LocalTee or WasmMnemonic.LocalSet)) return;
-        if (_insns[4].Mnemonic != WasmMnemonic.GlobalSet || Convert.ToUInt32(_insns[4].Operands[0]) != 0) return;
-        _frameBase = (int)Convert.ToUInt32(_insns[3].Operands[0]);
-        _frameSize = (int)Convert.ToInt64(_insns[1].Operands[0]);
-        _subst[_frameBase] = new FrameAddrExpr(0);
-        _start = 5;
+        _spGlobal = owner.Image.IsSplitFunctionTable ? -1 : 0;
+        if (_insns.Count >= 5
+            && _insns[0].Mnemonic == WasmMnemonic.GlobalGet
+            && _insns[1].Mnemonic == WasmMnemonic.I32Const
+            && _insns[2].Mnemonic == WasmMnemonic.I32Sub
+            && _insns[3].Mnemonic is (WasmMnemonic.LocalTee or WasmMnemonic.LocalSet)
+            && _insns[4].Mnemonic == WasmMnemonic.GlobalSet
+            && Convert.ToUInt32(_insns[0].Operands[0]) == Convert.ToUInt32(_insns[4].Operands[0]))
+        {
+            _spGlobal = (int)Convert.ToUInt32(_insns[0].Operands[0]);
+            _frameBase = (int)Convert.ToUInt32(_insns[3].Operands[0]);
+            _frameSize = (int)Convert.ToInt64(_insns[1].Operands[0]);
+            _subst[_frameBase] = new FrameAddrExpr(0);
+            _start = 5;
+            return;
+        }
+        if (_insns.Count >= 6
+            && _insns[0].Mnemonic == WasmMnemonic.GlobalGet
+            && _insns[1].Mnemonic is (WasmMnemonic.LocalTee or WasmMnemonic.LocalSet)
+            && _insns[2].Mnemonic == WasmMnemonic.GlobalGet
+            && _insns[3].Mnemonic == WasmMnemonic.I32Const
+            && _insns[4].Mnemonic is (WasmMnemonic.I32Add or WasmMnemonic.I32Sub)
+            && _insns[5].Mnemonic == WasmMnemonic.GlobalSet
+            && Convert.ToUInt32(_insns[0].Operands[0]) == Convert.ToUInt32(_insns[2].Operands[0])
+            && Convert.ToUInt32(_insns[0].Operands[0]) == Convert.ToUInt32(_insns[5].Operands[0]))
+        {
+            _spGlobal = (int)Convert.ToUInt32(_insns[0].Operands[0]);
+            _frameBase = (int)Convert.ToUInt32(_insns[1].Operands[0]);
+            var delta = (int)Convert.ToInt64(_insns[3].Operands[0]);
+            _frameSize = _insns[4].Mnemonic == WasmMnemonic.I32Sub ? -delta : delta;
+            _subst[_frameBase] = new FrameAddrExpr(0);
+            _start = 6;
+        }
     }
 
     // ------------------------------------------------------------------ stack helpers
@@ -466,6 +492,9 @@ internal sealed partial class WasmMethodEmit(
         var disp = b.Disp;
         if (b.Expr is FrameAddrExpr fa) { FrameStore(fa.Offset + disp, size, value); return true; }
         if (b.Expr is NativeExpr) return false;
+        if (size == 8 && value.Expr is FramePairExpr fp)
+            return StoreTo(b, 4, new WValue(fp.Low, WasmOf(fp.Low.Kind)))
+                && StoreTo(b.WithDisp(4), 4, new WValue(fp.High, WasmOf(fp.High.Kind)));
         if (b.Pointee is { } pointee)
         {
             if (Expr.KindOf(pointee) == ValueKind.Struct)
@@ -497,7 +526,7 @@ internal sealed partial class WasmMethodEmit(
     /// <summary>A <c>local.get</c> value: its stored expression, a substituted pure value, or a typed local read.</summary>
     private WValue ReadLocal(int index)
     {
-        if (_subst.TryGetValue(index, out var subst)) return new WValue(subst, LocalWasm(index)) { Pointee = _localPointee.GetValueOrDefault(index) };
+        if (_subst.TryGetValue(index, out var subst)) return new WValue(subst, LocalWasm(index)) { Pointee = _localPointee.GetValueOrDefault(index), Disp = _localDisp.GetValueOrDefault(index) };
         if (_paramValue.TryGetValue(index, out var param))
         {
             var pointee = _localPointee.GetValueOrDefault(index);
@@ -531,14 +560,16 @@ internal sealed partial class WasmMethodEmit(
     /// <summary>Records the value a wasm local now holds; splits into a fresh CLR local when its reference/primitive type changes safely.</summary>
     private void WriteLocal(int index, WValue value)
     {
-        if (value.Expr is FrameAddrExpr or AddressExpr or MarkerExpr
+        if (value.Disp != 0 || value.Expr is FrameAddrExpr or AddressExpr or MarkerExpr
             || _setCount.GetValueOrDefault(index) == 1 && IsSubstitutable(value))
         {
             _subst[index] = value.Expr;
             _localPointee[index] = value.Pointee;
+            if (value.Disp != 0) _localDisp[index] = value.Disp; else _localDisp.Remove(index);
             return;
         }
         _subst.Remove(index);
+        _localDisp.Remove(index);
         var desired = DesiredLocalType(value);
         if (_paramValue.TryGetValue(index, out var paramExpr) && value.Pointee is null && paramExpr is ArgExpr argExpr)
         {
@@ -759,6 +790,7 @@ internal sealed partial class WasmMethodEmit(
             EndPc = _matchEnd[i],
             SavedSubst = new Dictionary<int, Expr>(_subst),
             SavedPointee = new Dictionary<int, TypeSignature?>(_localPointee),
+            SavedDisp = new Dictionary<int, int>(_localDisp),
             SavedLocals = new Dictionary<int, CilLocalVariable>(_locals),
             SavedParamValue = new Dictionary<int, Expr>(_paramValue),
         };
@@ -803,6 +835,7 @@ internal sealed partial class WasmMethodEmit(
         {
             frame.ThenEndSubst = new Dictionary<int, Expr>(_subst);
             frame.ThenEndPointee = new Dictionary<int, TypeSignature?>(_localPointee);
+            frame.ThenEndDisp = new Dictionary<int, int>(_localDisp);
             frame.ThenEndLocals = new Dictionary<int, CilLocalVariable>(_locals);
             frame.ThenEndParamValue = new Dictionary<int, Expr>(_paramValue);
             frame.Branched = true;
@@ -826,6 +859,7 @@ internal sealed partial class WasmMethodEmit(
             Push(new LocalExpr(frame.ParamLocals![k]), frame.Sig.Parameters[k]);
         if (frame.SavedSubst is not null) ReplaceDict(_subst, frame.SavedSubst);
         if (frame.SavedPointee is not null) ReplaceDict(_localPointee, frame.SavedPointee);
+        if (frame.SavedDisp is not null) ReplaceDict(_localDisp, frame.SavedDisp);
         if (frame.SavedLocals is not null) ReplaceDict(_locals, frame.SavedLocals);
         if (frame.SavedParamValue is not null) ReplaceDict(_paramValue, frame.SavedParamValue);
         _reachable = frame.EntryReachable;
@@ -872,6 +906,7 @@ internal sealed partial class WasmMethodEmit(
                 {
                     ReplaceDict(_subst, frame.SavedSubst);
                     ReplaceDict(_localPointee, frame.SavedPointee!);
+                    if (frame.SavedDisp is not null) ReplaceDict(_localDisp, frame.SavedDisp);
                     ReplaceDict(_locals, frame.SavedLocals!);
                     ReplaceDict(_paramValue, frame.SavedParamValue!);
                 }
@@ -879,6 +914,7 @@ internal sealed partial class WasmMethodEmit(
                 {
                     ReplaceDict(_subst, frame.ThenEndSubst);
                     ReplaceDict(_localPointee, frame.ThenEndPointee!);
+                    if (frame.ThenEndDisp is not null) ReplaceDict(_localDisp, frame.ThenEndDisp);
                     ReplaceDict(_locals, frame.ThenEndLocals!);
                     ReplaceDict(_paramValue, frame.ThenEndParamValue!);
                 }
@@ -888,7 +924,7 @@ internal sealed partial class WasmMethodEmit(
                     var elseSubst = frame.HadElse ? new Dictionary<int, Expr>(_subst) : frame.SavedSubst;
                     _subst.Clear();
                     foreach (var (k, v) in thenSubst)
-                        if (elseSubst.TryGetValue(k, out var ev) && ReferenceEquals(v, ev))
+                        if (elseSubst.TryGetValue(k, out var ev) && SameSubst(v, ev))
                             _subst[k] = v;
 
                     var thenPointee = frame.HadElse ? frame.ThenEndPointee! : new Dictionary<int, TypeSignature?>(_localPointee);
@@ -898,6 +934,13 @@ internal sealed partial class WasmMethodEmit(
                         if (elsePointee.TryGetValue(k, out var ev) && SignatureComparer.Default.Equals(v, ev))
                             _localPointee[k] = v;
 
+                    var thenDisp = frame.HadElse ? (frame.ThenEndDisp ?? []) : new Dictionary<int, int>(_localDisp);
+                    var elseDisp = frame.HadElse ? new Dictionary<int, int>(_localDisp) : (frame.SavedDisp ?? []);
+                    _localDisp.Clear();
+                    foreach (var (k, v) in thenDisp)
+                        if (elseDisp.TryGetValue(k, out var ev) && v == ev)
+                            _localDisp[k] = v;
+
                     ReplaceDict(_locals, frame.SavedLocals!);
                     ReplaceDict(_paramValue, frame.SavedParamValue!);
                 }
@@ -906,6 +949,9 @@ internal sealed partial class WasmMethodEmit(
             _reachable = frame.EntryReachable && (_reachable || frame.Branched || !frame.HadElse);
             return;
         }
+
+        static bool SameSubst(Expr a, Expr b) =>
+            ReferenceEquals(a, b) || (a is FrameAddrExpr fa && b is FrameAddrExpr fb && fa.Offset == fb.Offset);
 
         if (frame.Kind == WasmMnemonic.Block)
         {

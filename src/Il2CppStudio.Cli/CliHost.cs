@@ -32,9 +32,15 @@ internal static class CliHost
         }
     }
 
-    public static Il2CppWorkspace Load(string path, DiagnosticCollector sink, bool substituteBcl, string? bclDir = null)
+    public static Il2CppWorkspace Load(string path, DiagnosticCollector sink, bool substituteBcl, string? bclDir = null, string? switchKeysetPath = null, string? ps4Passcode = null)
     {
-        var ws = Il2CppWorkspace.Load(path, sink, new WorkspaceOptions { SubstituteBcl = substituteBcl, BclReferenceDirectory = bclDir });
+        var ws = Il2CppWorkspace.Load(path, sink, new WorkspaceOptions
+        {
+            SubstituteBcl = substituteBcl,
+            BclReferenceDirectory = bclDir,
+            SwitchKeysetPath = switchKeysetPath,
+            Ps4PkgPasscode = ps4Passcode,
+        });
         Console.Error.WriteLine(ws.ModeLabel);
         return ws;
     }

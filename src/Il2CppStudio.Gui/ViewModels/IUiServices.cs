@@ -5,6 +5,8 @@ public interface IUiServices
 {
     Task<string?> PickFolderAsync(string title);
     Task<string?> PickFileAsync(string title);
+    Task<string?> PickKeysetFileAsync(string title);
+    Task<string?> PromptTextAsync(string title, string message, string watermark, bool maskInput = false);
     Task<string?> SaveFileAsync(string title, string suggestedName, string extension);
     Task SetClipboardAsync(string text);
     Task ShowBootConfigDialogAsync(BootConfigViewModel vm);

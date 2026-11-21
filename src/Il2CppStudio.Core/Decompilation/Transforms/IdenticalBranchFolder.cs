@@ -11,7 +11,7 @@ public static class IdenticalBranchFolder
 {
     public static void Apply(SyntaxTree tree)
     {
-        foreach (var c in tree.Descendants.OfType<ConditionalExpression>().ToList())
+        foreach (var c in AstWalk.Collect<ConditionalExpression>(tree))
             if (c.Parent is not null && EmptyIfRemover.IsPure(c.Condition) && c.TrueExpression.IsMatch(c.FalseExpression))
                 c.ReplaceWith(c.TrueExpression.Detach());
     }

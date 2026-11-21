@@ -12,7 +12,7 @@ public static class RedundantCastRemover
 {
     public static void Apply(SyntaxTree tree)
     {
-        foreach (var cast in tree.Descendants.OfType<CastExpression>().ToList())
+        foreach (var cast in AstWalk.Collect<CastExpression>(tree, SafeParentForUpcastRemoval))
         {
             if (cast.Parent is null) continue;
             var targetType = cast.Annotation<ResolveResult>()?.Type;

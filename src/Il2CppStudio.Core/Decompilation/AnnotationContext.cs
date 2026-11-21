@@ -13,4 +13,6 @@ public sealed class AnnotationContext
     /// <summary>Why a method body is a <c>throw null</c> stub (null when it was lifted).</summary>
     public required Func<MethodModel, string?> FallbackReason { get; init; }
     public bool ShowTokens { get; set; } = true;
+    /// <summary>Stable SHA-256 fingerprint of the workspace binary and metadata for on-disk decompilation caching.</summary>
+    public string? Fingerprint { get; init; }
 }

@@ -309,10 +309,22 @@ public sealed partial class Il2CppRegistration
 
     private int PickV24CodeRegFieldIndex(ulong fieldVa)
     {
+        var cr14 = fieldVa - (ulong)(14 * Ptr);
         var cr15 = fieldVa - (ulong)(15 * Ptr);
-        var cnt = At(cr15, 2);
-        var ptr = At(cr15, 3);
-        return cnt > 0 && cnt < 5_000_000 && Reader.IsMapped(ptr) ? 15 : 14;
+        var valid15 = IsValidGmpLayout(cr15);
+        var valid14 = IsValidGmpLayout(cr14);
+        if (valid15 && !valid14) return 15;
+        if (valid14 && !valid15) return 14;
+        return _md.Version.Minor >= 3 ? 15 : 14;
+    }
+
+    private bool IsValidGmpLayout(ulong cr)
+    {
+        var cnt = At(cr, 2);
+        var ptr = At(cr, 3);
+        if (cnt == 0 || cnt >= 5_000_000 || !Reader.IsMapped(ptr)) return false;
+        var need = cnt * (ulong)Ptr;
+        return need <= int.MaxValue && Reader.Slice(ptr, (int)need).Length == (int)need;
     }
 
     private void ParseCodeRegistration(ulong modulesArrayVa, int count)

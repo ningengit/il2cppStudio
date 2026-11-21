@@ -30,6 +30,9 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
         Assert.DoesNotContain("unpcklps", cam);
         Assert.Contains("RenderSettings.ambientLight = Color.red;", Render("NearExitTriggerScript"));
         Assert.Contains("itemSelect.anchoredPosition = new Vector2(", Render("GameControllerScript"));
+        var click = Render("ClickableTest", "Update");
+        Assert.Contains("Vector3.Distance(player.position,", click);
+        Assert.DoesNotContain("Math.Sqrt", click);
     }
 
     [Fact]

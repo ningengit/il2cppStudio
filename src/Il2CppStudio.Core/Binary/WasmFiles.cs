@@ -44,15 +44,28 @@ internal static class Leb
     }
 }
 
-/// <summary>Locating and decompressing the WebGL code module (<c>Build/*.wasm</c>, <c>.wasm.br</c>, <c>.wasm.gz</c>, <c>.wasm.unityweb</c>).</summary>
+/// <summary>Locating and decompressing the WebGL code module (<c>Build/*.wasm</c>, <c>.wasm.br</c>, <c>.wasm.gz</c>, <c>.wasm.unityweb</c>, <c>.wasm.code.unityweb</c>).</summary>
 public static class WasmFiles
 {
     public static string? Find(string root) =>
-        new[] { System.IO.Path.Combine(root, "Build"), root }.Where(Directory.Exists).SelectMany(Directory.EnumerateFiles)
-            .FirstOrDefault(f => f.EndsWith(".wasm", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".wasm.br", StringComparison.OrdinalIgnoreCase)
-                              || f.EndsWith(".wasm.gz", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".wasm.unityweb", StringComparison.OrdinalIgnoreCase));
+        new[] { System.IO.Path.Combine(root, "Build"), root }
+            .Where(Directory.Exists)
+            .SelectMany(Directory.EnumerateFiles)
+            .FirstOrDefault(IsWasmPath);
 
-    public static bool IsWasmPath(string path) => path.Contains(".wasm", StringComparison.OrdinalIgnoreCase);
+    public static bool IsWasmPath(string path)
+    {
+        var name = System.IO.Path.GetFileName(path);
+        if (name.Contains(".framework", StringComparison.OrdinalIgnoreCase)) return false;
+        return name.EndsWith(".wasm", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".wasm.br", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".wasm.gz", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".wasm.unityweb", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".wasm.code", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".wasm.code.br", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".wasm.code.gz", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".wasm.code.unityweb", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>Raw module bytes: plain, gzip (1F 8B) or Brotli (anything else that is not already <c>\0asm</c>).</summary>
     public static byte[] ReadDecompressed(string path)

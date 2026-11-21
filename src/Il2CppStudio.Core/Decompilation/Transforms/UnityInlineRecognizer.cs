@@ -14,12 +14,21 @@ namespace Il2CppStudio.Core.Decompilation.Transforms;
 /// </summary>
 public static class UnityInlineRecognizer
 {
-    public static void Apply(SyntaxTree tree)
+    public static void Apply(SyntaxTree tree) => Apply(tree, AstWalk.ScanFlags(tree));
+
+    internal static void Apply(SyntaxTree tree, in TreeFlags flags)
     {
-        InlinePureComponentTemps(tree);
-        CollapseIdentityVectorCreate(tree);
+        if (flags.HasVectorOps)
+        {
+            InlinePureComponentTemps(tree);
+            CollapseIdentityVectorCreate(tree);
+        }
         RemoveRepeatedDefault(tree);
-        foreach (var inv in tree.Descendants.OfType<InvocationExpression>().ToList()) TryEuler(inv);
+        if (flags.HasVectorOps)
+        {
+            foreach (var inv in AstWalk.Collect<InvocationExpression>(tree, static i => i.Arguments.Count == 1 && i.Target is MemberReferenceExpression { MemberName: "Internal_FromEulerRad" }))
+                TryEuler(inv);
+        }
     }
 
     private static void TryEuler(InvocationExpression inv)
@@ -57,31 +66,58 @@ public static class UnityInlineRecognizer
 
     private static VariableDeclarationStatement? FindSingleUseTemp(AstNode use, string name)
     {
-        var stmt = use.Ancestors.OfType<Statement>().FirstOrDefault(s => s.Parent is BlockStatement);
+        Statement? stmt = null;
+        for (AstNode? a = use.Parent; a is not null; a = a.Parent)
+            if (a is Statement s && s.Parent is BlockStatement) { stmt = s; break; }
         if (stmt?.Parent is not BlockStatement block) return null;
         var decl = block.Statements.OfType<VariableDeclarationStatement>().FirstOrDefault(d => d.Variables.Count == 1 && d.Variables.Single().Name == name);
-        if (decl is null || block.Descendants.OfType<IdentifierExpression>().Count(i => i.Identifier == name) != 1) return null;
-        return decl;
+        if (decl is null) return null;
+        var count = 0;
+        AstWalk.Visit<IdentifierExpression>(block, i => { if (i.Identifier == name) count++; });
+        return count == 1 ? decl : null;
     }
 
     private static void InlinePureComponentTemps(SyntaxTree tree)
     {
-        foreach (var decl in tree.Descendants.OfType<VariableDeclarationStatement>().Where(d => d.Variables.Count == 1).ToList())
+        var blocks = new Dictionary<BlockStatement, List<(VariableDeclarationStatement Decl, VariableInitializer Var)>>();
+        AstWalk.Visit<VariableDeclarationStatement>(tree, decl =>
         {
+            if (decl.Variables.Count != 1 || decl.Parent is not BlockStatement block) return;
             var v = decl.Variables.Single();
-            if (v.Initializer is not MemberReferenceExpression { MemberName: "x" or "y" or "z" or "w", Target: MemberReferenceExpression { Target: TypeReferenceExpression or IdentifierExpression { Identifier: "Vector3" or "Vector2" or "Quaternion" } } inner }
-                || inner.MemberName is not ("zero" or "one" or "up" or "down" or "left" or "right" or "forward" or "back" or "identity")
-                || decl.Parent is not BlockStatement block) continue;
-            var uses = block.Descendants.OfType<IdentifierExpression>().Where(i => i.Identifier == v.Name).ToList();
-            if (uses.Count != 1) continue;
-            uses[0].ReplaceWith(v.Initializer.Detach());   // constant static property: reordering the read is unobservable
-            decl.Remove();
+            if (v.Initializer is MemberReferenceExpression { MemberName: "x" or "y" or "z" or "w", Target: MemberReferenceExpression { Target: TypeReferenceExpression or IdentifierExpression { Identifier: "Vector3" or "Vector2" or "Quaternion" } } inner }
+                && inner.MemberName is ("zero" or "one" or "up" or "down" or "left" or "right" or "forward" or "back" or "identity"))
+            {
+                if (!blocks.TryGetValue(block, out var list))
+                    blocks[block] = list = new List<(VariableDeclarationStatement, VariableInitializer)>();
+                list.Add((decl, v));
+            }
+        });
+        foreach (var (block, list) in blocks)
+        {
+            var byName = new Dictionary<string, List<IdentifierExpression>>(StringComparer.Ordinal);
+            AstWalk.Visit<IdentifierExpression>(block, id =>
+            {
+                if (!byName.TryGetValue(id.Identifier, out var uses))
+                    byName[id.Identifier] = uses = new List<IdentifierExpression>();
+                uses.Add(id);
+            });
+            foreach (var (decl, v) in list)
+            {
+                if (!AstWalk.IsAttachedTo(decl, block)) continue;
+                var attachedUses = byName.TryGetValue(v.Name, out var rawUses)
+                    ? rawUses.Where(u => AstWalk.IsAttachedTo(u, block)).ToList()
+                    : null;
+                if (attachedUses is null || attachedUses.Count != 1) continue;
+                attachedUses[0].ReplaceWith(v.Initializer.Detach());   // constant static property: reordering the read is unobservable
+                decl.Remove();
+            }
         }
     }
 
     private static void CollapseIdentityVectorCreate(SyntaxTree tree)
     {
-        foreach (var create in tree.Descendants.OfType<ObjectCreateExpression>().ToList())
+        var creates = AstWalk.Collect<ObjectCreateExpression>(tree, static c => c.Type is SimpleType { Identifier: "Vector3" or "Vector2" });
+        foreach (var create in creates)
         {
             if (create.Parent is null || create.Type is not SimpleType { Identifier: "Vector3" or "Vector2" } st) continue;
             var expected = st.Identifier == "Vector3" ? 3 : 2;
@@ -105,15 +141,13 @@ public static class UnityInlineRecognizer
 
     private static void RemoveRepeatedDefault(SyntaxTree tree)
     {
-        foreach (var decl in tree.Descendants.OfType<VariableDeclarationStatement>().Where(d => d.Variables.Count == 1).ToList())
+        foreach (var decl in AstWalk.Collect<VariableDeclarationStatement>(tree, static d => d.Variables.Count == 1 && d.Parent is BlockStatement))
         {
+            if (!AstWalk.IsAttachedTo(decl, tree)) continue;
             var v = decl.Variables.Single();
-            if (v.Initializer is not DefaultValueExpression || decl.Parent is not BlockStatement block) continue;
-            var stmts = block.Statements.ToList();
-            var idx = stmts.IndexOf(decl);
-            if (idx >= 0 && idx + 1 < stmts.Count
-                && stmts[idx + 1] is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: IdentifierExpression l, Right: DefaultValueExpression } } next
-                && l.Identifier == v.Name)
+            if (v.Initializer is not DefaultValueExpression) continue;
+            if (decl.NextSibling is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: IdentifierExpression l, Right: DefaultValueExpression } } next
+                && l.Identifier == v.Name && AstWalk.IsAttachedTo(next, tree))
                 next.Remove();
         }
     }

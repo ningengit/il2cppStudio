@@ -56,7 +56,13 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             var (start, end) = sym.Map.GetFunctionBounds(va, 0x10000);
             var reader = sym.Registration.Reader;
             var code = reader.Slice(start, (int)Math.Min(end - start, 0x10000UL));
-            var insns = DecodeFunction(code, start);
+            var insns = DecodeFunction(code, start, out var failedVa, out var failedBytesHex);
+            if (failedVa != 0)
+            {
+                sink.Warn(DiagnosticCategory.Lifting, DiagnosticCodes.DisassemblyFailed,
+                    $"ARM64 decode failed at RVA 0x{failedVa - reader.ImageBase:X} (offset +0x{failedVa - start:X}): raw bytes [{failedBytesHex}]",
+                    loc(failedVa));
+            }
             if (insns.Count == 0) return new(methodIndex, false, 0, 0, 0, 0, 0, "empty function");
 
             var blocks = BuildBlocks(insns, start, sym);
@@ -106,8 +112,10 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         }
     }
 
-    private static List<Arm64Insn> DecodeFunction(ReadOnlySpan<byte> code, ulong startVa)
+    private static List<Arm64Insn> DecodeFunction(ReadOnlySpan<byte> code, ulong startVa, out ulong failedVa, out string? failedBytesHex)
     {
+        failedVa = 0;
+        failedBytesHex = null;
         var list = new List<Arm64Insn>(code.Length / 4);
         var aligned = code.Length & ~3;
         for (var off = 0; off < aligned; off += 4)
@@ -115,11 +123,23 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             var raw = BinaryPrimitives.ReadUInt32LittleEndian(code.Slice(off, 4));
             if (raw == 0) break;
             var ins = Arm64Instruction.Decode(raw);
-            if (ins.Id == Arm64InstructionId.Invalid) break;
+            if (ins.Id == Arm64InstructionId.Invalid)
+            {
+                if (list.Count == 0 || !IsArm64Terminator(list[^1].Ins))
+                {
+                    failedVa = startVa + (ulong)off;
+                    failedBytesHex = Convert.ToHexString(code.Slice(off, 4));
+                }
+                break;
+            }
             list.Add(new Arm64Insn(startVa + (ulong)off, ins));
         }
         return list;
     }
+
+    private static bool IsArm64Terminator(Arm64Instruction ins) =>
+        ins.Mnemonic is Arm64Mnemonic.RET or Arm64Mnemonic.B or Arm64Mnemonic.BR or Arm64Mnemonic.BRK or Arm64Mnemonic.UDF
+        || ins.Mnemonic.ToString() is "RETAA" or "RETAB" or "BRAA" or "BRAB" or "BRAAZ" or "BRABZ" or "HLT";
 
     private static List<Arm64Block> BuildBlocks(List<Arm64Insn> insns, ulong funcStart, NativeSymbolizer sym)
     {

@@ -10,7 +10,8 @@ public static class EmptyIfRemover
 {
     public static void Apply(SyntaxTree tree)
     {
-        foreach (var ifs in tree.Descendants.OfType<IfElseStatement>().ToList())
+        foreach (var ifs in AstWalk.Collect<IfElseStatement>(tree, static i =>
+            i.FalseStatement.IsNull && i.TrueStatement is BlockStatement { Statements.Count: 0 } && i.Parent is BlockStatement))
         {
             if (ifs.Parent is null || !ifs.FalseStatement.IsNull) continue;
             if (ifs.TrueStatement is not BlockStatement { Statements.Count: 0 } || !IsPure(ifs.Condition)) continue;
@@ -18,8 +19,12 @@ public static class EmptyIfRemover
         }
     }
 
-    public static bool IsPure(Expression e) => !e.DescendantsAndSelf.Any(n =>
-        n is InvocationExpression or AssignmentExpression or ObjectCreateExpression
-        || n is UnaryOperatorExpression { Operator: UnaryOperatorType.Increment or UnaryOperatorType.Decrement
-                                         or UnaryOperatorType.PostIncrement or UnaryOperatorType.PostDecrement });
+    public static bool IsPure(Expression e) =>
+        !(e is InvocationExpression or AssignmentExpression or ObjectCreateExpression
+          || e is UnaryOperatorExpression { Operator: UnaryOperatorType.Increment or UnaryOperatorType.Decrement
+                                            or UnaryOperatorType.PostIncrement or UnaryOperatorType.PostDecrement })
+        && !AstWalk.HasAny(e, static n =>
+            n is InvocationExpression or AssignmentExpression or ObjectCreateExpression
+            || n is UnaryOperatorExpression { Operator: UnaryOperatorType.Increment or UnaryOperatorType.Decrement
+                                             or UnaryOperatorType.PostIncrement or UnaryOperatorType.PostDecrement });
 }

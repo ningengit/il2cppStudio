@@ -67,90 +67,111 @@ public sealed class DecompilerService
         Func<ICSharpCode.Decompiler.CSharp.Syntax.SyntaxTree, ICSharpCode.Decompiler.CSharp.Syntax.SyntaxTree?>? select = null,
         HashSet<uint>? crossTypeTokens = null, bool? noAstTransforms = null)
     {
+        var tAnn = ExportProfiler.Start();
         if (annotate && Annotations is { } a && Mapper() is { } mapper) new AstAnnotator(a, mapper).Annotate(tree);
+        ExportProfiler.RecordFinishAnnotate(tAnn);
+
         // Diagnostic switch: IL2CPPSTUDIO_NO_AST_TRANSFORMS=1 prints the raw ILSpy tree (no coroutine / else-if rewrites).
-        if (annotate && HasNonStubBodies(tree) && !(noAstTransforms ?? (Environment.GetEnvironmentVariable("IL2CPPSTUDIO_NO_AST_TRANSFORMS") == "1")))
+        var flags = annotate ? Transforms.AstWalk.ScanFlags(tree) : default;
+        if (annotate && flags.HasBodies && !(noAstTransforms ?? (Environment.GetEnvironmentVariable("IL2CPPSTUDIO_NO_AST_TRANSFORMS") == "1")))
         {
+            var tCore = ExportProfiler.Start();
             Transforms.ElseIfFlattener.Apply(tree);
             Transforms.SelfAliasAndTailSink.Apply(tree);
-            Coroutines.CoroutineTransform.Apply(tree, (type, reason) =>
+            Coroutines.CoroutineTransform.Apply(tree, in flags, (type, reason) =>
                 ErrorLog.Add(_stubs.ImageName(image), "CoroutineNotReconstructed", type, null, reason, "State machine class kept as decompiled."));
             Transforms.EmptyIfRemover.Apply(tree);
             Transforms.IdenticalBranchFolder.Apply(tree);
             Transforms.RedundantCastRemover.Apply(tree);
-            Transforms.DistanceRecognizer.Apply(tree);
+            Transforms.DistanceRecognizer.Apply(tree, in flags);
             Transforms.ComparisonNormalizer.Apply(tree);
-            Transforms.BankersRoundRecognizer.Apply(tree);
-            Transforms.StringEqualitySugar.Apply(tree);
+            Transforms.BankersRoundRecognizer.Apply(tree, in flags);
+            Transforms.StringEqualitySugar.Apply(tree, in flags);
             Transforms.BoolNormalizer.Apply(tree);
-            Transforms.UnityInlineRecognizer.Apply(tree);
-            Transforms.VectorComponentCollapse.Apply(tree);
-            Transforms.UnityInlineRecognizer.Apply(tree);
-            Transforms.VectorOperatorRecognizer.Apply(tree);
+            Transforms.UnityInlineRecognizer.Apply(tree, in flags);
+            Transforms.VectorComponentCollapse.Apply(tree, in flags);
+            Transforms.UnityInlineRecognizer.Apply(tree, in flags);
+            Transforms.VectorOperatorRecognizer.Apply(tree, in flags);
             Transforms.CompoundFieldFold.Apply(tree);
-            Transforms.NamedConstants.Apply(tree);
+            Transforms.NamedConstants.Apply(tree, in flags);
+            ExportProfiler.RecordFinishCoreTransform(tCore);
+
+            var tLoop = ExportProfiler.Start();
             var changedAfterInline = false;
-            foreach (var body in tree.Descendants.OfType<ICSharpCode.Decompiler.CSharp.Syntax.MethodDeclaration>().Select(m => m.Body).Where(b => !b.IsNull).ToList())
-                changedAfterInline |= Coroutines.TempInliner.Run(body);
+            Transforms.AstWalk.Visit<ICSharpCode.Decompiler.CSharp.Syntax.MethodDeclaration>(tree, m =>
+            {
+                if (!m.Body.IsNull)
+                    changedAfterInline |= Coroutines.TempInliner.Run(m.Body);
+            });
             changedAfterInline |= Transforms.WhileConditionRestorer.Apply(tree);
             if (changedAfterInline)
             {
-                Transforms.UnityInlineRecognizer.Apply(tree);
-                Transforms.VectorComponentCollapse.Apply(tree);
-                Transforms.UnityInlineRecognizer.Apply(tree);
-                Transforms.VectorOperatorRecognizer.Apply(tree);
+                Transforms.DistanceRecognizer.Apply(tree, in flags);
+                Transforms.WhileConditionRestorer.Apply(tree);
+                Transforms.UnityInlineRecognizer.Apply(tree, in flags);
+                Transforms.VectorComponentCollapse.Apply(tree, in flags);
+                Transforms.UnityInlineRecognizer.Apply(tree, in flags);
+                Transforms.VectorOperatorRecognizer.Apply(tree, in flags);
                 Transforms.BoolNormalizer.Apply(tree);
                 Transforms.ComparisonNormalizer.Apply(tree);
             }
             Transforms.LoopShapeRestorer.Apply(tree);
-            Transforms.ForeachRestorer.Apply(tree);
+            Transforms.ForeachRestorer.Apply(tree, in flags);
             Transforms.LoopShapeRestorer.NameLoopCounters(tree);
             Transforms.ElseIfFlattener.Apply(tree);
             Transforms.SelfAliasAndTailSink.Apply(tree);
+            flags = Transforms.AstWalk.ScanFlags(tree);
+            ExportProfiler.RecordFinishLoopTransform(tLoop);
         }
+        var tHyg = ExportProfiler.Start();
         if (annotate)
         {
+            var tSub = ExportProfiler.Start();
             Transforms.InheritedStaticSimplifier.Apply(tree);
-            Transforms.ExplicitImplementationFixer.Apply(tree);
-            Transforms.InlinedGetterRestorer.Apply(tree);
-            Transforms.CompileHygiene.Apply(tree);
+            ExportProfiler.RecordHygInheritedStatic(tSub);
+
+            tSub = ExportProfiler.Start();
+            Transforms.ExplicitImplementationFixer.Apply(tree, in flags);
+            ExportProfiler.RecordHygExplicitImpl(tSub);
+
+            tSub = ExportProfiler.Start();
+            Transforms.InlinedGetterRestorer.Apply(tree, in flags);
+            ExportProfiler.RecordHygGetter(tSub);
+
+            tSub = ExportProfiler.Start();
+            Transforms.CompileHygiene.Apply(tree, in flags);
+            ExportProfiler.RecordHygCore(tSub);
+
+            tSub = ExportProfiler.Start();
             var tokens = crossTypeTokens ?? (CachedStubBytes(image) is { } stubBytes ? CrossTypeTokens(stubBytes) : null);
-            if (tokens is not null) Transforms.AccessRelaxer.Apply(tree, tokens);
-            Transforms.CompileFixups.Apply(tree);
-            Transforms.DefiniteAssignment.Apply(tree);
+            if (tokens is not null) Transforms.AccessRelaxer.Apply(tree, tokens, in flags);
+            ExportProfiler.RecordHygAccessRelax(tSub);
+
+            tSub = ExportProfiler.Start();
+            Transforms.CompileFixups.Apply(tree, in flags);
+            ExportProfiler.RecordHygFixups(tSub);
+
+            tSub = ExportProfiler.Start();
+            Transforms.DefiniteAssignment.Apply(tree, in flags);
+            ExportProfiler.RecordHygDefAssign(tSub);
+
+            tSub = ExportProfiler.Start();
             Transforms.IdentifierEscaper.Apply(tree);   // last: earlier passes match compiler-generated names
+            ExportProfiler.RecordHygEscape(tSub);
         }
+        ExportProfiler.RecordFinishHygiene(tHyg);
+
+        var tPrint = ExportProfiler.Start();
         if (select is not null) tree = select(tree) ?? tree;
         var writer = new StringWriter();
         tree.AcceptVisitor(new ICSharpCode.Decompiler.CSharp.OutputVisitor.InsertParenthesesVisitor { InsertParenthesesForReadability = true });
         tree.AcceptVisitor(new ICSharpCode.Decompiler.CSharp.OutputVisitor.CSharpOutputVisitor(
             new ICSharpCode.Decompiler.CSharp.OutputVisitor.TextWriterTokenWriter(writer), SharedFormattingOptions));
-        return OutputScrubber.Scrub(writer.ToString(), _stubs.ImageName(image), ErrorLog);
+        var scrubbed = OutputScrubber.Scrub(writer.ToString(), _stubs.ImageName(image), ErrorLog);
+        ExportProfiler.RecordFinishPrintScrub(tPrint);
+        return scrubbed;
     }
 
-    private static bool HasNonStubBodies(ICSharpCode.Decompiler.CSharp.Syntax.SyntaxTree tree)
-    {
-        foreach (var block in tree.Descendants.OfType<ICSharpCode.Decompiler.CSharp.Syntax.BlockStatement>())
-        {
-            if (block.IsNull || block.Parent is not (
-                ICSharpCode.Decompiler.CSharp.Syntax.MethodDeclaration or
-                ICSharpCode.Decompiler.CSharp.Syntax.ConstructorDeclaration or
-                ICSharpCode.Decompiler.CSharp.Syntax.Accessor or
-                ICSharpCode.Decompiler.CSharp.Syntax.DestructorDeclaration or
-                ICSharpCode.Decompiler.CSharp.Syntax.OperatorDeclaration))
-                continue;
-            var count = block.Statements.Count;
-            if (count == 0) continue;
-            if (count > 1) return true;
-            var stmt = block.Statements.FirstOrDefault();
-            if (stmt is ICSharpCode.Decompiler.CSharp.Syntax.ThrowStatement { Expression: ICSharpCode.Decompiler.CSharp.Syntax.NullReferenceExpression }) continue;
-            if (stmt is ICSharpCode.Decompiler.CSharp.Syntax.ReturnStatement r
-                && (r.Expression.IsNull || r.Expression is ICSharpCode.Decompiler.CSharp.Syntax.NullReferenceExpression or ICSharpCode.Decompiler.CSharp.Syntax.DefaultValueExpression))
-                continue;
-            return true;
-        }
-        return false;
-    }
     public IMethodBodyProvider? BodyProvider { get; set; }
 
     public DecompilerService(StubAssemblyBuilder stubs, MetadataModel model, BclReferenceProvider bcl, bool substituteBcl, IDiagnosticSink sink)
@@ -171,6 +192,13 @@ public sealed class DecompilerService
         AlwaysUseBraces = true,
         ObjectOrCollectionInitializers = false,
     };
+
+    public static DecompilerSettings CreateBclSettings()
+    {
+        var s = CreateSettings();
+        s.AggressiveInlining = false;
+        return s;
+    }
 
     // ------------------------------------------------------------------ public API
 
@@ -263,8 +291,10 @@ public sealed class DecompilerService
         lock (_stubImageGate)
         {
             if (_stubBytes.TryGetValue(imageIndex, out var c) && c.LiftedCount == stub.LiftedMethods.Count) return c.Bytes;
+            var tWrite = ExportProfiler.Start();
             var bytes = _stubs.Write(stub);
             _stubBytes[imageIndex] = (stub.LiftedMethods.Count, bytes);
+            ExportProfiler.RecordStubPe(tWrite);
             return bytes;
         }
     }
@@ -275,9 +305,11 @@ public sealed class DecompilerService
         lock (_stubImageGate)
         {
             if (_images.TryGetValue(imageIndex, out var cached) && cached.LiftedCount == stub.LiftedMethods.Count) return cached.File;
+            var tStub = ExportProfiler.Start();
             var bytes = CachedStubBytes(imageIndex) ?? throw new InvalidOperationException($"Stub for {stub.AssemblyName} could not be written.");
             var file = new PEFile(stub.Module.Name ?? stub.AssemblyName + ".dll", new MemoryStream(bytes), PEStreamOptions.PrefetchEntireImage);
             _images[imageIndex] = (stub.LiftedMethods.Count, file);
+            ExportProfiler.RecordStubPe(tStub);
             return file;
         }
     }
@@ -316,7 +348,9 @@ public sealed class DecompilerService
         var noAstTransforms = Environment.GetEnvironmentVariable("IL2CPPSTUDIO_NO_AST_TRANSFORMS") == "1";
         _ = Mapper();
         if (includeIl && pristine is null) _ = TypeMapFor(file);
-        var typeSystem = new DecompilerTypeSystem(file, new Resolver(this), CreateSettings());
+        var isPristine = pristine is not null;
+        var settings = isPristine ? CreateBclSettings() : CreateSettings();
+        var typeSystem = new DecompilerTypeSystem(file, new Resolver(this), settings);
         var options = new ParallelOptions { MaxDegreeOfParallelism = maxDegreeOfParallelism ?? Environment.ProcessorCount, CancellationToken = ct };
         // Schedule heaviest types first without range-chunk buffering so no worker is stranded on a huge class at the tail.
         var ordered = new int[types.Count];
@@ -330,26 +364,250 @@ public sealed class DecompilerService
         Array.Reverse(ordered);
 
         Parallel.ForEach(Partitioner.Create(ordered, EnumerablePartitionerOptions.NoBuffering), options,
-            () => new CSharpDecompiler(typeSystem, CreateSettings()),
+            () => new CSharpDecompiler(typeSystem, isPristine ? CreateBclSettings() : CreateSettings()),
             (i, _, decompiler) =>
             {
                 ct.ThrowIfCancellationRequested();
                 var t = types[i];
-                var cs = pristine is not null
-                    ? Guard(() => decompiler.DecompileTypeAsString(new FullTypeName(t.FullName)), t.FullName)
-                    : Guard(() => Finish(decompiler.DecompileType(new FullTypeName(t.FullName)), imageIndex, annotate: true, crossTypeTokens: crossTypeTokens, noAstTransforms: noAstTransforms), t.FullName);
-                var il = includeIl && pristine is null ? Guard(() =>
-                {
-                    var h = FindType(file, t);
-                    if (h.IsNil) return "";
-                    var (dis, w) = NewDisassembler(file);
-                    dis.DisassembleType(file, h);
-                    return w.ToString();
-                }, t.FullName) : "";
+                var (cs, il) = DecompileSingleType(decompiler, file, imageIndex, t, isPristine, includeIl, crossTypeTokens, noAstTransforms);
                 sink(i, t, cs, il);
                 return decompiler;
             },
             _ => { });
+    }
+
+    private (string Cs, string Il) DecompileSingleType(
+        CSharpDecompiler decompiler,
+        MetadataFile file,
+        int imageIndex,
+        TypeModel t,
+        bool isPristine,
+        bool includeIl,
+        HashSet<uint>? crossTypeTokens,
+        bool noAstTransforms)
+    {
+        string cs;
+        if (isPristine)
+        {
+            cs = Guard(() =>
+            {
+                var tBcl = ExportProfiler.Start();
+                var res = decompiler.DecompileTypeAsString(new FullTypeName(t.FullName));
+                ExportProfiler.RecordIlspyBcl(tBcl);
+                return res;
+            }, t.FullName);
+        }
+        else
+        {
+            cs = Guard(() =>
+            {
+                var tNat = ExportProfiler.Start();
+                var syntax = decompiler.DecompileType(new FullTypeName(t.FullName));
+                ExportProfiler.RecordIlspyNative(tNat);
+                return Finish(syntax, imageIndex, annotate: true, crossTypeTokens: crossTypeTokens, noAstTransforms: noAstTransforms);
+            }, t.FullName);
+        }
+
+        var il = includeIl && !isPristine ? Guard(() =>
+        {
+            var tIl = ExportProfiler.Start();
+            var h = FindType(file, t);
+            if (h.IsNil) { ExportProfiler.RecordIlDisasm(tIl); return ""; }
+            var (dis, w) = NewDisassembler(file);
+            dis.DisassembleType(file, h);
+            ExportProfiler.RecordIlDisasm(tIl);
+            return w.ToString();
+        }, t.FullName) : "";
+
+        return (cs, il);
+    }
+
+    internal readonly record struct BatchImageRequest(
+        int ImageIndex,
+        string ImageName,
+        IReadOnlyList<TypeModel> TopLevelTypes,
+        bool IncludeIl,
+        bool Substituted);
+
+    /// <summary>
+    /// Cross-assembly batch decompilation with per-assembly compressed disk cache lookup. Large assemblies run one at
+    /// a time (preserving L3 cache locality and keeping a single <see cref="DecompilerTypeSystem"/> alive), while
+    /// small assemblies (&lt; 24 top-level types) run concurrently without per-assembly thread barriers.
+    /// </summary>
+    internal void DecompileImagesBatch(
+        IReadOnlyList<BatchImageRequest> requests,
+        Action<int, TypeModel, string, string> onTypeDecompiled,
+        CancellationToken ct = default,
+        int? maxDegreeOfParallelism = null)
+    {
+        if (requests.Count == 0) return;
+
+        var noAstTransforms = Environment.GetEnvironmentVariable("IL2CPPSTUDIO_NO_AST_TRANSFORMS") == "1";
+        var fingerprint = Annotations?.Fingerprint;
+        var bclDir = _bcl.SearchDirectories.Count > 0 ? _bcl.SearchDirectories[0] : "";
+        var showTokens = Annotations is not null;
+        var useCache = !DecompileCache.IsDisabled && !noAstTransforms && !string.IsNullOrEmpty(fingerprint);
+
+        var options = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = maxDegreeOfParallelism ?? Environment.ProcessorCount,
+            CancellationToken = ct,
+        };
+
+        // Phase 1: check per-assembly .dcache in parallel and compute cache keys for misses.
+        var cacheKeys = new string?[requests.Count];
+        var hitFlags = new bool[requests.Count];
+        Parallel.For(0, requests.Count, options, reqIdx =>
+        {
+            var req = requests[reqIdx];
+            if (req.TopLevelTypes.Count == 0)
+            {
+                hitFlags[reqIdx] = true;
+                return;
+            }
+            var effectiveIl = req.IncludeIl && !req.Substituted;
+            var key = useCache
+                ? DecompileCache.ComputeKey(fingerprint!, req.ImageName, effectiveIl, SubstituteBcl, showTokens, bclDir)
+                : null;
+            cacheKeys[reqIdx] = key;
+            if (key is null || !DecompileCache.TryRead(key, out var cached) || cached.Count != req.TopLevelTypes.Count)
+                return;
+
+            var byIndex = new Dictionary<int, TypeModel>(req.TopLevelTypes.Count);
+            foreach (var t in req.TopLevelTypes) byIndex[t.Index] = t;
+            var matched = new TypeModel[cached.Count];
+            var seen = new HashSet<int>(cached.Count);
+            for (var j = 0; j < cached.Count; j++)
+            {
+                var entry = cached[j];
+                if (!seen.Add(entry.TypeIndex) || !byIndex.TryGetValue(entry.TypeIndex, out var tm))
+                    return;
+                matched[j] = tm;
+            }
+
+            hitFlags[reqIdx] = true;
+            for (var j = 0; j < cached.Count; j++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var entry = cached[j];
+                onTypeDecompiled(reqIdx, matched[j], entry.CSharpText, entry.IlText);
+            }
+        });
+
+        var largeMisses = new List<(int ReqIdx, int TotalMethods)>();
+        var smallMisses = new List<int>();
+        for (var i = 0; i < requests.Count; i++)
+        {
+            if (hitFlags[i] || requests[i].TopLevelTypes.Count == 0) continue;
+            var types = requests[i].TopLevelTypes;
+            if (types.Count >= 24)
+            {
+                var totalWeight = 0;
+                for (var k = 0; k < types.Count; k++) totalWeight += CountMethods(types[k]);
+                largeMisses.Add((i, totalWeight));
+            }
+            else
+            {
+                smallMisses.Add(i);
+            }
+        }
+        if (largeMisses.Count == 0 && smallMisses.Count == 0) return;
+
+        largeMisses.Sort(static (a, b) => b.TotalMethods.CompareTo(a.TotalMethods));
+        _ = Mapper();
+
+        var cacheWriteTasks = new ConcurrentBag<Task>();
+        try
+        {
+            // Large misses: one DecompilerTypeSystem at a time for L3 cache locality and bounded GC working set.
+            foreach (var (reqIdx, _) in largeMisses)
+            {
+                ct.ThrowIfCancellationRequested();
+                var req = requests[reqIdx];
+                var effectiveIl = req.IncludeIl && !req.Substituted;
+                var pristine = IsSubstitutedBcl(req.ImageIndex) ? TryPristine(req.ImageIndex) : null;
+                var isPristine = pristine is not null;
+                MetadataFile file = pristine ?? GetStubFile(req.ImageIndex);
+                var crossTypeTokens = !isPristine && CachedStubBytes(req.ImageIndex) is { } bytes ? CrossTypeTokens(bytes) : null;
+                if (effectiveIl && !isPristine) _ = TypeMapFor(file);
+                var settings = isPristine ? CreateBclSettings() : CreateSettings();
+                var typeSystem = new DecompilerTypeSystem(file, new Resolver(this), settings);
+
+                var types = req.TopLevelTypes;
+                var ordered = new int[types.Count];
+                var weights = new int[types.Count];
+                for (var idx = 0; idx < types.Count; idx++)
+                {
+                    ordered[idx] = idx;
+                    weights[idx] = CountMethods(types[idx]);
+                }
+                Array.Sort(weights, ordered);
+                Array.Reverse(ordered);
+
+                var key = cacheKeys[reqIdx];
+                var cacheBuf = key is not null ? new CachedDecompiledType[types.Count] : null;
+
+                Parallel.ForEach(
+                    Partitioner.Create(ordered, EnumerablePartitionerOptions.NoBuffering),
+                    options,
+                    () => new CSharpDecompiler(typeSystem, isPristine ? CreateBclSettings() : CreateSettings()),
+                    (slot, _, decompiler) =>
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var t = types[slot];
+                        var (cs, il) = DecompileSingleType(decompiler, file, req.ImageIndex, t, isPristine, effectiveIl, crossTypeTokens, noAstTransforms);
+                        onTypeDecompiled(reqIdx, t, cs, il);
+                        if (cacheBuf is not null)
+                            cacheBuf[slot] = new CachedDecompiledType(t.Index, Workspace.WorkspaceSerializer.Sanitize(t.Name), cs, il);
+                        return decompiler;
+                    },
+                    _ => { });
+
+                if (cacheBuf is not null)
+                    cacheWriteTasks.Add(Task.Run(() => DecompileCache.Write(key!, cacheBuf), CancellationToken.None));
+            }
+
+            // Small misses: fan out across assemblies so workers stay busy without per-assembly barriers.
+            if (smallMisses.Count > 0)
+            {
+                Parallel.ForEach(smallMisses, options, reqIdx =>
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var req = requests[reqIdx];
+                    var effectiveIl = req.IncludeIl && !req.Substituted;
+                    var pristine = IsSubstitutedBcl(req.ImageIndex) ? TryPristine(req.ImageIndex) : null;
+                    var isPristine = pristine is not null;
+                    MetadataFile file = pristine ?? GetStubFile(req.ImageIndex);
+                    var crossTypeTokens = !isPristine && CachedStubBytes(req.ImageIndex) is { } bytes ? CrossTypeTokens(bytes) : null;
+                    if (effectiveIl && !isPristine) _ = TypeMapFor(file);
+                    var settings = isPristine ? CreateBclSettings() : CreateSettings();
+                    var typeSystem = new DecompilerTypeSystem(file, new Resolver(this), settings);
+                    var decompiler = new CSharpDecompiler(typeSystem, settings);
+
+                    var types = req.TopLevelTypes;
+                    var key = cacheKeys[reqIdx];
+                    var cacheBuf = key is not null ? new CachedDecompiledType[types.Count] : null;
+
+                    for (var slot = 0; slot < types.Count; slot++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var t = types[slot];
+                        var (cs, il) = DecompileSingleType(decompiler, file, req.ImageIndex, t, isPristine, effectiveIl, crossTypeTokens, noAstTransforms);
+                        onTypeDecompiled(reqIdx, t, cs, il);
+                        if (cacheBuf is not null)
+                            cacheBuf[slot] = new CachedDecompiledType(t.Index, Workspace.WorkspaceSerializer.Sanitize(t.Name), cs, il);
+                    }
+
+                    if (cacheBuf is not null)
+                        cacheWriteTasks.Add(Task.Run(() => DecompileCache.Write(key!, cacheBuf), CancellationToken.None));
+                });
+            }
+        }
+        finally
+        {
+            if (!cacheWriteTasks.IsEmpty)
+                Task.WhenAll(cacheWriteTasks).GetAwaiter().GetResult();
+        }
     }
 
     private static int CountMethods(TypeModel t)

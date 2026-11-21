@@ -38,6 +38,7 @@ public sealed partial class Il2CppWorkspace
                 null => $"native lifting is unavailable for this build: {LiftingUnavailableReason ?? "the IL2CPP registration tables were not found"}",
                 _ => null,
             },
+            Fingerprint = Binary is not null ? global::Il2CppStudio.Core.Registration.RegistrationCache.ComputeKey(Binary, Metadata) : null,
         };
         return d;
     }

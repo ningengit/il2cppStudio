@@ -17,15 +17,24 @@ public static class BoolNormalizer
         for (var pass = 0; pass < 4; pass++)
         {
             var changed = false;
-            foreach (var b in tree.Descendants.OfType<BinaryOperatorExpression>().ToList())
+            var bins = new List<BinaryOperatorExpression>();
+            var conds = new List<ConditionalExpression>();
+            AstWalk.ForEachNode(tree, n =>
             {
-                if (b.Parent is null || b.Operator is not (BinaryOperatorType.Equality or BinaryOperatorType.InEquality)) continue;
+                if (n is BinaryOperatorExpression b && b.Operator is BinaryOperatorType.Equality or BinaryOperatorType.InEquality)
+                    bins.Add(b);
+                else if (n is ConditionalExpression c && c.Parent is IfElseStatement or WhileStatement)
+                    conds.Add(c);
+            });
+            foreach (var b in bins)
+            {
+                if (b.Parent is null) continue;
                 var (other, zero) = IsZero(b.Right) ? (b.Left, true) : IsZero(b.Left) ? (b.Right, true) : (null, false);
                 if (!zero || other is null || TryBool(other) is not { } value) continue;
                 b.ReplaceWith(b.Operator == BinaryOperatorType.InEquality ? value : Not(value));
                 changed = true;
             }
-            foreach (var c in tree.Descendants.OfType<ConditionalExpression>().ToList())
+            foreach (var c in conds)
             {
                 // `x ? true : false` style left over after promotion in boolean positions (if / while conditions).
                 if (c.Parent is IfElseStatement or WhileStatement && TryBool(c) is { } v) { c.ReplaceWith(v); changed = true; }
@@ -69,21 +78,31 @@ public static class BoolNormalizer
 
     private static void PropagateKnownEquality(SyntaxTree tree)
     {
-        foreach (var ifs in tree.Descendants.OfType<IfElseStatement>().ToList())
+        var ifsList = AstWalk.Collect<IfElseStatement>(tree, static i =>
+            i.Condition is BinaryOperatorExpression { Operator: BinaryOperatorType.Equality, Left: IdentifierExpression, Right: PrimitiveExpression { Value: int } });
+        foreach (var ifs in ifsList)
         {
             if (ifs.Condition is not BinaryOperatorExpression { Operator: BinaryOperatorType.Equality, Left: IdentifierExpression id, Right: PrimitiveExpression { Value: int k } })
                 continue;
             var name = id.Identifier;
-            if (ifs.TrueStatement.Descendants.Any(n =>
-                n is AssignmentExpression a && a.Left is IdentifierExpression w && w.Identifier == name
-                || n is DirectionExpression d && d.Expression is IdentifierExpression wd && wd.Identifier == name
-                || n is UnaryOperatorExpression { Operator: UnaryOperatorType.Increment or UnaryOperatorType.Decrement or UnaryOperatorType.PostIncrement or UnaryOperatorType.PostDecrement } u
-                   && u.Expression is IdentifierExpression wu && wu.Identifier == name))
-                continue;
-
-            foreach (var cmp in ifs.TrueStatement.Descendants.OfType<BinaryOperatorExpression>().ToList())
+            var modified = false;
+            var cmps = new List<BinaryOperatorExpression>();
+            AstWalk.ForEachNode(ifs.TrueStatement, n =>
             {
-                if (cmp.Parent is null || cmp.Operator is not (BinaryOperatorType.Equality or BinaryOperatorType.InEquality) || !IsZero(cmp.Right)) continue;
+                if (modified) return;
+                if (n is AssignmentExpression a && a.Left is IdentifierExpression w && w.Identifier == name
+                    || n is DirectionExpression d && d.Expression is IdentifierExpression wd && wd.Identifier == name
+                    || n is UnaryOperatorExpression { Operator: UnaryOperatorType.Increment or UnaryOperatorType.Decrement or UnaryOperatorType.PostIncrement or UnaryOperatorType.PostDecrement } u
+                       && u.Expression is IdentifierExpression wu && wu.Identifier == name)
+                    modified = true;
+                else if (n is BinaryOperatorExpression b && b.Operator is BinaryOperatorType.Equality or BinaryOperatorType.InEquality)
+                    cmps.Add(b);
+            });
+            if (modified) continue;
+
+            foreach (var cmp in cmps)
+            {
+                if (cmp.Parent is null || !IsZero(cmp.Right)) continue;
                 var inner = cmp.Left;
                 while (inner is CastExpression or ParenthesizedExpression)
                     inner = inner is CastExpression c ? c.Expression : ((ParenthesizedExpression)inner).Expression;

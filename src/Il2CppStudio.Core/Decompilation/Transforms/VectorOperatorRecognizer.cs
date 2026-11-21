@@ -15,21 +15,26 @@ public static class VectorOperatorRecognizer
 {
     private static readonly string[][] Lanes = [["x", "y"], ["x", "y", "z"]];
 
-    public static void Apply(SyntaxTree tree)
+    public static void Apply(SyntaxTree tree) => Apply(tree, AstWalk.ScanFlags(tree));
+
+    internal static void Apply(SyntaxTree tree, in TreeFlags flags)
     {
-        foreach (var create in tree.Descendants.OfType<ObjectCreateExpression>().ToList())
+        if (flags.HasVectorOps)
         {
-            if (create.Type is not SimpleType { Identifier: "Vector3" or "Vector2" } st) continue;
-            var lanes = st.Identifier == "Vector3" ? Lanes[1] : Lanes[0];
-            var args = create.Arguments.Select(a => NormalizeDoubled(a.Clone(), st.Identifier)).ToList();
-            if (args.Count != lanes.Length) continue;
-            var template = args[0];
-            var ok = true;
-            for (var i = 1; i < lanes.Length && ok; i++)
-                ok = Swap(template.Clone(), "x", lanes[i]).ToString() == args[i].ToString();
-            if (!ok || Strip(template.Clone(), st.Identifier) is not { } vectorExpr || Kind(vectorExpr, st.Identifier) != OperandKind.Vector) continue;
-            if (!template.Descendants.OfType<MemberReferenceExpression>().Any(m => m.MemberName == "x" && IsVector(m.Target, st.Identifier))) continue;
-            create.ReplaceWith(vectorExpr);
+            foreach (var create in AstWalk.Collect<ObjectCreateExpression>(tree, static c => c.Type is SimpleType { Identifier: "Vector3" or "Vector2" }))
+            {
+                if (create.Type is not SimpleType { Identifier: "Vector3" or "Vector2" } st) continue;
+                var lanes = st.Identifier == "Vector3" ? Lanes[1] : Lanes[0];
+                var args = create.Arguments.Select(a => NormalizeDoubled(a.Clone(), st.Identifier)).ToList();
+                if (args.Count != lanes.Length) continue;
+                var template = args[0];
+                var ok = true;
+                for (var i = 1; i < lanes.Length && ok; i++)
+                    ok = Swap(template.Clone(), "x", lanes[i]).ToString() == args[i].ToString();
+                if (!ok || Strip(template.Clone(), st.Identifier) is not { } vectorExpr || Kind(vectorExpr, st.Identifier) != OperandKind.Vector) continue;
+                if (!AstWalk.HasAny(template, n => n is MemberReferenceExpression m && m.MemberName == "x" && IsVector(m.Target, st.Identifier))) continue;
+                create.ReplaceWith(vectorExpr);
+            }
         }
         InlineVectorTemps(tree);
     }
@@ -100,12 +105,20 @@ public static class VectorOperatorRecognizer
     /// <summary><c>Vector3 a = E;</c> immediately preceding a statement that is its only use → inline <c>E</c>.</summary>
     private static void InlineVectorTemps(SyntaxTree tree)
     {
-        foreach (var block in tree.Descendants.OfType<BlockStatement>().ToList())
+        var blocks = new HashSet<BlockStatement>();
+        AstWalk.Visit<VariableDeclarationStatement>(tree, decl =>
+        {
+            if (decl.Variables.Count == 1 && decl.Type is SimpleType { Identifier: "Vector3" or "Vector2" or "float" }
+                && decl.Parent is BlockStatement bs)
+                blocks.Add(bs);
+        });
+        foreach (var block in blocks)
         {
             var changed = true;
             while (changed)
             {
                 changed = false;
+                Dictionary<string, List<IdentifierExpression>>? byName = null;
                 foreach (var stmt in block.Statements.ToList())
                 {
                     if (stmt is not VariableDeclarationStatement { Variables.Count: 1, Type: SimpleType { Identifier: "Vector3" or "Vector2" or "float" } } decl) continue;
@@ -114,9 +127,22 @@ public static class VectorOperatorRecognizer
                     // Uses must all be in the run of declarations + the first non-declaration statement after it.
                     var next = decl.NextSibling as Statement;
                     while (next is VariableDeclarationStatement) next = next.NextSibling as Statement;
-                    if (next is null) continue;
-                    var uses = block.Descendants.OfType<IdentifierExpression>().Where(i => i.Identifier == v.Name).ToList();
-                    if (uses.Count != 1 || !uses[0].Ancestors.Contains(next) || next is not ExpressionStatement) continue;
+                    if (next is null or not ExpressionStatement) continue;
+                    if (byName is null)
+                    {
+                        byName = new Dictionary<string, List<IdentifierExpression>>(StringComparer.Ordinal);
+                        AstWalk.Visit<IdentifierExpression>(block, i =>
+                        {
+                            if (!byName.TryGetValue(i.Identifier, out var list))
+                                byName[i.Identifier] = list = new List<IdentifierExpression>();
+                            list.Add(i);
+                        });
+                    }
+                    if (!byName.TryGetValue(v.Name, out var uses) || uses.Count != 1) continue;
+                    var isInNext = false;
+                    for (AstNode? a = uses[0].Parent; a is not null && a != block; a = a.Parent)
+                        if (a == next) { isInNext = true; break; }
+                    if (!isInNext) continue;
                     if (!Ordered(block, decl, next, v.Name)) continue;
                     uses[0].ReplaceWith(v.Initializer.Detach());
                     decl.Remove();
@@ -134,7 +160,8 @@ public static class VectorOperatorRecognizer
         var names = new List<string>();
         for (var s = decl.NextSibling; s != use; s = s!.NextSibling)
             if (s is VariableDeclarationStatement d) names.Add(d.Variables.First().Name);
-        var ids = use.Descendants.OfType<IdentifierExpression>().Select(i => i.Identifier).ToList();
+        if (names.Count == 0) return AstWalk.HasAny(use, n => n is IdentifierExpression id && id.Identifier == name);
+        var ids = AstWalk.Collect<IdentifierExpression>(use).ConvertAll(i => i.Identifier);
         var at = ids.IndexOf(name);
         return at >= 0 && names.All(n => ids.IndexOf(n) > at);
     }

@@ -42,6 +42,12 @@ public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs
             var fn = disasm.Disassemble(va);
             var body = new CilMethodBody { InitializeLocals = true };
             var notes = new List<string>();
+            if (fn.FailedVa != 0)
+            {
+                var warnMsg = $"x86/x64 decode failed at RVA 0x{fn.FailedVa - sym.Registration.Reader.ImageBase:X} (offset +0x{fn.FailedVa - fn.StartVa:X}): raw bytes [{fn.FailedBytesHex}]";
+                sink.Warn(DiagnosticCategory.Lifting, DiagnosticCodes.DisassemblyFailed, warnMsg, loc(fn.FailedVa));
+                notes.Add(warnMsg);
+            }
             var ctx = new EmitContext(body.Instructions, stub.Module, stub.Intrinsics) { Log = notes.Add };
             var f = stub.Module.CorLibTypeFactory;
 

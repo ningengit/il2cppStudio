@@ -10,7 +10,17 @@ public static class ComparisonNormalizer
 {
     public static void Apply(SyntaxTree tree)
     {
-        foreach (var u in tree.Descendants.OfType<UnaryOperatorExpression>().Where(u => u.Operator == UnaryOperatorType.Not).ToList())
+        var negations = new List<UnaryOperatorExpression>();
+        var binaries = new List<BinaryOperatorExpression>();
+        AstWalk.ForEachNode(tree, n =>
+        {
+            if (n is UnaryOperatorExpression { Operator: UnaryOperatorType.Not } u)
+                negations.Add(u);
+            else if (n is BinaryOperatorExpression b && IsLiteral(b.Left) && !IsLiteral(b.Right))
+                binaries.Add(b);
+        });
+
+        foreach (var u in negations)
         {
             if (u.Parent is null) continue;
             var inner = u.Expression is ParenthesizedExpression p ? p.Expression : u.Expression;
@@ -24,10 +34,13 @@ public static class ComparisonNormalizer
                 _ => (BinaryOperatorType?)null,
             };
             if (inv is null) continue;
-            u.ReplaceWith(new BinaryOperatorExpression(b.Left.Detach(), inv.Value, b.Right.Detach()));
+            var replaced = new BinaryOperatorExpression(b.Left.Detach(), inv.Value, b.Right.Detach());
+            u.ReplaceWith(replaced);
+            if (IsLiteral(replaced.Left) && !IsLiteral(replaced.Right))
+                binaries.Add(replaced);
         }
 
-        foreach (var b in tree.Descendants.OfType<BinaryOperatorExpression>().ToList())
+        foreach (var b in binaries)
         {
             if (b.Parent is null || !IsLiteral(b.Left) || IsLiteral(b.Right)) continue;
             var flipped = b.Operator switch

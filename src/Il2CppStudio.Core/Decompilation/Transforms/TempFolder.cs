@@ -10,13 +10,29 @@ public static class TempFolder
 {
     public static bool TryFold(IReadOnlyList<VariableDeclarationStatement> decls, Expression condition, BlockStatement body)
     {
-        var names = decls.Select(d => d.Variables.Single().Name).ToList();
-        var uses = new Dictionary<string, IdentifierExpression>();
+        var names = new List<string>(decls.Count);
+        var wanted = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var d in decls)
+        {
+            var n = d.Variables.Single().Name;
+            names.Add(n);
+            wanted.Add(n);
+        }
+
+        var useLists = new Dictionary<string, (int Count, IdentifierExpression? First)>(decls.Count, StringComparer.Ordinal);
+        AstWalk.Visit<IdentifierExpression>(body, id =>
+        {
+            if (!wanted.Contains(id.Identifier)) return;
+            var cur = useLists.GetValueOrDefault(id.Identifier);
+            useLists[id.Identifier] = (cur.Count + 1, cur.First ?? id);
+        });
+
+        var uses = new Dictionary<string, IdentifierExpression>(decls.Count, StringComparer.Ordinal);
         foreach (var name in names)
         {
-            var all = body.Descendants.OfType<IdentifierExpression>().Where(i => i.Identifier == name).ToList();
-            if (all.Count != 1 || !(all[0] == condition || all[0].Ancestors.Contains(condition))) return false;
-            uses[name] = all[0];
+            if (!useLists.TryGetValue(name, out var entry) || entry.Count != 1 || entry.First is not { } onlyUse) return false;
+            if (!(onlyUse == condition || IsUnder(onlyUse, condition))) return false;
+            uses[name] = onlyUse;
         }
 
         var leaves = ConditionTools.Leaves(condition, out var andFamily);
@@ -51,6 +67,13 @@ public static class TempFolder
         condition.ReplaceWith(rebuilt);
         Substitute(decls, uses);
         return true;
+    }
+
+    private static bool IsUnder(AstNode node, AstNode ancestor)
+    {
+        for (AstNode? a = node.Parent; a is not null; a = a.Parent)
+            if (a == ancestor) return true;
+        return false;
     }
 
     private static void Substitute(IReadOnlyList<VariableDeclarationStatement> decls, Dictionary<string, IdentifierExpression> uses)

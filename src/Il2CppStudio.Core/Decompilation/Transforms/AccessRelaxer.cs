@@ -16,20 +16,28 @@ public static class AccessRelaxer
 
     public static void Apply(SyntaxTree tree, IReadOnlySet<uint> tokens)
     {
+        var flags = AstWalk.ScanFlags(tree);
+        Apply(tree, tokens, in flags);
+    }
+
+    internal static void Apply(SyntaxTree tree, IReadOnlySet<uint> tokens, in TreeFlags flags)
+    {
         if (tokens.Count > 0) RelaxTokens(tree, tokens);
-        WidenSurvivingStateMachines(tree);
+        if (flags.HasCompilerGeneratedTypes) WidenSurvivingStateMachines(tree);
         WidenReferencedNestedTypes(tree);
     }
 
     private static void RelaxTokens(SyntaxTree tree, IReadOnlySet<uint> tokens)
     {
+        var decls = AstWalk.Collect<EntityDeclaration>(tree);
         var widenedProtectedMethodNames = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var md in tree.Descendants.OfType<MethodDeclaration>())
-            if (md.Modifiers.HasFlag(Modifiers.Protected) && !md.Modifiers.HasFlag(Modifiers.Override)
+        foreach (var decl in decls)
+            if (decl is MethodDeclaration md
+                && md.Modifiers.HasFlag(Modifiers.Protected) && !md.Modifiers.HasFlag(Modifiers.Override)
                 && md.GetSymbol() is IEntity ent && tokens.Contains((uint)MetadataTokens.GetToken(ent.MetadataToken)))
                 widenedProtectedMethodNames.Add(md.Name);
 
-        foreach (var decl in tree.Descendants.OfType<EntityDeclaration>().ToList())
+        foreach (var decl in decls)
         {
             if (decl is DestructorDeclaration || decl is ConstructorDeclaration cd && cd.Modifiers.HasFlag(Modifiers.Static)) continue;
             var symbol = decl.GetSymbol();
@@ -98,10 +106,10 @@ public static class AccessRelaxer
 
     private static void WidenSurvivingStateMachines(SyntaxTree tree)
     {
-        foreach (var td in tree.Descendants.OfType<TypeDeclaration>())
+        AstWalk.Visit<TypeDeclaration>(tree, static td =>
         {
-            if (td.Parent is not TypeDeclaration) continue;
-            if (!td.Name.Contains(">d", StringComparison.Ordinal) && !td.Name.Contains("_d__", StringComparison.Ordinal)) continue;
+            if (td.Parent is not TypeDeclaration) return;
+            if (!td.Name.Contains(">d", StringComparison.Ordinal) && !td.Name.Contains("_d__", StringComparison.Ordinal)) return;
             for (var cur = td; cur is not null && cur.Parent is TypeDeclaration; cur = cur.Parent as TypeDeclaration)
             {
                 var acc = cur.Modifiers & Access;
@@ -118,11 +126,22 @@ public static class AccessRelaxer
                 else if (acc == Modifiers.Protected)
                     fd.Modifiers = (fd.Modifiers & ~Access) | Modifiers.Protected | Modifiers.Internal;
             }
-        }
+        });
     }
 
     private static void WidenReferencedNestedTypes(SyntaxTree tree)
     {
+        var nestedPrivateDecls = new List<EntityDeclaration>();
+        var members = new List<EntityDeclaration>();
+        AstWalk.Visit<EntityDeclaration>(tree, ed =>
+        {
+            members.Add(ed);
+            if (ed is TypeDeclaration or DelegateDeclaration && ed.Parent is TypeDeclaration
+                && (ed.Modifiers & Access) is Modifiers.Private or Modifiers.None)
+                nestedPrivateDecls.Add(ed);
+        });
+        if (nestedPrivateDecls.Count == 0) return;
+
         bool changed;
         do
         {
@@ -133,23 +152,40 @@ public static class AccessRelaxer
             void CollectTypes(AstNode? root, bool isInternalOrPublic, bool isProtected)
             {
                 if (root is null) return;
-                foreach (var st in root.DescendantsAndSelf.OfType<SimpleType>())
+                var stack = new Stack<AstNode>(8);
+                stack.Push(root);
+                while (stack.Count > 0)
                 {
-                    if (isInternalOrPublic) needsInternal.Add(st.Identifier);
-                    if (isProtected) needsProtected.Add(st.Identifier);
-                }
-                foreach (var mt in root.DescendantsAndSelf.OfType<MemberType>())
-                {
-                    if (isInternalOrPublic) needsInternal.Add(mt.MemberName);
-                    if (isProtected) needsProtected.Add(mt.MemberName);
+                    var cur = stack.Pop();
+                    if (cur is SimpleType st)
+                    {
+                        if (isInternalOrPublic) needsInternal.Add(st.Identifier);
+                        if (isProtected) needsProtected.Add(st.Identifier);
+                    }
+                    else if (cur is MemberType mt)
+                    {
+                        if (isInternalOrPublic) needsInternal.Add(mt.MemberName);
+                        if (isProtected) needsProtected.Add(mt.MemberName);
+                    }
+                    var ch = cur.LastChild;
+                    while (ch is not null) { stack.Push(ch); ch = ch.PrevSibling; }
                 }
             }
 
-            foreach (var member in tree.Descendants.OfType<EntityDeclaration>())
+            foreach (var member in members)
             {
-                if (member.Ancestors.OfType<TypeDeclaration>().Any(anc =>
-                    anc.Parent is TypeDeclaration && (anc.Modifiers & Access) is Modifiers.Private or Modifiers.None))
-                    continue;
+                var underPrivateNested = false;
+                for (AstNode? a = member.Parent; a is not null; a = a.Parent)
+                {
+                    if (a is TypeDeclaration anc && anc.Parent is TypeDeclaration
+                        && (anc.Modifiers & Access) is Modifiers.Private or Modifiers.None)
+                    {
+                        underPrivateNested = true;
+                        break;
+                    }
+                }
+                if (underPrivateNested) continue;
+
                 var acc = member.Modifiers & Access;
                 var isInternalOrPublic = acc.HasFlag(Modifiers.Public) || acc.HasFlag(Modifiers.Internal);
                 var isProtected = acc.HasFlag(Modifiers.Protected);
@@ -187,8 +223,7 @@ public static class AccessRelaxer
                 }
             }
 
-            foreach (var nested in tree.Descendants.Where(d => d is TypeDeclaration or DelegateDeclaration && d.Parent is TypeDeclaration)
-                .Cast<EntityDeclaration>())
+            foreach (var nested in nestedPrivateDecls)
             {
                 if (!needsInternal.Contains(nested.Name)) continue;
                 var acc = nested.Modifiers & Access;

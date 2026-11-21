@@ -13,57 +13,82 @@ public static class CompoundFieldFold
 {
     public static void Apply(SyntaxTree tree)
     {
-        FoldDelayedCompound(tree);
-        FoldEagerCompound(tree);
+        var decls = AstWalk.Collect<VariableDeclarationStatement>(tree, static d => d.Variables.Count == 1 && d.Parent is BlockStatement);
+        if (decls.Count == 0) return;
+        FoldDelayedCompound(tree, decls);
+        FoldEagerCompound(tree, decls);
     }
 
-    private static void FoldDelayedCompound(SyntaxTree tree)
+    private static void FoldDelayedCompound(SyntaxTree tree, List<VariableDeclarationStatement> decls)
     {
-        foreach (var decl in tree.Descendants.OfType<VariableDeclarationStatement>().Where(d => d.Variables.Count == 1).ToList())
+        Dictionary<BlockStatement, Dictionary<string, List<IdentifierExpression>>>? blockUses = null;
+        foreach (var decl in decls)
         {
-            if (decl.Parent is null) continue;
+            if (decl.Parent is not BlockStatement block || !AstWalk.IsAttachedTo(decl, tree)) continue;
             var v = decl.Variables.Single();
-            if (!IsField(v.Initializer, decl) || decl.Parent is not BlockStatement block) continue;
+            if (!IsField(v.Initializer, decl)) continue;
             var field = v.Initializer.ToString();
-            var uses = block.Descendants.OfType<IdentifierExpression>().Where(i => i.Identifier == v.Name).ToList();
-            if (uses.Count != 1 || uses[0].Parent is not BinaryOperatorExpression bin) continue;
+            blockUses ??= new Dictionary<BlockStatement, Dictionary<string, List<IdentifierExpression>>>();
+            if (!blockUses.TryGetValue(block, out var byName))
+                blockUses[block] = byName = CollectBlockUses(block);
+            var uses = byName.TryGetValue(v.Name, out var rawUses)
+                ? rawUses.Where(u => AstWalk.IsAttachedTo(u, block)).ToList()
+                : null;
+            if (uses is null || uses.Count != 1 || uses[0].Parent is not BinaryOperatorExpression bin) continue;
             var tempOnLeft = bin.Left == uses[0];
             if (!tempOnLeft && !(bin.Right == uses[0] && bin.Operator is BinaryOperatorType.Add or BinaryOperatorType.Multiply)) continue;
             if (bin.Parent is not AssignmentExpression { Operator: AssignmentOperatorType.Assign } assign || assign.Right != bin || assign.Left.ToString() != field) continue;
             var op = ToCompoundOp(bin.Operator);
             if (op is null || WritesBetween(block, decl, assign, field)) continue;
-            assign.ReplaceWith(new AssignmentExpression(assign.Left.Detach(), op.Value, (tempOnLeft ? bin.Right : bin.Left).Detach()));
-            decl.Remove();
+            if (AstWalk.IsAttachedTo(assign, block))
+                assign.ReplaceWith(new AssignmentExpression(assign.Left.Detach(), op.Value, (tempOnLeft ? bin.Right : bin.Left).Detach()));
+            if (AstWalk.IsAttachedTo(decl, block)) decl.Remove();
         }
     }
 
-    private static void FoldEagerCompound(SyntaxTree tree)
+    private static void FoldEagerCompound(SyntaxTree tree, List<VariableDeclarationStatement> decls)
     {
-        foreach (var decl in tree.Descendants.OfType<VariableDeclarationStatement>().Where(d => d.Variables.Count == 1).ToList())
+        Dictionary<BlockStatement, Dictionary<string, List<IdentifierExpression>>>? blockUses = null;
+        foreach (var decl in decls)
         {
-            if (decl.Parent is not BlockStatement block) continue;
+            if (decl.Parent is not BlockStatement block || !AstWalk.IsAttachedTo(decl, tree)) continue;
             var v = decl.Variables.Single();
             if (v.Initializer is not BinaryOperatorExpression bin || ToCompoundOp(bin.Operator) is not { } op) continue;
 
             Expression? fieldExpr = IsField(bin.Left, decl) ? bin.Left : IsField(bin.Right, decl) && bin.Operator is BinaryOperatorType.Add or BinaryOperatorType.Multiply ? bin.Right : null;
             if (fieldExpr is null) continue;
-            var deltaExpr = fieldExpr == bin.Left ? bin.Right : bin.Left;
             var fieldText = fieldExpr.ToString();
 
-            var stmts = block.Statements.ToList();
-            var idx = stmts.IndexOf(decl);
-            if (idx < 0 || idx + 1 >= stmts.Count) continue;
-            if (stmts[idx + 1] is not ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Right: IdentifierExpression rhs } store }
+            if (decl.NextSibling is not ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Right: IdentifierExpression rhs } store } nextStmt
                 || rhs.Identifier != v.Name || store.Left.ToString() != fieldText) continue;
 
-            var uses = block.Descendants.OfType<IdentifierExpression>().Where(i => i.Identifier == v.Name).ToList();
-            var trailing = uses.Where(u => u != rhs).ToList();
-            if (trailing.Any(u => !CanReplaceWithField(block, stmts[idx + 1], u, fieldText))) continue;
+            var deltaExpr = fieldExpr == bin.Left ? bin.Right : bin.Left;
+            blockUses ??= new Dictionary<BlockStatement, Dictionary<string, List<IdentifierExpression>>>();
+            if (!blockUses.TryGetValue(block, out var byName))
+                blockUses[block] = byName = CollectBlockUses(block);
+            var trailing = byName.TryGetValue(v.Name, out var uses)
+                ? uses.Where(u => u != rhs && AstWalk.IsAttachedTo(u, block)).ToList()
+                : [];
+            if (trailing.Any(u => !CanReplaceWithField(block, nextStmt, u, fieldText))) continue;
 
-            store.ReplaceWith(new AssignmentExpression(store.Left.Detach(), op, deltaExpr.Detach()));
-            foreach (var u in trailing) u.ReplaceWith(fieldExpr.Clone());
-            decl.Remove();
+            if (AstWalk.IsAttachedTo(store, block))
+                store.ReplaceWith(new AssignmentExpression(store.Left.Detach(), op, deltaExpr.Detach()));
+            foreach (var u in trailing)
+                if (AstWalk.IsAttachedTo(u, block)) u.ReplaceWith(fieldExpr.Clone());
+            if (AstWalk.IsAttachedTo(decl, block)) decl.Remove();
         }
+    }
+
+    private static Dictionary<string, List<IdentifierExpression>> CollectBlockUses(BlockStatement block)
+    {
+        var byName = new Dictionary<string, List<IdentifierExpression>>(StringComparer.Ordinal);
+        AstWalk.Visit<IdentifierExpression>(block, i =>
+        {
+            if (!byName.TryGetValue(i.Identifier, out var list))
+                byName[i.Identifier] = list = new List<IdentifierExpression>();
+            list.Add(i);
+        });
+        return byName;
     }
 
     private static AssignmentOperatorType? ToCompoundOp(BinaryOperatorType op) => op switch

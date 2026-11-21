@@ -23,10 +23,13 @@ public static class VectorComponentCollapse
         ["UnityEngine.Matrix4x4"] = ["m00", "m10", "m20", "m30", "m01", "m11", "m21", "m31", "m02", "m12", "m22", "m32", "m03", "m13", "m23", "m33"],
     };
 
-    public static void Apply(SyntaxTree tree)
+    public static void Apply(SyntaxTree tree) => Apply(tree, AstWalk.ScanFlags(tree));
+
+    internal static void Apply(SyntaxTree tree, in TreeFlags flags)
     {
+        if (!flags.HasVectorOps) return;
         var hasUnityUsing = tree.Children.OfType<UsingDeclaration>().Any(u => u.Namespace == "UnityEngine");
-        foreach (var block in tree.Descendants.OfType<BlockStatement>().ToList())
+        foreach (var block in AstWalk.Collect<BlockStatement>(tree))
         {
             var stmts = block.Statements.ToList();
             for (var i = 0; i < stmts.Count; i++)

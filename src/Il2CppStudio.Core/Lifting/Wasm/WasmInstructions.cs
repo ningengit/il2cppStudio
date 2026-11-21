@@ -50,7 +50,7 @@ internal sealed partial class WasmMethodEmit
             case WasmMnemonic.GlobalGet:
             {
                 var gi = (uint)OpUlong(ins);
-                if (gi == 0) { Push(new FrameAddrExpr(_frameSize), TI32); return; }
+                if (gi == (uint)_spGlobal) { Push(new FrameAddrExpr(_frameSize), TI32); return; }
                 Push(new ConstExpr(owner.Image.TryGetGlobal(gi, out var g) ? g.Init : 0, TI64 == (owner.Image.TryGetGlobal(gi, out var g2) ? g2.ValueType : TI32) ? ValueKind.I8 : ValueKind.I4),
                     owner.Image.TryGetGlobal(gi, out var g3) ? g3.ValueType : TI32);
                 return;
@@ -266,7 +266,7 @@ internal sealed partial class WasmMethodEmit
                 if (size == 4) { Push(new ConstExpr(reader.ReadI32(targetVa), ValueKind.I4), resultWasm); return; }
                 if (size == 8) { Push(new ConstExpr((long)reader.ReadU64(targetVa), ValueKind.I8), resultWasm); return; }
             }
-            if (size == 1 && reader.IsWritableData(targetVa))
+            if (size == 1 && (reader.IsWritableData(targetVa) || targetVa is >= 0x400u and < 0x1000_0000u && !reader.IsMapped(targetVa)))
             {
                 Push(new MarkerExpr(MarkerKind.InitFlag, -1, $"wasm_init_{targetVa:X}"), TI32);
                 return;
@@ -448,7 +448,7 @@ internal sealed partial class WasmMethodEmit
             throw new WasmUnsupportedException($"unknown call_indirect type {typeIdx}");
         var args = PopArgs(ft.ParameterCount);
 
-        if (target.Expr is MarkerExpr { Marker: MarkerKind.VTableEntry or MarkerKind.MethodInfo, Base: { } recv } m)
+        if (UnwrapFastcompIndirectTarget(target.Expr) is MarkerExpr { Marker: MarkerKind.VTableEntry or MarkerKind.MethodInfo, Base: { } recv } m)
         {
             var td = _mem.TypeDefOf(recv.Type);
             if (td >= 0 && VTableResolver.Resolve(_md, td, m.Index) is { } t)
@@ -458,6 +458,21 @@ internal sealed partial class WasmMethodEmit
             }
         }
         EmitNativeFallback($"wasm_indirect_{typeIdx}", args, ft);
+    }
+
+    private static Expr UnwrapFastcompIndirectTarget(Expr e)
+    {
+        if (e is BinaryExpr add && (add.Op == CilOpCodes.Add || add.Op == CilOpCodes.Or))
+        {
+            if (add.Right is ConstExpr) e = add.Left;
+            else if (add.Left is ConstExpr) e = add.Right;
+        }
+        if (e is BinaryExpr and && and.Op == CilOpCodes.And)
+        {
+            if (and.Right is ConstExpr) e = and.Left;
+            else if (and.Left is ConstExpr) e = and.Right;
+        }
+        return e;
     }
 
     private void EmitManagedCall(List<NativeSymbol> symbols, WValue[] args, WasmFuncType ft)
@@ -470,6 +485,21 @@ internal sealed partial class WasmMethodEmit
             if (a.Expr is FrameAddrExpr || a.Expr is MarkerExpr || a.Expr is ConstExpr) continue;
             if (a.Expr is NewObjExpr no) { recvNew = !no.IsMaterialized; recvType = no.Type; recvTd = _mem.TypeDefOf(no.Type); break; }
             if (a.Expr.Type is { } rt && Expr.KindOf(rt) == ValueKind.Ref) { recvType = rt; recvTd = _mem.TypeDefOf(rt); break; }
+        }
+        if (symbols.Count > 1 && args.Length > 0 && args[0].Expr is FrameAddrExpr)
+        {
+            var filtered = new List<NativeSymbol>(symbols.Count);
+            foreach (var s in symbols)
+            {
+                var mIdx = s.MethodIndex < 0 && s.MethodSpecIndex >= 0 && (uint)s.MethodSpecIndex < (uint)_reg.MethodSpecs.Count
+                    ? _reg.MethodSpecs[s.MethodSpecIndex].MethodDefinitionIndex
+                    : s.MethodIndex;
+                if ((uint)mIdx >= (uint)_md.Methods.Length) continue;
+                var ms = MethodShape.Create(_md, _reg, _stubs, _mem, _module, mIdx, s.MethodSpecIndex);
+                if (ms.HasReturnBuffer || (!ms.IsStatic && ms.DeclaringIsValueType))
+                    filtered.Add(s);
+            }
+            if (filtered.Count > 0) symbols = filtered;
         }
         var sym = symbols.Count == 1
             ? symbols[0]

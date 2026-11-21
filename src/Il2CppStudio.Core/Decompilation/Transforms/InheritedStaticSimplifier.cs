@@ -14,16 +14,24 @@ public static class InheritedStaticSimplifier
 {
     public static void Apply(SyntaxTree tree)
     {
-        var aliases = new HashSet<string>(
-            tree.Descendants.OfType<UsingAliasDeclaration>().Select(a => a.Alias),
-            StringComparer.Ordinal);
+        var aliases = new HashSet<string>(StringComparer.Ordinal);
+        var refs = new List<MemberReferenceExpression>();
+        AstWalk.ForEachNode(tree, n =>
+        {
+            if (n is UsingAliasDeclaration ua) aliases.Add(ua.Alias);
+            else if (n is MemberReferenceExpression mr) refs.Add(mr);
+        });
+        if (refs.Count == 0) return;
 
-        foreach (var m in tree.Descendants.OfType<MemberReferenceExpression>().ToList())
+        Dictionary<ITypeDefinition, HashSet<IType>>? baseTypeCache = null;
+        Dictionary<EntityDeclaration, HashSet<string>>? scopeDeclCache = null;
+
+        foreach (var m in refs)
         {
             if (m.Parent is null) continue;
             if (m.Parent is InvocationExpression { Target: IdentifierExpression { Identifier: "nameof" } }) continue;
             if (m.MemberName.StartsWith("op_", StringComparison.Ordinal)) continue;
-            if (m.Ancestors.Any(a => a is ICSharpCode.Decompiler.CSharp.Syntax.Attribute or UsingDeclaration or UsingAliasDeclaration)) continue;
+            if (UnderAttributeOrUsing(m)) continue;
 
             IType? targetType = m.Target switch
             {
@@ -40,16 +48,26 @@ public static class InheritedStaticSimplifier
             if (member is null || !member.IsStatic) continue;
             if (member is not (IField or IProperty or IMethod or IEvent)) continue;
 
-            var enclosingTd = m.Ancestors.OfType<TypeDeclaration>().FirstOrDefault();
+            var enclosingTd = m.GetParent<TypeDeclaration>();
             if (enclosingTd is null) continue;
             var enclosingDef = enclosingTd.Annotation<TypeResolveResult>()?.Type.GetDefinition()
                 ?? enclosingTd.GetSymbol() as ITypeDefinition;
             if (enclosingDef is null || enclosingDef.Equals(targetDef)) continue;
 
-            if (!enclosingDef.GetAllBaseTypes().Any(b => b.Kind != TypeKind.Interface && b.Equals(targetType)))
+            baseTypeCache ??= [];
+            if (!baseTypeCache.TryGetValue(enclosingDef, out var bases))
+            {
+                bases = [];
+                foreach (var b in enclosingDef.GetAllBaseTypes())
+                    if (b.Kind != TypeKind.Interface)
+                        bases.Add(b);
+                baseTypeCache[enclosingDef] = bases;
+            }
+            if (!bases.Contains(targetType))
                 continue;
 
-            if (IsShadowed(m, enclosingTd, enclosingDef, targetDef, m.MemberName, aliases))
+            scopeDeclCache ??= [];
+            if (IsShadowed(m, enclosingTd, enclosingDef, targetDef, m.MemberName, aliases, scopeDeclCache))
                 continue;
 
             var simplified = new IdentifierExpression(m.MemberName);
@@ -59,30 +77,47 @@ public static class InheritedStaticSimplifier
         }
     }
 
+    private static bool UnderAttributeOrUsing(AstNode node)
+    {
+        for (var a = node.Parent; a is not null; a = a.Parent)
+            if (a is ICSharpCode.Decompiler.CSharp.Syntax.Attribute or UsingDeclaration or UsingAliasDeclaration)
+                return true;
+        return false;
+    }
+
     private static bool IsShadowed(
         MemberReferenceExpression site,
         TypeDeclaration enclosingTd,
         ITypeDefinition enclosingDef,
         ITypeDefinition targetDef,
         string name,
-        HashSet<string> aliases)
+        HashSet<string> aliases,
+        Dictionary<EntityDeclaration, HashSet<string>> scopeDeclCache)
     {
         if (aliases.Contains(name)) return true;
 
         // Locals, parameters, foreach variables, and type parameters in enclosing scopes.
-        foreach (var anc in site.Ancestors)
+        for (var anc = site.Parent; anc is not null; anc = anc.Parent)
         {
             switch (anc)
             {
                 case EntityDeclaration ed:
-                    foreach (var p in ed.Descendants.OfType<ParameterDeclaration>())
-                        if (p.Name == name) return true;
-                    foreach (var v in ed.Descendants.OfType<VariableInitializer>())
-                        if (v.Name == name) return true;
-                    foreach (var svd in ed.Descendants.OfType<SingleVariableDesignation>())
-                        if (svd.Identifier == name) return true;
-                    foreach (var tp in ed.Descendants.OfType<TypeParameterDeclaration>())
-                        if (tp.Name == name) return true;
+                    if (!scopeDeclCache.TryGetValue(ed, out var declNames))
+                    {
+                        declNames = new HashSet<string>(StringComparer.Ordinal);
+                        AstWalk.ForEachNode(ed, n =>
+                        {
+                            switch (n)
+                            {
+                                case ParameterDeclaration pd: declNames.Add(pd.Name); break;
+                                case VariableInitializer vi: declNames.Add(vi.Name); break;
+                                case SingleVariableDesignation svd: declNames.Add(svd.Identifier); break;
+                                case TypeParameterDeclaration tp: declNames.Add(tp.Name); break;
+                            }
+                        });
+                        scopeDeclCache[ed] = declNames;
+                    }
+                    if (declNames.Contains(name)) return true;
                     if (ed == enclosingTd) goto DoneAncestors;
                     break;
                 case LambdaExpression le:

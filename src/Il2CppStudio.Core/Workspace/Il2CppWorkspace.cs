@@ -17,6 +17,12 @@ public sealed record WorkspaceOptions
 
     /// <summary>Parse *_CodeGen.c tables when a build backup folder exists.</summary>
     public bool UseBuildBackup { get; init; } = true;
+
+    /// <summary>Optional path to Nintendo Switch keyset file (prod.keys / dev.keys) for encrypted .nsp containers.</summary>
+    public string? SwitchKeysetPath { get; init; }
+
+    /// <summary>Optional PS4 .pkg 64-hex EKPFS key or 32-character passcode.</summary>
+    public string? Ps4PkgPasscode { get; init; }
 }
 
 /// <summary>
@@ -57,7 +63,7 @@ public sealed partial class Il2CppWorkspace : IDisposable
         options ??= new WorkspaceOptions();
         sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.WorkspaceLoadStarted, $"Loading '{path}'.", new() { File = path });
 
-        var files = GameFolderLocator.Locate(path, sink);
+        var files = GameFolderLocator.Locate(path, sink, options);
         if (files.MetadataPath is null) throw new MetadataLoadException($"global-metadata.dat not found under '{path}'.");
 
         var md = GlobalMetadata.Load(files.MetadataPath, sink);

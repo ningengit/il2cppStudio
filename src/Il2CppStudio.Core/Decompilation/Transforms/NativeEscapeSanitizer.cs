@@ -8,13 +8,22 @@ namespace Il2CppStudio.Core.Decompilation.Transforms;
 /// </summary>
 internal static class NativeEscapeSanitizer
 {
-    public static void Apply(SyntaxTree tree)
+    public static void Apply(SyntaxTree tree) => Apply(tree, AstWalk.ScanFlags(tree));
+
+    internal static void Apply(SyntaxTree tree, in TreeFlags flags)
     {
+        if (!flags.HasNativeIntrinsics && !flags.HasPointerSyntax) return;
         var slot = 0;
-        ReplacePointerDirections(tree, ref slot);
-        SanitizePointerExpressions(tree, ref slot);
-        RemoveAsmStatements(tree);
-        ReplaceInlineAsmCalls(tree);
+        if (flags.HasPointerSyntax)
+        {
+            ReplacePointerDirections(tree, ref slot);
+            SanitizePointerExpressions(tree, ref slot);
+        }
+        if (flags.HasNativeIntrinsics)
+        {
+            RemoveAsmStatements(tree);
+            ReplaceInlineAsmCalls(tree);
+        }
     }
 
     private static void ReplacePointerDirections(SyntaxTree tree, ref int slot)
@@ -133,10 +142,19 @@ internal static class NativeEscapeSanitizer
     {
         argText = null;
         if (e is not InvocationExpression { Target: MemberReferenceExpression { MemberName: "Asm" or "Stmt" } mre } inv) return false;
-        if (!mre.Target.ToString().EndsWith("NativeIntrinsics", StringComparison.Ordinal)) return false;
+        if (!IsNativeIntrinsicsTarget(mre.Target)) return false;
         argText = inv.Arguments.FirstOrDefault() is PrimitiveExpression p ? p.Value?.ToString() : inv.Arguments.FirstOrDefault()?.ToString();
         return true;
     }
+
+    private static bool IsNativeIntrinsicsTarget(Expression t) => t switch
+    {
+        IdentifierExpression { Identifier: "NativeIntrinsics" } => true,
+        TypeReferenceExpression { Type: SimpleType { Identifier: "NativeIntrinsics" } } => true,
+        TypeReferenceExpression { Type: MemberType { MemberName: "NativeIntrinsics" } } => true,
+        MemberReferenceExpression { MemberName: "NativeIntrinsics" } => true,
+        _ => false,
+    };
 
     private static Expression Unwrap(Expression e) => e is ParenthesizedExpression p ? Unwrap(p.Expression) : e;
 }

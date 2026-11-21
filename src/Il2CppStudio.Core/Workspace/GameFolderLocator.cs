@@ -14,9 +14,12 @@ public static class GameFolderLocator
 {
     private static readonly string[] BinaryNames = ["GameAssembly.dll", "GameAssembly.so", "libil2cpp.so", "Il2CppUserAssemblies.prx"];
 
-    public static GameFiles Locate(string path, IDiagnosticSink sink) => LocateCore(path, sink, explicitBinary: null);
+    public static GameFiles Locate(string path, IDiagnosticSink sink) => Locate(path, sink, null);
 
-    private static GameFiles LocateCore(string path, IDiagnosticSink sink, string? explicitBinary)
+    public static GameFiles Locate(string path, IDiagnosticSink sink, WorkspaceOptions? options) =>
+        LocateCore(path, sink, explicitBinary: null, options);
+
+    private static GameFiles LocateCore(string path, IDiagnosticSink sink, string? explicitBinary, WorkspaceOptions? options = null)
     {
         path = Path.GetFullPath(path);
 
@@ -31,14 +34,14 @@ public static class GameFolderLocator
 
             if (Ps4PkgExtractor.IsPkgPath(path))
             {
-                return Ps4PkgExtractor.Extract(path, sink) is { } extractedPkg
+                return Ps4PkgExtractor.Extract(path, sink, options?.Ps4PkgPasscode) is { } extractedPkg
                     ? LocateCore(extractedPkg, sink, explicitBinary: null)
                     : new GameFiles(path, null, null, null, null);
             }
 
             if (SwitchNspExtractor.IsNspPath(path))
             {
-                return SwitchNspExtractor.Extract(path, sink) is { } extractedNsp
+                return SwitchNspExtractor.Extract(path, sink, options?.SwitchKeysetPath) is { } extractedNsp
                     ? LocateCore(extractedNsp, sink, explicitBinary: null)
                     : new GameFiles(path, null, null, null, null);
             }
@@ -82,9 +85,9 @@ public static class GameFolderLocator
         // WebGL: no native binary; metadata lives inside the (optionally brotli/gzip-compressed) UnityWebData container.
         string? wasm = null;
         var searchRoot = path;
-        if (binary is null && WebDataExtractor.FindDataFile(path) is { } webData)
+        if ((binary is null || WasmFiles.IsWasmPath(binary)) && WebDataExtractor.FindDataFile(path) is { } webData)
         {
-            wasm = WasmFiles.Find(path);
+            if (binary is null) wasm = WasmFiles.Find(path);
             if (!Directory.EnumerateFiles(path, "global-metadata.dat", SearchOption.AllDirectories).Any()
                 && WebDataExtractor.Extract(webData, sink) is { } extracted)
                 searchRoot = extracted;

@@ -12,9 +12,12 @@ namespace Il2CppStudio.Core.Decompilation.Transforms;
 /// </summary>
 public static class DistanceRecognizer
 {
-    public static void Apply(SyntaxTree tree)
+    public static void Apply(SyntaxTree tree) => Apply(tree, AstWalk.ScanFlags(tree));
+
+    internal static void Apply(SyntaxTree tree, in TreeFlags flags)
     {
-        foreach (var sqrt in tree.Descendants.OfType<CastExpression>().ToList())
+        if (!flags.HasSqrt) return;
+        foreach (var sqrt in AstWalk.Collect<CastExpression>(tree))
         {
             if (sqrt.Parent is null || sqrt.Type is not PrimitiveType { Keyword: "float" } || Unparen(sqrt.Expression) is not InvocationExpression
                 { Target: MemberReferenceExpression { MemberName: "Sqrt" }, Arguments.Count: 1 } call) continue;
@@ -25,25 +28,30 @@ public static class DistanceRecognizer
             var helpers = new List<Statement>();
             var postDeclarations = new HashSet<string>(StringComparer.Ordinal);
             List<string>? locals;
+            VariableDeclarationStatement? dDecl = null;
             if (rawArg is IdentifierExpression dRef)
             {
-                if (Decl(body, dRef.Identifier) is not { } dDecl || Uses(body, dRef.Identifier) != 2) continue;
+                if (Decl(body, dRef.Identifier) is not { } foundDecl || Uses(body, dRef.Identifier) != 2) continue;
+                dDecl = foundDecl;
                 locals = Squares(dDecl.Variables.Single().Initializer);
                 helpers.Add(dDecl);
             }
             else locals = Squares(rawArg);
             if (locals is not { Count: 3 }) continue;
 
+            var sumStmt = (Statement?)dDecl ?? sqrtStmt;
             Expression? a = null, b = null;
             var components = new HashSet<string>();
             var aVecReads = new List<(Statement ReadStmt, MemberReferenceExpression Access)>();
             var bVecReads = new List<(Statement ReadStmt, MemberReferenceExpression Access)>();
+            var allDiffDecls = true;
             var ok = true;
             foreach (var l in locals)
             {
-                var sub = FindSub(body, sqrtStmt, l);
+                var sub = FindSub(body, sumStmt, l);
                 if (sub is not null)
                 {
+                    allDiffDecls = false;
                     var (init, initValue) = Init(sub, l);
                     if (init is null || initValue is not MemberReferenceExpression ma) { ok = false; break; }
 
@@ -66,7 +74,7 @@ public static class DistanceRecognizer
                     }
 
                     if (mb is null || ma.MemberName != mb.MemberName || !components.Add(ma.MemberName)
-                        || !IsComponentLocalValid(body, init, sub, sqrtStmt, l, out var reusedAfter))
+                        || !IsComponentLocalValid(body, init, sub, sumStmt, l, out var reusedAfter))
                     {
                         ok = false; break;
                     }
@@ -76,10 +84,10 @@ public static class DistanceRecognizer
                     helpers.Add(sub);
                     if (reusedAfter && init is VariableDeclarationStatement) postDeclarations.Add(l);
                 }
-                else if (DeclBefore(body, sqrtStmt, l) is { } diffDecl && diffDecl.Variables.Single().Initializer is BinaryOperatorExpression
+                else if (DeclBefore(body, sumStmt, l) is { } diffDecl && diffDecl.Variables.Single().Initializer is BinaryOperatorExpression
                     { Operator: BinaryOperatorType.Subtract, Left: MemberReferenceExpression ma2, Right: MemberReferenceExpression mb2 }
                     && ma2.MemberName == mb2.MemberName && components.Add(ma2.MemberName)
-                    && IsComponentLocalValid(body, diffDecl, diffDecl, sqrtStmt, l, out var reusedDiff))
+                    && IsComponentLocalValid(body, diffDecl, diffDecl, sumStmt, l, out var reusedDiff))
                 {
                     aVecReads.Add((diffDecl, ma2));
                     bVecReads.Add((diffDecl, mb2));
@@ -98,8 +106,9 @@ public static class DistanceRecognizer
             if (vecStmtA is not null) helpers.Add(vecStmtA);
             if (vecStmtB is not null) helpers.Add(vecStmtB);
 
-            var useMagnitude = sqrt.Ancestors.OfType<MethodDeclaration>().FirstOrDefault() is { } md
-                && md.Descendants.OfType<MemberReferenceExpression>().Any(m => m.MemberName == "magnitude");
+            var useMagnitude = (allDiffDecls && sqrt.Ancestors.OfType<WhileStatement>().Any())
+                || (sqrt.Ancestors.OfType<MethodDeclaration>().FirstOrDefault() is { } md
+                    && md.Descendants.OfType<MemberReferenceExpression>().Any(m => m.MemberName == "magnitude"));
             Expression distExpr = useMagnitude
                 ? new MemberReferenceExpression(new ParenthesizedExpression(new BinaryOperatorExpression(a.Clone(), BinaryOperatorType.Subtract, b.Clone())), "magnitude")
                 : new InvocationExpression(new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Vector3")), "Distance"), a.Clone(), b.Clone());

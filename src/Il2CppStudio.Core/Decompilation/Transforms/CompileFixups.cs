@@ -14,7 +14,23 @@ public static class CompileFixups
 {
     public static void Apply(SyntaxTree tree)
     {
-        foreach (var m in tree.Descendants.OfType<MemberReferenceExpression>().ToList())
+        var flags = AstWalk.ScanFlags(tree);
+        Apply(tree, in flags);
+    }
+
+    internal static void Apply(SyntaxTree tree, in TreeFlags flags)
+    {
+        var mrs = new List<MemberReferenceExpression>();
+        var prs = flags.HasPointerSyntax ? new List<PointerReferenceExpression>() : null;
+        AstWalk.ForEachNode(tree, n =>
+        {
+            if (n is MemberReferenceExpression m && m.MemberName is "m_value" or "value__" or "Value" or "Slot")
+                mrs.Add(m);
+            else if (prs is not null && n is PointerReferenceExpression pr && pr.MemberName is "m_value" or "value__")
+                prs.Add(pr);
+        });
+
+        foreach (var m in mrs)
         {
             if (m.Parent is null) continue;
             if (m.MemberName == "m_value" && IsPrimitive(m.Target)) { m.ReplaceWith(m.Target.Detach()); continue; }
@@ -36,52 +52,97 @@ public static class CompileFixups
             }
         }
 
-        foreach (var pr in tree.Descendants.OfType<PointerReferenceExpression>().ToList())
+        if (prs is not null)
         {
-            if (pr.Parent is null) continue;
-            if (pr.MemberName == "m_value"
-                && UnwrapParens(pr.Target) is CastExpression { Type: ComposedType { BaseType: PrimitiveType pt, PointerRank: 1 } } pc)
-                pr.ReplaceWith(new CastExpression(pt.Clone(), pc.Expression.Detach()));
-            else if (pr.MemberName == "value__")
+            foreach (var pr in prs)
             {
-                var inner = UnwrapParens(pr.Target) is CastExpression { Type: ComposedType { PointerRank: 1 } } pc2 ? pc2.Expression : pr.Target;
-                if (pr.Parent is AssignmentExpression pa && pa.Left == pr) pr.ReplaceWith(inner.Detach());
-                else pr.ReplaceWith(new CastExpression(new PrimitiveType("int"), inner.Detach()));
+                if (pr.Parent is null) continue;
+                if (pr.MemberName == "m_value"
+                    && UnwrapParens(pr.Target) is CastExpression { Type: ComposedType { BaseType: PrimitiveType pt, PointerRank: 1 } } pc)
+                    pr.ReplaceWith(new CastExpression(pt.Clone(), pc.Expression.Detach()));
+                else if (pr.MemberName == "value__")
+                {
+                    var inner = UnwrapParens(pr.Target) is CastExpression { Type: ComposedType { PointerRank: 1 } } pc2 ? pc2.Expression : pr.Target;
+                    if (pr.Parent is AssignmentExpression pa && pa.Left == pr) pr.ReplaceWith(inner.Detach());
+                    else pr.ReplaceWith(new CastExpression(new PrimitiveType("int"), inner.Detach()));
+                }
             }
         }
 
         RewriteMemberCalls(tree);
-        MergeEulerRotationDefault(tree);
-        CollapseCrossTypeCoroutineFactories(tree);
-        RestoreDeadVectorDistance(tree);
-        NativeEscapeSanitizer.Apply(tree);
-        PurgeDiscardsAndDeadStatements(tree);
-        FixLeakedTypeParameters(tree);
-        FixNegativeArraySizes(tree);
-        FixUncheckedConstantCasts(tree);
 
-        foreach (var cast in tree.Descendants.OfType<CastExpression>().ToList())
+        var eulerStmts = new List<ExpressionStatement>();
+        var coroutineDecls = new List<VariableDeclarationStatement>();
+        var distBlocks = new List<BlockStatement>();
+        AstWalk.ForEachNode(tree, n =>
+        {
+            switch (n)
+            {
+                case ExpressionStatement { Expression: InvocationExpression { Target: MemberReferenceExpression { MemberName: "Euler", Target: TypeReferenceExpression or IdentifierExpression { Identifier: "Quaternion" } } } } es:
+                    eulerStmts.Add(es);
+                    break;
+                case VariableDeclarationStatement { Variables.Count: 1 } vds
+                    when vds.Variables.FirstOrDefault() is { Initializer: ObjectCreateExpression { Type: MemberType } }:
+                    coroutineDecls.Add(vds);
+                    break;
+                case BlockStatement bs when bs.Statements.Count >= 2:
+                    distBlocks.Add(bs);
+                    break;
+            }
+        });
+        MergeEulerRotationDefault(eulerStmts);
+        CollapseCrossTypeCoroutineFactories(coroutineDecls);
+        RestoreDeadVectorDistance(distBlocks);
+
+        NativeEscapeSanitizer.Apply(tree, in flags);
+        PurgeDiscardsAndDeadStatements(tree);
+        FixLeakedAndConstantPatterns(tree);
+
+        var emptyTypeArgs = new List<SimpleType>();
+        var boxedCtorCasts = new List<CastExpression>();
+        var delegOces = new List<ObjectCreateExpression>();
+        var refDirs = new List<DirectionExpression>();
+        AstWalk.ForEachNode(tree, n =>
+        {
+            switch (n)
+            {
+                case SimpleType st when st.Identifier.Length == 0 && st.Role == Roles.TypeArgument:
+                    emptyTypeArgs.Add(st);
+                    break;
+                case CastExpression { Expression: CastExpression { Type: PrimitiveType { Keyword: "object" }, Expression: ObjectCreateExpression } } cast:
+                    boxedCtorCasts.Add(cast);
+                    break;
+                case ObjectCreateExpression { Arguments.Count: 2 } oce:
+                    delegOces.Add(oce);
+                    break;
+                case DirectionExpression dir when dir.Parent is ParenthesizedExpression or CastExpression or BinaryOperatorExpression or UnaryOperatorExpression:
+                    refDirs.Add(dir);
+                    break;
+            }
+        });
+
+        foreach (var st in emptyTypeArgs)
+            if (st.Parent is not null)
+                st.ReplaceWith(ReplacementForTypeArgument(st));
+
+        foreach (var cast in boxedCtorCasts)
             if (cast.Parent is not null && cast.Expression is CastExpression { Type: PrimitiveType { Keyword: "object" }, Expression: ObjectCreateExpression oce }
                 && SameGenericDefinition(cast.Type, oce.Type) && oce.Arguments.Count == 1)
                 cast.ReplaceWith(new ObjectCreateExpression(cast.Type.Clone(), oce.Arguments.Single().Detach()));
 
-        foreach (var st in tree.Descendants.OfType<SimpleType>().ToList())
-            if (st.Parent is not null && st.Identifier.Length == 0 && st.Role == Roles.TypeArgument)
-                st.ReplaceWith(ReplacementForTypeArgument(st));
-
         // new D(target, (IntPtr)0) / new D(target, default(nint)): the delegate's target method could not be recovered. Keep it compilable and explicit.
-        foreach (var oce in tree.Descendants.OfType<ObjectCreateExpression>().ToList())
+        foreach (var oce in delegOces)
             if (oce.Parent is not null && oce.Arguments.Count == 2 && IsUnresolvedDelegatePtr(oce.Arguments.First(), oce.Arguments.Last()))
                 oce.ReplaceWith(new InvocationExpression(
                     new MemberReferenceExpression(new TypeReferenceExpression(new MemberType(new MemberType(new SimpleType("Il2CppStudio"), "Native"), "NativeIntrinsics")),
                         "Reinterpret", oce.Type.Clone()),
                     new PrimitiveExpression("unresolved delegate target")));
 
-        foreach (var dir in tree.Descendants.OfType<DirectionExpression>().ToList())
+        foreach (var dir in refDirs)
             if (dir.Parent is ParenthesizedExpression or CastExpression or BinaryOperatorExpression or UnaryOperatorExpression)
                 dir.ReplaceWith(dir.Expression.Detach());
 
-        FixRemainingCompilePatterns(tree);
+        FixRemainingCompilePatterns(tree, in flags);
         FixLeakedTypeParameters(tree);
         PurgeDiscardsAndDeadStatements(tree);
         CompileHygiene.RefreshUnsafe(tree);
@@ -89,7 +150,7 @@ public static class CompileFixups
 
     private static void RewriteMemberCalls(SyntaxTree tree)
     {
-        foreach (var call in tree.Descendants.OfType<InvocationExpression>().ToList())
+        foreach (var call in AstWalk.Collect<InvocationExpression>(tree))
         {
             if (call.Parent is null) continue;
             var rawMemberName = (call.Target as MemberReferenceExpression)?.MemberName
@@ -133,12 +194,12 @@ public static class CompileFixups
                 target.MemberName = "ForceMeshUpdate";
             else if (target.MemberName == "ComputeStringHash" && args.Count == 1)
                 call.ReplaceWith(new CastExpression(new PrimitiveType("uint"), new InvocationExpression(new MemberReferenceExpression(args[0].Detach(), "GetHashCode"))));
-            else if (target.MemberName == "AsPointer" && args.Count == 1 && target.Target.ToString().EndsWith("Unsafe", StringComparison.Ordinal))
+            else if (target.MemberName == "AsPointer" && args.Count == 1 && IsUnsafeTarget(target.Target))
             {
                 var raw = args[0] is DirectionExpression d ? d.Expression.Detach() : args[0].Detach();
                 AstNode anchor = call;
                 while (anchor.Parent is ParenthesizedExpression paren) anchor = paren;
-                while (anchor.Parent is CastExpression midCast && midCast.Type.ToString() is "nint" or "IntPtr" or "System.IntPtr")
+                while (anchor.Parent is CastExpression midCast && IsNintAstType(midCast.Type))
                 {
                     AstNode next = midCast;
                     while (next.Parent is ParenthesizedExpression mp) next = mp;
@@ -164,7 +225,7 @@ public static class CompileFixups
                 }
             }
             else if (target.MemberName == "As" && target.TypeArguments.Count == 2 && args.Count == 1
-                && target.Target.ToString().EndsWith("Unsafe", StringComparison.Ordinal)
+                && IsUnsafeTarget(target.Target)
                 && args[0] is DirectionExpression { Expression: var asInner }
                 && UnwrapParens(asInner) is not (IdentifierExpression or MemberReferenceExpression or IndexerExpression or PointerReferenceExpression or UnaryOperatorExpression { Operator: UnaryOperatorType.Dereference }))
             {
@@ -180,7 +241,7 @@ public static class CompileFixups
                     new MemberReferenceExpression(target.Target.Detach(), "Reinterpret", new SimpleType("nint")),
                     args[0].Detach())));
             }
-            else if (target.MemberName == "Write" && args.Count == 2 && target.Target.ToString().EndsWith("Unsafe", StringComparison.Ordinal))
+            else if (target.MemberName == "Write" && args.Count == 2 && IsUnsafeTarget(target.Target))
             {
                 if (args[0] is UnaryOperatorExpression { Operator: UnaryOperatorType.AddressOf, Expression: var lhs })
                 {
@@ -204,9 +265,9 @@ public static class CompileFixups
         }
     }
 
-    private static void MergeEulerRotationDefault(SyntaxTree tree)
+    private static void MergeEulerRotationDefault(List<ExpressionStatement> candidates)
     {
-        foreach (var es in tree.Descendants.OfType<ExpressionStatement>().ToList())
+        foreach (var es in candidates)
         {
             if (es.Parent is null || es.Expression is not InvocationExpression { Target: MemberReferenceExpression { MemberName: "Euler", Target: TypeReferenceExpression or IdentifierExpression { Identifier: "Quaternion" } } } euler)
                 continue;
@@ -222,9 +283,9 @@ public static class CompileFixups
         ? na.Name switch { "native" => 0, "arg1" => 1, "arg2" => 2, "arg3" => 3, "arg4" => 4, _ => 10 + idx }
         : idx;
 
-    private static void CollapseCrossTypeCoroutineFactories(SyntaxTree tree)
+    private static void CollapseCrossTypeCoroutineFactories(List<VariableDeclarationStatement> candidates)
     {
-        foreach (var decl in tree.Descendants.OfType<VariableDeclarationStatement>().Where(d => d.Variables.Count == 1).ToList())
+        foreach (var decl in candidates)
         {
             if (decl.Parent is not BlockStatement block) continue;
             var v = decl.Variables.Single();
@@ -243,7 +304,14 @@ public static class CompileFixups
                 setup.Add(stmts[idx++]);
             }
             if (bad || receiver is null) continue;
-            var uses = block.Descendants.OfType<IdentifierExpression>().Where(i => i.Identifier == v.Name && !setup.Any(s => i.Ancestors.Contains(s)) && !i.Ancestors.Contains(decl)).ToList();
+            var uses = new List<IdentifierExpression>();
+            AstWalk.Collect<IdentifierExpression>(block, i =>
+            {
+                if (i.Identifier != v.Name) return false;
+                for (AstNode? a = i.Parent; a is not null && a != block; a = a.Parent)
+                    if (a == decl || setup.Contains(a)) return false;
+                return true;
+            }, uses);
             if (uses.Count != 1) continue;
             uses[0].ReplaceWith(new InvocationExpression(new MemberReferenceExpression(receiver.Clone(), factoryName)));
             foreach (var s in setup) s.Remove();
@@ -363,45 +431,52 @@ public static class CompileFixups
         s.Remove();
     }
 
-    private static void RestoreDeadVectorDistance(SyntaxTree tree)
+    private static void RestoreDeadVectorDistance(List<BlockStatement> blocks)
     {
-        foreach (var block in tree.Descendants.OfType<BlockStatement>().ToList())
+        foreach (var block in blocks)
         {
-            var stmts = block.Statements.ToList();
-            for (var i = 0; i + 1 < stmts.Count; i++)
+            for (Statement? s = block.Statements.FirstOrDefault(); s is not null && s.NextSibling is Statement next;)
             {
-                if (stmts[i] is not ExpressionStatement s1 || stmts[i + 1] is not ExpressionStatement s2) continue;
-                if (UnwrapDiscard(s1.Expression) is not MemberReferenceExpression { MemberName: "position" } e1) continue;
-                if (UnwrapDiscard(s2.Expression) is not MemberReferenceExpression { MemberName: "position" } e2) continue;
-                if (e1.ToString() == e2.ToString()) continue;
-
-                var v3Dist = new InvocationExpression(new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Vector3")), "Distance"), e1.Detach(), e2.Detach());
-                var distField = FindUnusedDistanceField(block);
-                if (distField is not null)
+                var nextNext = next.NextSibling as Statement;
+                if (s is ExpressionStatement s1 && next is ExpressionStatement s2
+                    && UnwrapDiscard(s1.Expression) is MemberReferenceExpression { MemberName: "position" } e1
+                    && UnwrapDiscard(s2.Expression) is MemberReferenceExpression { MemberName: "position" } e2
+                    && e1.ToString() != e2.ToString())
                 {
-                    var varName = PickFreeName(block, "num");
-                    var decl = new VariableDeclarationStatement(new PrimitiveType("float"), varName, v3Dist);
-                    s1.ReplaceWith(decl);
-                    var emptyIf = new IfElseStatement(new BinaryOperatorExpression(new IdentifierExpression(varName), BinaryOperatorType.LessThan, new IdentifierExpression(distField)), new BlockStatement());
-                    s2.ReplaceWith(emptyIf);
+                    var v3Dist = new InvocationExpression(new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Vector3")), "Distance"), e1.Detach(), e2.Detach());
+                    var distField = FindUnusedDistanceField(block);
+                    if (distField is not null)
+                    {
+                        var varName = PickFreeName(block, "num");
+                        var decl = new VariableDeclarationStatement(new PrimitiveType("float"), varName, v3Dist);
+                        s1.ReplaceWith(decl);
+                        var emptyIf = new IfElseStatement(new BinaryOperatorExpression(new IdentifierExpression(varName), BinaryOperatorType.LessThan, new IdentifierExpression(distField)), new BlockStatement());
+                        s2.ReplaceWith(emptyIf);
+                    }
+                    else
+                    {
+                        s1.Expression = v3Dist;
+                        s2.Remove();
+                    }
+                    s = nextNext;
+                    continue;
                 }
-                else
-                {
-                    s1.Expression = v3Dist;
-                    s2.Remove();
-                }
-                i++;
+                s = next;
             }
         }
     }
 
     private static string? FindUnusedDistanceField(BlockStatement block)
     {
-        var method = block.Ancestors.OfType<MethodDeclaration>().FirstOrDefault();
-        var type = method?.Ancestors.OfType<TypeDeclaration>().FirstOrDefault();
+        var method = block.GetParent<MethodDeclaration>();
+        var type = method?.GetParent<TypeDeclaration>();
         if (method is null || type is null) return null;
-        var used = method.Descendants.OfType<IdentifierExpression>().Select(i => i.Identifier)
-            .Concat(method.Descendants.OfType<MemberReferenceExpression>().Select(m => m.MemberName)).ToHashSet(StringComparer.Ordinal);
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        AstWalk.ForEachNode(method, n =>
+        {
+            if (n is IdentifierExpression id) used.Add(id.Identifier);
+            else if (n is MemberReferenceExpression mr) used.Add(mr.MemberName);
+        });
         return type.Members.OfType<FieldDeclaration>()
             .Where(f => f.ReturnType is PrimitiveType { Keyword: "float" })
             .SelectMany(f => f.Variables)
@@ -411,16 +486,18 @@ public static class CompileFixups
 
     private static string PickFreeName(BlockStatement block, string baseName)
     {
-        var method = block.Ancestors.OfType<MethodDeclaration>().FirstOrDefault();
-        var taken = (method?.DescendantsAndSelf ?? block.DescendantsAndSelf).OfType<VariableInitializer>().Select(v => v.Name)
-            .Concat(method?.Parameters.Select(p => p.Name) ?? []).ToHashSet(StringComparer.Ordinal);
+        var method = block.GetParent<MethodDeclaration>();
+        var taken = new HashSet<string>(StringComparer.Ordinal);
+        AstWalk.Visit<VariableInitializer>(method ?? (AstNode)block, v => taken.Add(v.Name));
+        if (method is not null)
+            foreach (var p in method.Parameters) taken.Add(p.Name);
         if (!taken.Contains(baseName)) return baseName;
         for (var n = 1; ; n++) { var c = $"distance{(n == 1 ? "" : n.ToString())}"; if (!taken.Contains(c)) return c; }
     }
 
     private static void PurgeDiscardsAndDeadStatements(SyntaxTree tree)
     {
-        foreach (var s in tree.Descendants.OfType<ExpressionStatement>().ToList())
+        foreach (var s in AstWalk.Collect<ExpressionStatement>(tree))
         {
             if (s.Parent is null) continue;
             if (s.Expression is InvocationExpression { Arguments.Count: 0, Target: IdentifierExpression { Identifier: "Finalize" } or MemberReferenceExpression { MemberName: "Finalize" } })
@@ -455,12 +532,26 @@ public static class CompileFixups
                 or DefaultValueExpression or ConditionalExpression or CastExpression or AsExpression or IsExpression
                 or TypeReferenceExpression or IndexerExpression)) continue;
 
-            var sideEffects = expr.DescendantsAndSelf.OfType<Expression>()
-                .Where(e => !IsReinterpretCall(e) && e is InvocationExpression or ObjectCreateExpression or AssignmentExpression).ToList();
+            var sideEffects = new List<Expression>();
+            if (!IsReinterpretCall(expr) && expr is InvocationExpression or ObjectCreateExpression or AssignmentExpression)
+                sideEffects.Add(expr);
+            AstWalk.Collect<Expression>(expr, e => !IsReinterpretCall(e) && e is InvocationExpression or ObjectCreateExpression or AssignmentExpression, sideEffects);
             if (sideEffects.Count == 0) { s.Remove(); continue; }
-            if (s.Parent is BlockStatement && sideEffects.Count == 1 && !sideEffects[0].Ancestors.Any(a => a != expr && a is Expression ae && !IsReinterpretCall(ae) && ae is InvocationExpression or ObjectCreateExpression or AssignmentExpression)
-                && !IsDelegateCreation(sideEffects[0]))
-                s.Expression = sideEffects[0].Detach();
+            var se0 = sideEffects[0];
+            var hasEnclosingSideEffect = false;
+            if (s.Parent is BlockStatement && sideEffects.Count == 1)
+            {
+                for (AstNode? a = se0.Parent; a is not null && a != expr; a = a.Parent)
+                {
+                    if (a is Expression ae && !IsReinterpretCall(ae) && ae is InvocationExpression or ObjectCreateExpression or AssignmentExpression)
+                    {
+                        hasEnclosingSideEffect = true;
+                        break;
+                    }
+                }
+            }
+            if (s.Parent is BlockStatement && sideEffects.Count == 1 && !hasEnclosingSideEffect && !IsDelegateCreation(se0))
+                s.Expression = se0.Detach();
             else s.Remove();
         }
     }
@@ -479,73 +570,196 @@ public static class CompileFixups
 
     private static void FixLeakedTypeParameters(SyntaxTree tree)
     {
-        foreach (var st in tree.Descendants.OfType<SimpleType>().ToList())
+        var leaked = new List<SimpleType>();
+        AstWalk.Collect<SimpleType>(tree, static st =>
+            st.Identifier.Length > 0 && !(st.Role == Roles.TypeArgument && st.Identifier.Length == 0)
+            && (st.Identifier[0] == '!' || st.Identifier is "_0" or "_1" or "_2" or "_3" or "__0" or "__1" or "__2" or "__3" or "TKey" or "TValue" or "T"),
+            leaked);
+        FixLeakedTypeParametersCore(leaked);
+    }
+
+    private static void FixLeakedTypeParametersCore(List<SimpleType> leaked)
+    {
+        foreach (var st in leaked)
         {
-            if (st.Parent is null || st.Role == Roles.TypeArgument && st.Identifier.Length == 0) continue;
-            if (!(st.Identifier.StartsWith('!') || st.Identifier is "_0" or "_1" or "_2" or "_3" or "__0" or "__1" or "__2" or "__3" or "TKey" or "TValue" or "T")) continue;
+            if (st.Parent is null) continue;
             var rt = st.Annotation<TypeResolveResult>()?.Type;
             if (rt is not null && rt.Kind is not (TypeKind.Unknown or TypeKind.TypeParameter)) continue;
-            var declared = st.Ancestors.OfType<TypeDeclaration>().SelectMany(t => t.TypeParameters)
-                .Concat(st.Ancestors.OfType<MethodDeclaration>().SelectMany(m => m.TypeParameters))
-                .Concat(st.Ancestors.OfType<DelegateDeclaration>().SelectMany(d => d.TypeParameters))
-                .Select(tp => tp.Name);
-            if (!declared.Contains(st.Identifier))
+            var isDeclared = false;
+            for (AstNode? a = st.Parent; a is not null && !isDeclared; a = a.Parent)
+            {
+                switch (a)
+                {
+                    case TypeDeclaration td:
+                        foreach (var tp in td.TypeParameters) if (tp.Name == st.Identifier) { isDeclared = true; break; }
+                        break;
+                    case MethodDeclaration md:
+                        foreach (var tp in md.TypeParameters) if (tp.Name == st.Identifier) { isDeclared = true; break; }
+                        break;
+                    case DelegateDeclaration dd:
+                        foreach (var tp in dd.TypeParameters) if (tp.Name == st.Identifier) { isDeclared = true; break; }
+                        break;
+                }
+            }
+            if (!isDeclared)
                 st.ReplaceWith(st.Role == Roles.TypeArgument ? ReplacementForTypeArgument(st) : new PrimitiveType("object"));
         }
     }
 
-    private static void FixNegativeArraySizes(SyntaxTree tree)
+    private static void FixLeakedAndConstantPatterns(SyntaxTree tree)
     {
-        foreach (var ace in tree.Descendants.OfType<ArrayCreateExpression>().ToList())
+        var leaked = new List<SimpleType>();
+        var arrays = new List<ArrayCreateExpression>();
+        var casts = new List<CastExpression>();
+        var bins = new List<BinaryOperatorExpression>();
+        AstWalk.ForEachNode(tree, n =>
+        {
+            switch (n)
+            {
+                case SimpleType st when st.Parent is not null && st.Identifier.Length > 0
+                    && (st.Identifier[0] == '!' || st.Identifier is "_0" or "_1" or "_2" or "_3" or "__0" or "__1" or "__2" or "__3" or "TKey" or "TValue" or "T"):
+                    leaked.Add(st);
+                    break;
+                case ArrayCreateExpression ace when ace.Arguments.Count > 0:
+                    arrays.Add(ace);
+                    break;
+                case CastExpression c when c.Type is PrimitiveType { Keyword: "uint" or "ulong" or "byte" or "ushort" or "int" or "sbyte" or "short" }:
+                    casts.Add(c);
+                    break;
+                case BinaryOperatorExpression b when b.Parent is not (BinaryOperatorExpression or ParenthesizedExpression or CastExpression or UncheckedExpression):
+                    bins.Add(b);
+                    break;
+            }
+        });
+
+        FixLeakedTypeParametersCore(leaked);
+
+        foreach (var ace in arrays)
         {
             foreach (var arg in ace.Arguments.ToList())
             {
-                if (!arg.DescendantsAndSelf.Any(n => n is IdentifierExpression or MemberReferenceExpression or InvocationExpression)
-                    && TryEvalConstInt(arg, out var len) && len < 0)
+                if (!HasIdentMemberOrCall(arg) && TryEvalConstInt(arg, out var len) && len < 0)
                     arg.ReplaceWith(new PrimitiveExpression(0));
             }
         }
-    }
 
-    private static void FixUncheckedConstantCasts(SyntaxTree tree)
-    {
-        foreach (var cast in tree.Descendants.OfType<CastExpression>().Reverse().ToList())
+        for (var i = casts.Count - 1; i >= 0; i--)
         {
-            if (cast.Parent is null or UncheckedExpression || cast.Ancestors.OfType<UncheckedExpression>().Any()) continue;
-            if (cast.Type is not PrimitiveType { Keyword: "uint" or "ulong" or "byte" or "ushort" or "int" or "sbyte" or "short" }) continue;
-            if (cast.Expression.DescendantsAndSelf.Any(n => n is IdentifierExpression or MemberReferenceExpression or InvocationExpression)) continue;
-            if (cast.Expression.DescendantsAndSelf.OfType<PrimitiveExpression>().Any() || cast.Expression.DescendantsAndSelf.OfType<DefaultValueExpression>().Any())
+            var cast = casts[i];
+            if (cast.Parent is null or UncheckedExpression || HasUncheckedAncestor(cast)) continue;
+            if (HasIdentMemberOrCall(cast.Expression)) continue;
+            if (HasPrimOrDefault(cast.Expression))
                 cast.ReplaceWith(new UncheckedExpression(cast.Clone()));
         }
 
-        foreach (var bin in tree.Descendants.OfType<BinaryOperatorExpression>().Reverse().ToList())
+        for (var i = bins.Count - 1; i >= 0; i--)
         {
+            var bin = bins[i];
             if (bin.Parent is null or BinaryOperatorExpression or ParenthesizedExpression or CastExpression or UncheckedExpression) continue;
-            if (bin.Ancestors.OfType<UncheckedExpression>().Any()) continue;
-            if (!bin.DescendantsAndSelf.OfType<DefaultValueExpression>().Any()) continue;
-            if (bin.DescendantsAndSelf.Any(n => n is IdentifierExpression or MemberReferenceExpression or InvocationExpression)) continue;
+            if (HasUncheckedAncestor(bin)) continue;
+            if (!AstWalk.HasAny<DefaultValueExpression>(bin)) continue;
+            if (HasIdentMemberOrCall(bin)) continue;
             bin.ReplaceWith(new UncheckedExpression(bin.Clone()));
         }
+
+        static bool HasUncheckedAncestor(AstNode n)
+        {
+            for (AstNode? a = n.Parent; a is not null; a = a.Parent)
+                if (a is UncheckedExpression) return true;
+            return false;
+        }
+        static bool HasIdentMemberOrCall(AstNode n) =>
+            n is IdentifierExpression or MemberReferenceExpression or InvocationExpression
+            || AstWalk.HasAny(n, static x => x is IdentifierExpression or MemberReferenceExpression or InvocationExpression);
+        static bool HasPrimOrDefault(AstNode n) =>
+            n is PrimitiveExpression or DefaultValueExpression
+            || AstWalk.HasAny(n, static x => x is PrimitiveExpression or DefaultValueExpression);
     }
 
-    private static void FixRemainingCompilePatterns(SyntaxTree tree)
+    private static void FixRemainingCompilePatterns(SyntaxTree tree, in TreeFlags flags)
     {
-        foreach (var u in tree.Descendants.OfType<UnaryOperatorExpression>().Where(u => u.Operator == UnaryOperatorType.Dereference).ToList())
+        var derefs = new List<UnaryOperatorExpression>();
+        var ptrs = new List<ComposedType>();
+        var abstractTypeNames = new HashSet<string>(StringComparer.Ordinal);
+        var oces = new List<ObjectCreateExpression>();
+        var ctors = new List<ConstructorDeclaration>();
+        var baseInits = new List<ConstructorInitializer>();
+        var zeroOrNullCasts = new List<CastExpression>();
+        var asExprs = new List<AsExpression>();
+        var readonlyPropAssigns = new List<AssignmentExpression>();
+        var refRhsAssigns = new List<AssignmentExpression>();
+        var invocs = new List<InvocationExpression>();
+        var refReturns = new List<ReturnStatement>();
+        var stringFieldMrs = new List<MemberReferenceExpression>();
+
+        AstWalk.ForEachNode(tree, n =>
         {
-            if (u.Parent is null || UnwrapParens(u.Expression) is not CastExpression { Type: ComposedType { PointerRank: > 0, BaseType: SimpleType bst } }) continue;
-            if (bst.Identifier == "_" || bst.Identifier.Length == 0 || IdentifierEscaper.Escape(bst.Identifier) == "_")
-                u.ReplaceWith(new PrimitiveExpression(0));
+            switch (n)
+            {
+                case TypeDeclaration td when td.Modifiers.HasFlag(Modifiers.Abstract):
+                    abstractTypeNames.Add(td.Name);
+                    break;
+                case UnaryOperatorExpression { Operator: UnaryOperatorType.Dereference } u:
+                    derefs.Add(u);
+                    break;
+                case ComposedType { PointerRank: > 0 } ct:
+                    ptrs.Add(ct);
+                    break;
+                case ObjectCreateExpression oce:
+                    oces.Add(oce);
+                    break;
+                case ConstructorDeclaration cd when !cd.Modifiers.HasFlag(Modifiers.Static) && cd.Initializer.IsNull:
+                    ctors.Add(cd);
+                    break;
+                case ConstructorInitializer ci when ci.ConstructorInitializerType == ConstructorInitializerType.Base && ci.Arguments.Count > 0:
+                    baseInits.Add(ci);
+                    break;
+                case CastExpression c when c.Expression is NullReferenceExpression || UnwrapParens(c.Expression) is PrimitiveExpression { Value: 0 or 0L }:
+                    zeroOrNullCasts.Add(c);
+                    break;
+                case AsExpression ae:
+                    asExprs.Add(ae);
+                    break;
+                case AssignmentExpression assign:
+                    if (assign.Left is MemberReferenceExpression mr && mr.Target is not BaseReferenceExpression)
+                        readonlyPropAssigns.Add(assign);
+                    if (assign.Right is DirectionExpression { FieldDirection: FieldDirection.Ref, Expression: IdentifierExpression })
+                        refRhsAssigns.Add(assign);
+                    break;
+                case InvocationExpression inv:
+                    invocs.Add(inv);
+                    break;
+                case ReturnStatement { Expression: DirectionExpression { FieldDirection: FieldDirection.Ref, Expression: IdentifierExpression } } ret:
+                    refReturns.Add(ret);
+                    break;
+                case MemberReferenceExpression { MemberName: "m_stringLength" or "m_firstChar" } smr:
+                    stringFieldMrs.Add(smr);
+                    break;
+            }
+        });
+
+        if (derefs is not null)
+        {
+            foreach (var u in derefs)
+            {
+                if (u.Parent is null || UnwrapParens(u.Expression) is not CastExpression { Type: ComposedType { PointerRank: > 0, BaseType: SimpleType bst } }) continue;
+                if (bst.Identifier == "_" || bst.Identifier.Length == 0 || IdentifierEscaper.Escape(bst.Identifier) == "_")
+                    u.ReplaceWith(new PrimitiveExpression(0));
+            }
         }
 
-        foreach (var ct in tree.Descendants.OfType<ComposedType>().ToList())
-            if (ct.PointerRank > 0 && ct.BaseType is SimpleType bst && (bst.Identifier == "_" || bst.Identifier.Length == 0 || IdentifierEscaper.Escape(bst.Identifier) == "_"))
-                ct.BaseType = new PrimitiveType("void");
+        if (ptrs is not null)
+        {
+            foreach (var ct in ptrs)
+                if (ct.PointerRank > 0 && ct.BaseType is SimpleType bst && (bst.Identifier == "_" || bst.Identifier.Length == 0 || IdentifierEscaper.Escape(bst.Identifier) == "_"))
+                    ct.BaseType = new PrimitiveType("void");
+        }
 
-        foreach (var oce in tree.Descendants.OfType<ObjectCreateExpression>().ToList())
+        foreach (var oce in oces)
         {
             if (oce.Parent is null) continue;
             var def = oce.Annotation<ResolveResult>()?.Type.GetDefinition() ?? oce.Type.Annotation<TypeResolveResult>()?.Type.GetDefinition();
-            var isAbstract = def?.IsAbstract == true || IsAbstractTypeInTree(tree, oce.Type);
+            var isAbstract = def?.IsAbstract == true || IsTypeNameInSet(abstractTypeNames, oce.Type);
             if (!isAbstract) continue;
             AstNode a = oce;
             while (a.Parent is ParenthesizedExpression paren) a = paren;
@@ -566,20 +780,20 @@ public static class CompileFixups
         }
 
         var astBuilder = new TypeSystemAstBuilder();
-        foreach (var ctor in tree.Descendants.OfType<ConstructorDeclaration>().ToList())
+        foreach (var ctor in ctors)
         {
             if (ctor.Modifiers.HasFlag(Modifiers.Static) || !ctor.Initializer.IsNull) continue;
             var td = ctor.GetParent<TypeDeclaration>();
             var resolvedType = td?.Annotation<TypeResolveResult>()?.Type ?? td?.GetSymbol() as IType;
             var baseType = resolvedType?.DirectBaseTypes.FirstOrDefault(b => b.Kind == TypeKind.Class && !b.IsKnownType(KnownTypeCode.Object));
             if (baseType is null) continue;
-            var ctors = baseType.GetConstructors().Where(c => !c.IsStatic).ToList();
-            if (ctors.Count == 0 || ctors.Any(c => c.Accessibility != Accessibility.Private && c.Parameters.All(p => p.IsOptional))) continue;
-            var chosen = ctors
+            var ctorDefs = baseType.GetConstructors().Where(c => !c.IsStatic).ToList();
+            if (ctorDefs.Count == 0 || ctorDefs.Any(c => c.Accessibility != Accessibility.Private && c.Parameters.All(p => p.IsOptional))) continue;
+            var chosen = ctorDefs
                 .Where(c => c.Accessibility != Accessibility.Private && c.Parameters.All(p => p.ReferenceKind == ReferenceKind.None))
                 .OrderBy(c => c.Parameters.Count)
                 .FirstOrDefault()
-                ?? ctors.Where(c => c.Accessibility != Accessibility.Private).OrderBy(c => c.Parameters.Count).FirstOrDefault();
+                ?? ctorDefs.Where(c => c.Accessibility != Accessibility.Private).OrderBy(c => c.Parameters.Count).FirstOrDefault();
             if (chosen is null || chosen.Parameters.Count == 0) continue;
             var init = new ConstructorInitializer { ConstructorInitializerType = ConstructorInitializerType.Base };
             var ok = true;
@@ -592,7 +806,7 @@ public static class CompileFixups
             if (ok) ctor.Initializer = init;
         }
 
-        foreach (var ci in tree.Descendants.OfType<ConstructorInitializer>().Where(c => c.ConstructorInitializerType == ConstructorInitializerType.Base).ToList())
+        foreach (var ci in baseInits)
         {
             if (ci.Arguments.Count == 0 || ci.Parent is not ConstructorDeclaration cd) continue;
             var td = cd.GetParent<TypeDeclaration>();
@@ -618,7 +832,7 @@ public static class CompileFixups
             }
         }
 
-        foreach (var cast in tree.Descendants.OfType<CastExpression>().ToList())
+        foreach (var cast in zeroOrNullCasts)
         {
             if (cast.Parent is null) continue;
             var ct = cast.Annotation<ResolveResult>()?.Type ?? cast.Type.Annotation<TypeResolveResult>()?.Type;
@@ -641,11 +855,11 @@ public static class CompileFixups
             }
         }
 
-        foreach (var ae in tree.Descendants.OfType<AsExpression>().ToList())
+        foreach (var ae in asExprs)
         {
             if (ae.Parent is null) continue;
             var srcT = ae.Expression.Annotation<ResolveResult>()?.Type
-                ?? (ae.Expression is ThisReferenceExpression ? ae.Ancestors.OfType<TypeDeclaration>().FirstOrDefault()?.GetSymbol() as IType : null);
+                ?? (ae.Expression is ThisReferenceExpression ? ae.GetParent<TypeDeclaration>()?.GetSymbol() as IType : null);
             var dstT = ae.Type.Annotation<TypeResolveResult>()?.Type;
             if (srcT is { Kind: TypeKind.Class } && dstT is { Kind: TypeKind.Class }
                 && !srcT.IsKnownType(KnownTypeCode.Object) && !dstT.IsKnownType(KnownTypeCode.Object)
@@ -655,7 +869,7 @@ public static class CompileFixups
             }
         }
 
-        foreach (var assign in tree.Descendants.OfType<AssignmentExpression>().ToList())
+        foreach (var assign in readonlyPropAssigns)
         {
             if (assign.Parent is null || assign.Left is not MemberReferenceExpression mr || mr.Target is BaseReferenceExpression) continue;
             var targetType = mr.Target.Annotation<ResolveResult>()?.Type;
@@ -670,7 +884,7 @@ public static class CompileFixups
                 mr.Target = new ParenthesizedExpression(new CastExpression(astBuilder.ConvertType(baseOwner), mr.Target.Detach()));
         }
 
-        foreach (var inv in tree.Descendants.OfType<InvocationExpression>().ToList())
+        foreach (var inv in invocs)
         {
             if (inv.Parent is null) continue;
             var isNullTarget = UnwrapParens(inv.Target) is NullReferenceExpression;
@@ -698,9 +912,18 @@ public static class CompileFixups
             if (declTd.Kind == TypeKind.Delegate || im.Name != id.Identifier) continue;
             var enclosingTdDecl = inv.GetParent<TypeDeclaration>();
             var enclosingTd = enclosingTdDecl?.GetSymbol() as ITypeDefinition;
-            var hasNoThis = enclosingTdDecl is not null && inv.Ancestors.TakeWhile(a => a != enclosingTdDecl)
-                .OfType<EntityDeclaration>()
-                .Any(e => e.Modifiers.HasFlag(Modifiers.Static) || e is FieldDeclaration);
+            var hasNoThis = false;
+            if (enclosingTdDecl is not null)
+            {
+                for (AstNode? a = inv.Parent; a is not null && a != enclosingTdDecl; a = a.Parent)
+                {
+                    if (a is EntityDeclaration ed && (ed.Modifiers.HasFlag(Modifiers.Static) || ed is FieldDeclaration))
+                    {
+                        hasNoThis = true;
+                        break;
+                    }
+                }
+            }
             if (hasNoThis)
             {
                 var mr2 = new MemberReferenceExpression(new DefaultValueExpression(astBuilder.ConvertType(im.DeclaringType)), id.Identifier);
@@ -728,21 +951,29 @@ public static class CompileFixups
             }
         }
 
-        foreach (var ret in tree.Descendants.OfType<ReturnStatement>().ToList())
+        foreach (var ret in refReturns)
         {
             if (ret.Expression is not DirectionExpression { FieldDirection: FieldDirection.Ref, Expression: IdentifierExpression id }) continue;
-            var ownerFunc = ret.Ancestors.FirstOrDefault(a => a is MethodDeclaration or LocalFunctionDeclarationStatement or Accessor or IndexerDeclaration);
+            AstNode? ownerFunc = null;
+            for (AstNode? a = ret.Parent; a is not null; a = a.Parent)
+                if (a is MethodDeclaration or LocalFunctionDeclarationStatement or Accessor or IndexerDeclaration) { ownerFunc = a; break; }
             if (ownerFunc is null) continue;
-            var localDecl = ownerFunc.Descendants.OfType<VariableDeclarationStatement>()
-                .FirstOrDefault(d => d.Variables.Any(v => v.Name == id.Identifier));
+            VariableDeclarationStatement? localDecl = null;
+            AstWalk.Visit<VariableDeclarationStatement>(ownerFunc, d =>
+            {
+                if (localDecl is null && d.Variables.Any(v => v.Name == id.Identifier))
+                    localDecl = d;
+            });
             if (localDecl is null || localDecl.Type is ComposedType { HasRefSpecifier: true } || localDecl.Type is SimpleType { Identifier: "var" }) continue;
             ret.Expression.ReplaceWith(MakeRefDefaultExpr(localDecl.Type));
         }
 
-        foreach (var assign in tree.Descendants.OfType<AssignmentExpression>().ToList())
+        foreach (var assign in refRhsAssigns)
         {
             if (assign.Right is not DirectionExpression { FieldDirection: FieldDirection.Ref, Expression: IdentifierExpression rhsId }) continue;
-            var ownerMethod = assign.Ancestors.FirstOrDefault(a => a is MethodDeclaration or ConstructorDeclaration or IndexerDeclaration or LocalFunctionDeclarationStatement);
+            AstNode? ownerMethod = null;
+            for (AstNode? a = assign.Parent; a is not null; a = a.Parent)
+                if (a is MethodDeclaration or ConstructorDeclaration or IndexerDeclaration or LocalFunctionDeclarationStatement) { ownerMethod = a; break; }
             var parameters = ownerMethod switch
             {
                 MethodDeclaration md => md.Parameters,
@@ -756,7 +987,7 @@ public static class CompileFixups
                 assign.Right.ReplaceWith(rhsId.Detach());
         }
 
-        foreach (var m in tree.Descendants.OfType<MemberReferenceExpression>().ToList())
+        foreach (var m in stringFieldMrs)
         {
             if (m.Parent is null || m.MemberName is not ("m_stringLength" or "m_firstChar")) continue;
             if (!IsStringTarget(m.Target)) continue;
@@ -774,21 +1005,26 @@ public static class CompileFixups
         static bool IsSystemNamespace(string ns) =>
             ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal);
 
-        foreach (var s in tree.Descendants.OfType<ExpressionStatement>().ToList())
+        static bool HasAccessibleMember(IType tType, string memberName, ITypeDefinition? enclosingTd)
         {
-            if (s.Parent is null || s.Expression is not AssignmentExpression { Left: MemberReferenceExpression lm2 } bclAssign) continue;
-            var unwrappedTarget = UnwrapParens(lm2.Target);
-            var tType = (lm2.Target.Annotation<ResolveResult>() ?? unwrappedTarget.Annotation<ResolveResult>())?.Type
-                ?? (unwrappedTarget as CastExpression)?.Type.Annotation<TypeResolveResult>()?.Type;
-            if (tType is not null && tType.Kind != TypeKind.Unknown
-                && IsSystemNamespace(tType.Namespace)
-                && !tType.GetMembers(mem => mem.Name == lm2.MemberName).Any())
+            if (tType.GetDefinition()?.ParentModule?.Compilation is { } comp)
             {
-                if (bclAssign.Right.DescendantsAndSelf.Any(n => n is InvocationExpression or ObjectCreateExpression))
-                    s.Expression = bclAssign.Right.Detach();
-                else
-                    s.Remove();
+                foreach (var mem in TypeSystemCache.For(comp).GetMembers(tType))
+                {
+                    if (mem.Name != memberName) continue;
+                    if (mem.Accessibility == Accessibility.Public) return true;
+                    if (mem.Accessibility is Accessibility.Protected or Accessibility.ProtectedOrInternal
+                        && enclosingTd is not null && tType.GetDefinition() is { } td
+                        && (enclosingTd.Equals(td) || IsStrictDerivedType(enclosingTd, td)))
+                        return true;
+                }
+                return false;
             }
+            return tType.GetMembers(mem => mem.Name == memberName
+                && (mem.Accessibility == Accessibility.Public
+                    || (mem.Accessibility is Accessibility.Protected or Accessibility.ProtectedOrInternal
+                        && enclosingTd is not null && tType.GetDefinition() is { } td
+                        && (enclosingTd.Equals(td) || IsStrictDerivedType(enclosingTd, td))))).Any();
         }
 
         IType? InferExprType(Expression e)
@@ -800,7 +1036,11 @@ public static class CompileFixups
                 ?? (unwrapped as TypeReferenceExpression)?.Type.Annotation<TypeResolveResult>()?.Type;
             if (direct is not null && direct.Kind != TypeKind.Unknown) return direct;
             if (unwrapped is MemberReferenceExpression innerMr && InferExprType(innerMr.Target) is { } parentT)
+            {
+                if (parentT.GetDefinition()?.ParentModule?.Compilation is { } pcomp)
+                    return TypeSystemCache.For(pcomp).TryGetMemberReturnType(parentT, innerMr.MemberName, out var rt) ? rt : null;
                 return parentT.GetMembers(m => m.Name == innerMr.MemberName).FirstOrDefault()?.ReturnType;
+            }
             return null;
         }
 
@@ -823,7 +1063,60 @@ public static class CompileFixups
             return pt is ByReferenceType br ? br.ElementType : pt;
         }
 
-        foreach (var mr in tree.Descendants.OfType<MemberReferenceExpression>().ToList())
+        var bclAssignStmts = new List<ExpressionStatement>();
+        var allMrs = new List<MemberReferenceExpression>();
+        var staticVarDecls = new List<VariableDeclarationStatement>();
+        var staticDefaults = new List<DefaultValueExpression>();
+        var bitNots = new List<UnaryOperatorExpression>();
+        var boolCasts = new List<CastExpression>();
+        var hasCustomEvents = false;
+        AstWalk.ForEachNode(tree, n =>
+        {
+            switch (n)
+            {
+                case ExpressionStatement { Expression: AssignmentExpression { Left: MemberReferenceExpression } } bs:
+                    bclAssignStmts.Add(bs);
+                    break;
+                case MemberReferenceExpression mr:
+                    allMrs.Add(mr);
+                    break;
+                case VariableDeclarationStatement vds when vds.Type.Annotation<TypeResolveResult>()?.Type.GetDefinition()?.IsStatic == true:
+                    staticVarDecls.Add(vds);
+                    break;
+                case DefaultValueExpression dve when dve.Type.Annotation<TypeResolveResult>()?.Type.GetDefinition()?.IsStatic == true:
+                    staticDefaults.Add(dve);
+                    break;
+                case UnaryOperatorExpression { Operator: UnaryOperatorType.BitNot } u:
+                    bitNots.Add(u);
+                    break;
+                case CastExpression c when c.Expression is IndexerExpression || c.Expression.Annotation<ResolveResult>()?.Type.IsKnownType(KnownTypeCode.Boolean) == true:
+                    boolCasts.Add(c);
+                    break;
+                case CustomEventDeclaration:
+                    hasCustomEvents = true;
+                    break;
+            }
+        });
+
+        foreach (var s in bclAssignStmts)
+        {
+            if (s.Parent is null || s.Expression is not AssignmentExpression { Left: MemberReferenceExpression lm2 } bclAssign) continue;
+            var unwrappedTarget = UnwrapParens(lm2.Target);
+            var tType = (lm2.Target.Annotation<ResolveResult>() ?? unwrappedTarget.Annotation<ResolveResult>())?.Type
+                ?? (unwrappedTarget as CastExpression)?.Type.Annotation<TypeResolveResult>()?.Type;
+            if (tType is not null && tType.Kind != TypeKind.Unknown
+                && IsSystemNamespace(tType.Namespace)
+                && !HasMemberCached(tType, lm2.MemberName))
+            {
+                if (AstWalk.HasAny(bclAssign.Right, static n => n is InvocationExpression or ObjectCreateExpression)
+                    || bclAssign.Right is InvocationExpression or ObjectCreateExpression)
+                    s.Expression = bclAssign.Right.Detach();
+                else
+                    s.Remove();
+            }
+        }
+
+        foreach (var mr in allMrs)
         {
             if (mr.Parent is null || (mr.Parent is AssignmentExpression a0 && a0.Left == mr)
                 || (mr.Parent is InvocationExpression invB && invB.Target == mr))
@@ -832,12 +1125,8 @@ public static class CompileFixups
             var tType = InferExprType(mr.Target);
             if (tType is null || tType.Kind == TypeKind.Unknown
                 || !IsSystemNamespace(tType.Namespace)
-                || tType.GetNestedTypes().Any(nt => nt.Name == mr.MemberName)
-                || tType.GetMembers(mem => mem.Name == mr.MemberName
-                    && (mem.Accessibility == Accessibility.Public
-                        || (mem.Accessibility is Accessibility.Protected or Accessibility.ProtectedOrInternal
-                            && enclosingTd0 is not null && tType.GetDefinition() is { } td0
-                            && (enclosingTd0.Equals(td0) || IsStrictDerivedType(enclosingTd0, td0))))).Any())
+                || HasAccessibleMember(tType, mr.MemberName, enclosingTd0)
+                || tType.GetNestedTypes().Any(nt => nt.Name == mr.MemberName))
                 continue;
             if (mr.Parent is DirectionExpression dir)
             {
@@ -874,7 +1163,7 @@ public static class CompileFixups
             mr.ReplaceWith(replacement);
         }
 
-        foreach (var mr in tree.Descendants.OfType<MemberReferenceExpression>().ToList())
+        foreach (var mr in allMrs)
         {
             if (mr.Parent is null) continue;
             var parentInv = mr.Parent is InvocationExpression inv0 && inv0.Target == mr ? inv0 : null;
@@ -917,7 +1206,7 @@ public static class CompileFixups
                     }
                     else if (mr.Parent is AssignmentExpression ae && ae.Left == mr && ae.Parent is ExpressionStatement es)
                     {
-                        if (ae.Right.DescendantsAndSelf.Any(n => n is InvocationExpression or ObjectCreateExpression))
+                        if (ae.Right is InvocationExpression or ObjectCreateExpression || AstWalk.HasAny(ae.Right, static n => n is InvocationExpression or ObjectCreateExpression))
                             es.Expression = ae.Right.Detach();
                         else
                             es.Remove();
@@ -941,24 +1230,24 @@ public static class CompileFixups
                 new CastExpression(new PrimitiveType("object"), mr.Target.Detach())));
         }
 
-        foreach (var vds in tree.Descendants.OfType<VariableDeclarationStatement>().ToList())
+        foreach (var vds in staticVarDecls)
         {
-            if (vds.Type.Annotation<TypeResolveResult>()?.Type.GetDefinition()?.IsStatic != true) continue;
+            if (vds.Parent is null) continue;
             vds.Type = new PrimitiveType("object");
             foreach (var v in vds.Variables)
                 if (v.Initializer is DefaultValueExpression) v.Initializer = new NullReferenceExpression();
         }
-        foreach (var dve in tree.Descendants.OfType<DefaultValueExpression>().ToList())
-            if (dve.Parent is not null && dve.Type.Annotation<TypeResolveResult>()?.Type.GetDefinition()?.IsStatic == true)
+        foreach (var dve in staticDefaults)
+            if (dve.Parent is not null)
                 dve.ReplaceWith(new NullReferenceExpression());
 
-        foreach (var u in tree.Descendants.OfType<UnaryOperatorExpression>().Where(u => u.Operator == UnaryOperatorType.BitNot).ToList())
+        foreach (var u in bitNots)
         {
             if (u.Parent is null) continue;
             var ut = u.Expression.Annotation<ResolveResult>()?.Type;
             if (ut is { Kind: TypeKind.Struct }
                 && ut.GetDefinition()?.KnownTypeCode is null or KnownTypeCode.None
-                && !ut.GetMethods(m => m.Name == "op_OnesComplement").Any())
+                && !HasOnesComplementOperator(ut))
             {
                 u.Expression = new InvocationExpression(
                     new MemberReferenceExpression(new TypeReferenceExpression(new MemberType(new MemberType(new SimpleType("Il2CppStudio"), "Native"), "NativeIntrinsics")),
@@ -967,7 +1256,7 @@ public static class CompileFixups
             }
         }
 
-        foreach (var c in tree.Descendants.OfType<CastExpression>().ToList())
+        foreach (var c in boolCasts)
         {
             if (c.Parent is null) continue;
             var isBoolOrBoolIdx = c.Expression.Annotation<ResolveResult>()?.Type.IsKnownType(KnownTypeCode.Boolean) == true
@@ -984,12 +1273,13 @@ public static class CompileFixups
             }
         }
 
-        RenameCollidingEventBackingFields(tree);
+        if (hasCustomEvents)
+            RenameCollidingEventBackingFields(tree);
     }
 
     private static void RenameCollidingEventBackingFields(SyntaxTree tree)
     {
-        foreach (var td in tree.Descendants.OfType<TypeDeclaration>())
+        foreach (var td in AstWalk.Collect<TypeDeclaration>(tree))
         {
             var customEvents = td.Members.OfType<CustomEventDeclaration>().Select(e => e.Name).ToHashSet(StringComparer.Ordinal);
             if (customEvents.Count == 0) continue;
@@ -1002,9 +1292,16 @@ public static class CompileFixups
 
             void RewriteEventFieldRefs(string evName, string backing)
             {
-                foreach (var id in td.Descendants.OfType<IdentifierExpression>().ToList())
+                var ids = new List<IdentifierExpression>();
+                var mrs = new List<MemberReferenceExpression>();
+                AstWalk.ForEachNode(td, n =>
                 {
-                    if (id.Identifier != evName) continue;
+                    if (n is IdentifierExpression id && id.Identifier == evName) ids.Add(id);
+                    else if (n is MemberReferenceExpression mr && mr.MemberName == evName) mrs.Add(mr);
+                });
+
+                foreach (var id in ids)
+                {
                     if (id.GetParent<TypeDeclaration>() != td) continue;
                     if (HasLocalOrParam(id, evName)) continue;
                     var inAccessor = id.GetParent<CustomEventDeclaration>() is { } ced && ced.Name == evName;
@@ -1014,9 +1311,8 @@ public static class CompileFixups
                     id.Identifier = backing;
                 }
 
-                foreach (var mr in td.Descendants.OfType<MemberReferenceExpression>().ToList())
+                foreach (var mr in mrs)
                 {
-                    if (mr.MemberName != evName) continue;
                     if (mr.GetParent<TypeDeclaration>() != td) continue;
                     var tdSym = td.GetSymbol() as ITypeDefinition;
                     var isOwnTarget = mr.Target is ThisReferenceExpression
@@ -1078,7 +1374,7 @@ public static class CompileFixups
         if (u is CastExpression { Type: PrimitiveType { Keyword: "string" } })
             return true;
         if (u is InvocationExpression { Target: MemberReferenceExpression { MemberName: "Reinterpret" } rmr }
-            && rmr.TypeArguments.FirstOrDefault()?.ToString() is "string" or "System.String")
+            && IsStringAstType(rmr.TypeArguments.FirstOrDefault()))
             return true;
         return false;
     }
@@ -1086,17 +1382,33 @@ public static class CompileFixups
     private static bool IsStrictDerivedType(IType derived, IType baseType) =>
         !derived.Equals(baseType) && derived.GetAllBaseTypes().Any(b => b.Equals(baseType));
 
+    private static bool HasMemberCached(IType type, string name) =>
+        type.GetDefinition()?.ParentModule?.Compilation is { } comp
+            ? TypeSystemCache.For(comp).HasMember(type, name)
+            : type.GetMembers(mem => mem.Name == name).Any();
+
+    private static bool HasOnesComplementOperator(IType type)
+    {
+        if (type.GetDefinition()?.ParentModule?.Compilation is { } comp)
+        {
+            foreach (var m in TypeSystemCache.For(comp).GetMembers(type))
+                if (m is IMethod && m.Name == "op_OnesComplement") return true;
+            return false;
+        }
+        return type.GetMethods(m => m.Name == "op_OnesComplement").Any();
+    }
+
     private static bool IsNonNullableValueTarget(Expression target)
     {
         var vt = target.Annotation<ResolveResult>()?.Type;
         if (vt is not null && vt.Kind is not (TypeKind.Unknown or TypeKind.TypeParameter))
-            return vt.FullName != "System.Nullable" && !vt.GetMembers(mem => mem.Name == "Value").Any();
+            return vt.FullName != "System.Nullable" && !HasMemberCached(vt, "Value");
         if (target is DefaultValueExpression dve && dve.Type is not ComposedType { HasNullableSpecifier: true }
             && dve.Type is not SimpleType { Identifier: "Nullable" } && dve.Type is not MemberType { MemberName: "Nullable" })
         {
             var dt = dve.Type.Annotation<TypeResolveResult>()?.Type;
             return dt is not null && dt.Kind is not (TypeKind.Unknown or TypeKind.TypeParameter)
-                && dt.FullName != "System.Nullable" && !dt.GetMembers(mem => mem.Name == "Value").Any();
+                && dt.FullName != "System.Nullable" && !HasMemberCached(dt, "Value");
         }
         return false;
     }
@@ -1159,8 +1471,20 @@ public static class CompileFixups
     private static bool IsAbstractTypeInTree(SyntaxTree tree, AstType type)
     {
         var name = type switch { SimpleType s => s.Identifier, MemberType m => m.MemberName, _ => "" };
-        return !string.IsNullOrEmpty(name) && tree.Descendants.OfType<TypeDeclaration>()
-            .Any(td => td.Modifiers.HasFlag(Modifiers.Abstract) && td.Name == name);
+        if (string.IsNullOrEmpty(name)) return false;
+        var found = false;
+        AstWalk.Visit<TypeDeclaration>(tree, td =>
+        {
+            if (!found && td.Modifiers.HasFlag(Modifiers.Abstract) && td.Name == name) found = true;
+        });
+        return found;
+    }
+
+    private static bool IsTypeNameInSet(HashSet<string> names, AstType type)
+    {
+        if (names.Count == 0) return false;
+        var name = type switch { SimpleType s => s.Identifier, MemberType m => m.MemberName, _ => "" };
+        return !string.IsNullOrEmpty(name) && names.Contains(name);
     }
 
     private static bool TryEvalConstInt(Expression expr, out long value)
@@ -1235,12 +1559,37 @@ public static class CompileFixups
 
     private static bool IsUnresolvedDelegatePtr(Expression first, Expression last) => last switch
     {
-        DefaultValueExpression d => d.Type.ToString() is "nint" or "IntPtr" or "System.IntPtr",
+        DefaultValueExpression d => IsNintAstType(d.Type),
         CastExpression { Expression: PrimitiveExpression { Value: 0 } } c =>
-            c.Type.ToString() is "nint" or "IntPtr" or "System.IntPtr" || first is NullReferenceExpression,
+            IsNintAstType(c.Type) || first is NullReferenceExpression,
         InvocationExpression { Target: MemberReferenceExpression { MemberName: "Reinterpret" } mr } =>
-            mr.TypeArguments.FirstOrDefault()?.ToString() is "nint" or "IntPtr" or "System.IntPtr",
+            IsNintAstType(mr.TypeArguments.FirstOrDefault()),
         _ => false,
+    };
+
+    private static bool IsNintAstType(AstType? type) => type switch
+    {
+        PrimitiveType { Keyword: "nint" } => true,
+        SimpleType { TypeArguments.Count: 0, Identifier: "nint" or "IntPtr" } => true,
+        MemberType { TypeArguments.Count: 0, MemberName: "IntPtr", Target: SimpleType { TypeArguments.Count: 0, Identifier: "System" or "global::System" } or MemberType { MemberName: "System", Target: SimpleType { Identifier: "global" } } } => true,
+        _ => false,
+    };
+
+    private static bool IsStringAstType(AstType? type) => type switch
+    {
+        PrimitiveType { Keyword: "string" } => true,
+        SimpleType { TypeArguments.Count: 0, Identifier: "String" or "string" } => true,
+        MemberType { TypeArguments.Count: 0, MemberName: "String", Target: SimpleType { TypeArguments.Count: 0, Identifier: "System" or "global::System" } or MemberType { MemberName: "System", Target: SimpleType { Identifier: "global" } } } => true,
+        _ => false,
+    };
+
+    private static bool IsUnsafeTarget(Expression expr) => expr switch
+    {
+        TypeReferenceExpression { Type: SimpleType { TypeArguments.Count: 0, Identifier: var id } } => id.EndsWith("Unsafe", StringComparison.Ordinal),
+        TypeReferenceExpression { Type: MemberType { TypeArguments.Count: 0, MemberName: var mn } } => mn.EndsWith("Unsafe", StringComparison.Ordinal),
+        IdentifierExpression { TypeArguments.Count: 0, Identifier: var id } => id.EndsWith("Unsafe", StringComparison.Ordinal),
+        MemberReferenceExpression { TypeArguments.Count: 0, MemberName: var mn } => mn.EndsWith("Unsafe", StringComparison.Ordinal),
+        _ => expr.ToString().EndsWith("Unsafe", StringComparison.Ordinal),
     };
 
     private static bool IsReinterpretCall(Expression e) => e is InvocationExpression { Target: MemberReferenceExpression { MemberName: "Reinterpret" } };

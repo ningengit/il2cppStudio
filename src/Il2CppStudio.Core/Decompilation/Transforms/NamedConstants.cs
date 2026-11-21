@@ -26,9 +26,12 @@ public static class NamedConstants
         ["Quaternion"] = [([0, 0, 0, 1], "identity")],
     };
 
-    public static void Apply(SyntaxTree tree)
+    public static void Apply(SyntaxTree tree) => Apply(tree, AstWalk.ScanFlags(tree));
+
+    internal static void Apply(SyntaxTree tree, in TreeFlags flags)
     {
-        foreach (var oce in tree.Descendants.OfType<ObjectCreateExpression>().ToList())
+        if (!flags.HasVectorOps) return;
+        foreach (var oce in AstWalk.Collect<ObjectCreateExpression>(tree))
         {
             if (oce.Type is not SimpleType { Identifier: var typeName } || !Table.TryGetValue(typeName, out var entries)) continue;
             var args = oce.Arguments.Select(Literal).ToList();

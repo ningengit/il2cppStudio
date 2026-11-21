@@ -19,7 +19,7 @@ internal readonly record struct CachedRegistration(
 internal static class RegistrationCache
 {
     private const uint Magic = 0x43524C49; // "ILRC"
-    private const int FormatVersion = 1;
+    private const int FormatVersion = 2;
     private const int EdgeSampleBytes = 64 * 1024;
 
     public static string CacheDirectory

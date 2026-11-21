@@ -13,23 +13,52 @@ public static class BoolLocalPromoter
     {
         for (var pass = 0; pass < 4; pass++)
         {
-            var changed = false;
-            foreach (var decl in tree.Descendants.OfType<VariableDeclarationStatement>().ToList())
+            List<VariableDeclarationStatement>? decls = null;
+            AstWalk.Visit<VariableDeclarationStatement>(tree, decl =>
             {
-                if (decl.Parent is null || decl.Variables.Count != 1 || decl.Type is not PrimitiveType { Keyword: "int" or "uint" }) continue;
+                if (decl.Parent is not null && decl.Variables.Count == 1 && decl.Type is PrimitiveType { Keyword: "int" or "uint" })
+                {
+                    var init = decl.Variables.Single().Initializer;
+                    if (!init.IsNull && BoolNormalizer.TryBool(init) is not null)
+                        (decls ??= []).Add(decl);
+                }
+            });
+            if (decls is null) break;
+
+            var changed = false;
+            var scopeUses = new Dictionary<AstNode, Dictionary<string, List<IdentifierExpression>>>();
+            foreach (var decl in decls)
+            {
+                if (!AstWalk.IsAttachedTo(decl, tree) || decl.Variables.Count != 1 || decl.Type is not PrimitiveType { Keyword: "int" or "uint" }) continue;
                 var v = decl.Variables.Single();
                 if (v.Initializer.IsNull || BoolNormalizer.TryBool(v.Initializer) is not { } value) continue;
-                var scope = decl.Parent;
-                var uses = scope.Descendants.OfType<IdentifierExpression>().Where(i => i.Identifier == v.Name).ToList();
-                if (uses.Count == 0 || !uses.All(u => IsBoolContext(u, scope))) continue;
+                var scope = decl.Parent!;
+                if (!scopeUses.TryGetValue(scope, out var byName))
+                {
+                    byName = new Dictionary<string, List<IdentifierExpression>>(StringComparer.Ordinal);
+                    AstWalk.Visit<IdentifierExpression>(scope, i =>
+                    {
+                        if (!byName.TryGetValue(i.Identifier, out var list))
+                            byName[i.Identifier] = list = [];
+                        list.Add(i);
+                    });
+                    scopeUses[scope] = byName;
+                }
+                var uses = byName.TryGetValue(v.Name, out var rawUses)
+                    ? rawUses.Where(u => AstWalk.IsAttachedTo(u, scope)).ToList()
+                    : null;
+                if (uses is null || uses.Count == 0 || !uses.All(u => IsBoolContext(u, scope))) continue;
 
+                var originalWasUint = decl.Type is PrimitiveType { Keyword: "uint" };
                 decl.Type = new PrimitiveType("bool");
                 v.Initializer = value;
                 foreach (var u in uses)
                 {
+                    if (!AstWalk.IsAttachedTo(u, scope)) continue;
                     var outer = Outer(u);
+                    if (!AstWalk.IsAttachedTo(outer, scope)) continue;
                     // Keep the operand's integer type (uint casts stay uint) so surrounding arithmetic is unchanged.
-                    var unsigned = outer is CastExpression { Type: PrimitiveType { Keyword: "uint" } } || decl.Type is PrimitiveType { Keyword: "uint" };
+                    var unsigned = outer is CastExpression { Type: PrimitiveType { Keyword: "uint" } } || originalWasUint;
                     var asInt = new ConditionalExpression(new IdentifierExpression(v.Name),
                         new PrimitiveExpression(unsigned ? 1u : (object)1), new PrimitiveExpression(unsigned ? 0u : (object)0));
                     outer.ReplaceWith(asInt);
@@ -68,13 +97,17 @@ public static class BoolLocalPromoter
         while (sib is CastExpression { Type: PrimitiveType { Keyword: "uint" or "int" or "byte" or "bool" } } or ParenthesizedExpression)
             sib = sib is CastExpression c ? c.Expression : ((ParenthesizedExpression)sib).Expression;
         if (sib is not IdentifierExpression id) return false;
-        var decl = scope.Descendants.OfType<VariableDeclarationStatement>()
-            .FirstOrDefault(d => d.Variables.Count == 1 && d.Variables.Single().Name == id.Identifier);
+        VariableDeclarationStatement? decl = null;
+        AstWalk.Visit<VariableDeclarationStatement>(scope, d =>
+        {
+            if (decl is null && d.Variables.Count == 1 && d.Variables.Single().Name == id.Identifier)
+                decl = d;
+        });
         if (decl is null) return false;
         if (decl.Type is PrimitiveType { Keyword: "bool" }) return true;
         if (decl.Type is not PrimitiveType { Keyword: "int" or "uint" }) return false;
         var v = decl.Variables.Single();
         if (v.Initializer.IsNull || BoolNormalizer.TryBool(v.Initializer) is null) return false;
-        return !scope.Descendants.OfType<AssignmentExpression>().Any(a => a.Left is IdentifierExpression w && w.Identifier == id.Identifier);
+        return !AstWalk.HasAny(scope, n => n is AssignmentExpression a && a.Left is IdentifierExpression w && w.Identifier == id.Identifier);
     }
 }
