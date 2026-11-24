@@ -5,10 +5,13 @@
     <RootNamespace>Il2CppStudio.Tests</RootNamespace>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <IsTestingPlatformApplication>false</IsTestingPlatformApplication>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Il2CppStudio.Core\Il2CppStudio.Core.csproj" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="xunit.v3.mtp-v2" />
   </ItemGroup>
 

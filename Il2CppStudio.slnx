@@ -4,6 +4,7 @@
     <Project Path="src/Il2CppStudio.Cli/Il2CppStudio.Cli.csproj" />
     <Project Path="src/Il2CppStudio.Ui/Il2CppStudio.Ui.csproj" />
     <Project Path="src/Il2CppStudio.Gui/Il2CppStudio.Gui.csproj" />
+    <Project Path="src/Il2CppStudio.Android/Il2CppStudio.Android.csproj" />
   </Folder>
   <Folder Name="/src/vendor/">
     <Project Path="src/vendor/AsmArm64/AsmArm64.csproj" />

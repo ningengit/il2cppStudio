@@ -16,9 +16,43 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <AndroidSdkDirectory Condition="'$(AndroidSdkDirectory)' == '' and '$(ANDROID_HOME)' != '' and Exists('$(ANDROID_HOME)')">$(ANDROID_HOME)</AndroidSdkDirectory>
+    <AndroidSdkDirectory Condition="'$(AndroidSdkDirectory)' == '' and '$(LOCALAPPDATA)' != '' and Exists('$(LOCALAPPDATA)\Android\Sdk')">$(LOCALAPPDATA)\Android\Sdk</AndroidSdkDirectory>
+
+    <_JavaHomeBin Condition="'$(JAVA_HOME)' != ''">$([MSBuild]::EnsureTrailingSlash('$(JAVA_HOME)'))bin\java.exe</_JavaHomeBin>
+    <_JavaHomeReleaseFile Condition="'$(JAVA_HOME)' != '' and '$(_JavaHomeBin)' != '' and Exists('$(_JavaHomeBin)')">$([MSBuild]::EnsureTrailingSlash('$(JAVA_HOME)'))release</_JavaHomeReleaseFile>
+    <_JavaHomeMajor Condition="'$(JavaSdkDirectory)' == '' and '$(_JavaHomeReleaseFile)' != '' and Exists('$(_JavaHomeReleaseFile)')">$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(_JavaHomeReleaseFile)')), '(?&lt;=JAVA_VERSION=&quot;)\d+').Value)</_JavaHomeMajor>
+    <_JavaHomeIsModern>false</_JavaHomeIsModern>
+    <_JavaHomeIsModern Condition="'$(_JavaHomeMajor)' != ''">$([MSBuild]::VersionGreaterThanOrEquals('$(_JavaHomeMajor).0', '21.0'))</_JavaHomeIsModern>
+    <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and '$(_JavaHomeIsModern)' == 'True'">$(JAVA_HOME)</JavaSdkDirectory>
+    <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and Exists('C:\Program Files\Android\Android Studio\jbr\bin\java.exe')">C:\Program Files\Android\Android Studio\jbr</JavaSdkDirectory>
+    <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and Exists('C:\Program Files\Android\AndroidStudioLatest\jbr\bin\java.exe')">C:\Program Files\Android\AndroidStudioLatest\jbr</JavaSdkDirectory>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Il2CppStudio.Ui\Il2CppStudio.Ui.csproj" />
     <PackageReference Include="Avalonia.Android" />
   </ItemGroup>
+
+  <Target Name="CopyReleaseApkToDist"
+          AfterTargets="Build"
+          Condition="'$(Configuration)' == 'Release' and '$(BuildingInsideVisualStudio)' != 'true' and Exists('$(ApkFileSigned)')">
+    <PropertyGroup>
+      <_DistAndroidDir>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..\dist\android-arm64'))</_DistAndroidDir>
+      <_ApkSignedDest>$([System.IO.Path]::Combine('$(_DistAndroidDir)', '$([System.IO.Path]::GetFileName('$(ApkFileSigned)'))'))</_ApkSignedDest>
+      <_ApkUnsignedDest Condition="'$(ApkFile)' != '' and Exists('$(ApkFile)')">$([System.IO.Path]::Combine('$(_DistAndroidDir)', '$([System.IO.Path]::GetFileName('$(ApkFile)'))'))</_ApkUnsignedDest>
+    </PropertyGroup>
+    <MakeDir Directories="$(_DistAndroidDir)" />
+    <Copy SourceFiles="$(ApkFileSigned)"
+          DestinationFiles="$(_ApkSignedDest)"
+          SkipUnchangedFiles="false"
+          Condition="$([System.String]::Compare('$([System.IO.Path]::GetFullPath('$(ApkFileSigned)'))', '$(_ApkSignedDest)', true)) != 0" />
+    <Copy SourceFiles="$(ApkFile)"
+          DestinationFiles="$(_ApkUnsignedDest)"
+          SkipUnchangedFiles="false"
+          Condition="'$(_ApkUnsignedDest)' != '' and $([System.String]::Compare('$([System.IO.Path]::GetFullPath('$(ApkFile)'))', '$(_ApkUnsignedDest)', true)) != 0" />
+    <Message Importance="high" Text="APK packaged to $(_ApkSignedDest)" />
+  </Target>
 
 </Project>
