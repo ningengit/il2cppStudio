@@ -34,8 +34,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty] private string _title = "Il2CppStudio";
     [ObservableProperty] private string _modeLabel = "No folder loaded";
-    [ObservableProperty] private string _status = "Drop a game file/folder here, or use File → Load File / Load Folder…";
+    [ObservableProperty] private string _status = OperatingSystem.IsAndroid()
+        ? "Tap File → Load File to open an APK, NSP, PKG, IPA, or game binary..."
+        : "Drop a game file/folder here, or use File → Load File / Load Folder…";
     [ObservableProperty] private string _searchText = "";
+
+    public bool IsAndroid => OperatingSystem.IsAndroid();
+    public bool IsDesktop => !OperatingSystem.IsAndroid();
     [ObservableProperty] private bool _isSearching;
     [ObservableProperty] private string _searchSummary = "";
     [ObservableProperty] private IReadOnlyList<TreeNodeViewModel> _searchResults = Array.Empty<TreeNodeViewModel>();

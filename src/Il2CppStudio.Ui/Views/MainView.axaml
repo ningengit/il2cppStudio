@@ -5,36 +5,73 @@
              xmlns:ae="using:AvaloniaEdit"
              x:Class="Il2CppStudio.Gui.Views.MainView"
              x:DataType="vm:MainViewModel">
-  <Grid>
-    <DockPanel>
-      <!-- Menu bar -->
-      <Menu DockPanel.Dock="Top">
-        <MenuItem Header="_File">
-          <MenuItem Header="_Load Folder…" Command="{Binding LoadFolderCommand}" InputGesture="Ctrl+O" />
-          <MenuItem Header="Load _File…" Command="{Binding LoadFileCommand}" InputGesture="Ctrl+Shift+O" />
-          <MenuItem Header="_Export All…" Command="{Binding ExportAllCommand}" InputGesture="Ctrl+E" />
-          <Separator />
-          <MenuItem Header="E_xit" Click="OnExit" />
-        </MenuItem>
-        <MenuItem Header="_View">
-          <MenuItem Header="Substitute BCL (Clean/Fast)" ToggleType="CheckBox" IsChecked="{Binding SubstituteBcl}" />
-        </MenuItem>
-        <MenuItem Header="_Tools">
-          <MenuItem Header="Configure Diagnostic _Boot Flags…" Command="{Binding ConfigureBootFlagsCommand}" />
-          <MenuItem Header="Export _Resources…" Command="{Binding ExportResourcesCommand}" />
-        </MenuItem>
-      </Menu>
+  <Border x:Name="RootSafeArea">
+    <Grid>
+      <DockPanel>
+        <!-- Desktop menu bar -->
+        <Menu DockPanel.Dock="Top" IsVisible="{Binding IsDesktop}">
+          <MenuItem Header="_File">
+            <MenuItem Header="_Load Folder…" Command="{Binding LoadFolderCommand}" InputGesture="Ctrl+O" />
+            <MenuItem Header="Load _File…" Command="{Binding LoadFileCommand}" InputGesture="Ctrl+Shift+O" />
+            <MenuItem Header="_Export All…" Command="{Binding ExportAllCommand}" InputGesture="Ctrl+E" />
+            <Separator />
+            <MenuItem Header="E_xit" Click="OnExit" />
+          </MenuItem>
+          <MenuItem Header="_View">
+            <MenuItem Header="Substitute BCL (Clean/Fast)" ToggleType="CheckBox" IsChecked="{Binding SubstituteBcl}" />
+          </MenuItem>
+          <MenuItem Header="_Tools">
+            <MenuItem Header="Configure Diagnostic _Boot Flags…" Command="{Binding ConfigureBootFlagsCommand}" />
+            <MenuItem Header="Export _Resources…" Command="{Binding ExportResourcesCommand}" />
+          </MenuItem>
+        </Menu>
 
-      <!-- Status bar -->
-      <Border DockPanel.Dock="Bottom" Background="#1E1E1E" Padding="8,3">
-        <DockPanel>
-          <TextBlock DockPanel.Dock="Right" Text="{Binding ModeLabel}" Foreground="#4EC9B0" FontWeight="SemiBold" />
-          <ProgressBar DockPanel.Dock="Right" IsIndeterminate="True" IsVisible="{Binding IsBusy}" Width="120" Margin="8,0" />
-          <TextBlock Text="{Binding Status}" TextTrimming="CharacterEllipsis" />
-        </DockPanel>
-      </Border>
+        <!-- Touch-friendly menu bar on Android -->
+        <Border x:Name="AndroidMenuBar"
+                DockPanel.Dock="Top"
+                IsVisible="{Binding IsAndroid}"
+                Background="#252526"
+                BorderBrush="#3F3F46"
+                BorderThickness="0,0,0,1"
+                Padding="6,4">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <Button Content="File" Padding="14,8" MinHeight="40">
+              <Button.Flyout>
+                <MenuFlyout Placement="BottomEdgeAlignedLeft">
+                  <MenuItem Header="Load File…" Command="{Binding LoadFileCommand}" />
+                  <MenuItem Header="Load Folder…" Command="{Binding LoadFolderCommand}" />
+                  <MenuItem Header="Export All…" Command="{Binding ExportAllCommand}" />
+                </MenuFlyout>
+              </Button.Flyout>
+            </Button>
+            <Button Content="View" Padding="14,8" MinHeight="40">
+              <Button.Flyout>
+                <MenuFlyout Placement="BottomEdgeAlignedLeft">
+                  <MenuItem Header="Substitute BCL (Clean/Fast)" ToggleType="CheckBox" IsChecked="{Binding SubstituteBcl}" />
+                </MenuFlyout>
+              </Button.Flyout>
+            </Button>
+            <Button Content="Tools" Padding="14,8" MinHeight="40">
+              <Button.Flyout>
+                <MenuFlyout Placement="BottomEdgeAlignedLeft">
+                  <MenuItem Header="Configure Diagnostic Boot Flags…" Command="{Binding ConfigureBootFlagsCommand}" />
+                  <MenuItem Header="Export Resources…" Command="{Binding ExportResourcesCommand}" />
+                </MenuFlyout>
+              </Button.Flyout>
+            </Button>
+          </StackPanel>
+        </Border>
 
-      <Grid ColumnDefinitions="380,4,*">
+        <!-- Status bar -->
+        <Border DockPanel.Dock="Bottom" Background="#1E1E1E" Padding="8,3">
+          <DockPanel>
+            <TextBlock DockPanel.Dock="Right" Text="{Binding ModeLabel}" Foreground="#4EC9B0" FontWeight="SemiBold" />
+            <ProgressBar DockPanel.Dock="Right" IsIndeterminate="True" IsVisible="{Binding IsBusy}" Width="120" Margin="8,0" />
+            <TextBlock Text="{Binding Status}" TextTrimming="CharacterEllipsis" />
+          </DockPanel>
+        </Border>
+
+        <Grid x:Name="WorkspaceGrid" ColumnDefinitions="380,4,*">
         <!-- Left sidebar: assembly tree + virtualized flat search -->
         <DockPanel Grid.Column="0">
           <TextBox DockPanel.Dock="Top" Margin="4" Watermark="Search types and methods…" Text="{Binding SearchText}" />
@@ -130,8 +167,42 @@
           <GridSplitter Grid.Row="1" ResizeDirection="Rows" />
 
           <!-- Bottom panels -->
-          <TabControl Grid.Row="2">
-            <TabItem Header="Diagnostics Logs">
+          <TabControl x:Name="BottomTabs" Grid.Row="2">
+            <TabControl.Styles>
+              <Style Selector="TabItem">
+                <Setter Property="FontSize" Value="13" />
+                <Setter Property="MinHeight" Value="32" />
+                <Setter Property="Padding" Value="10,4" />
+              </Style>
+            </TabControl.Styles>
+            <TabControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <StackPanel Orientation="Horizontal" Spacing="2" />
+              </ItemsPanelTemplate>
+            </TabControl.ItemsPanel>
+            <TabControl.Template>
+              <ControlTemplate TargetType="TabControl">
+                <Border Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}">
+                  <DockPanel>
+                    <ScrollViewer DockPanel.Dock="Top"
+                                  HorizontalScrollBarVisibility="Auto"
+                                  VerticalScrollBarVisibility="Disabled">
+                      <ItemsPresenter Name="PART_ItemsPresenter"
+                                      ItemsPanel="{TemplateBinding ItemsPanel}" />
+                    </ScrollViewer>
+                    <ContentPresenter Name="PART_SelectedContentHost"
+                                      Margin="{TemplateBinding Padding}"
+                                      HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                      VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+                                      Content="{TemplateBinding SelectedContent}"
+                                      ContentTemplate="{TemplateBinding SelectedContentTemplate}" />
+                  </DockPanel>
+                </Border>
+              </ControlTemplate>
+            </TabControl.Template>
+            <TabItem Header="Logs" ToolTip.Tip="Diagnostics Logs">
               <ListBox ItemsSource="{Binding Diagnostics}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12">
                 <ListBox.ItemTemplate>
                   <DataTemplate x:DataType="diag:Diagnostic">
@@ -140,10 +211,10 @@
                 </ListBox.ItemTemplate>
               </ListBox>
             </TabItem>
-            <TabItem Header="Binary / Metadata Inspection Info">
+            <TabItem Header="Inspection" ToolTip.Tip="Binary / Metadata Inspection Info">
               <ae:TextEditor x:Name="InspectionEditor" IsReadOnly="True" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12" />
             </TabItem>
-            <TabItem Header="Exported Resources">
+            <TabItem Header="Resources" ToolTip.Tip="Exported Resources">
               <ListBox ItemsSource="{Binding ExportedResources}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12" />
             </TabItem>
           </TabControl>
@@ -219,4 +290,5 @@
       </Border>
     </Border>
   </Grid>
+  </Border>
 </UserControl>

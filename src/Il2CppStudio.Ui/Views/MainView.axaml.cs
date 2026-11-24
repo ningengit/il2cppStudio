@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Controls.Platform;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
@@ -17,11 +18,17 @@ namespace Il2CppStudio.Gui.Views;
 public sealed partial class MainView : UserControl, IUiServices
 {
     private MainViewModel? _attachedVm;
+    private IInsetsManager? _insetsManager;
     private TaskCompletionSource<string?>? _promptTcs;
 
     public MainView()
     {
         InitializeComponent();
+        if (OperatingSystem.IsAndroid())
+        {
+            WorkspaceGrid.ColumnDefinitions[0].Width = new GridLength(0.35, GridUnitType.Star);
+            WorkspaceGrid.ColumnDefinitions[2].Width = new GridLength(0.65, GridUnitType.Star);
+        }
         try
         {
             var options = new RegistryOptions(ThemeName.DarkPlus);
@@ -61,6 +68,12 @@ public sealed partial class MainView : UserControl, IUiServices
     private void Attach()
     {
         Detach();
+        if (HostTopLevel?.InsetsManager is { } insetsManager)
+        {
+            _insetsManager = insetsManager;
+            _insetsManager.SafeAreaChanged += OnSafeAreaChanged;
+            RootSafeArea.Padding = _insetsManager.SafeAreaPadding;
+        }
         if (Vm is not { } vm) return;
         _attachedVm = vm;
         vm.Ui = this;
@@ -69,12 +82,20 @@ public sealed partial class MainView : UserControl, IUiServices
 
     private void Detach()
     {
+        if (_insetsManager is not null)
+        {
+            _insetsManager.SafeAreaChanged -= OnSafeAreaChanged;
+            _insetsManager = null;
+        }
         if (_attachedVm is null) return;
         _attachedVm.PropertyChanged -= OnVmPropertyChanged;
         if (ReferenceEquals(_attachedVm.Ui, this))
             _attachedVm.Ui = null;
         _attachedVm = null;
     }
+
+    private void OnSafeAreaChanged(object? sender, SafeAreaChangedArgs e) =>
+        RootSafeArea.Padding = e.SafeAreaPadding;
 
     private void OnNodeContextRequested(object? sender, ContextRequestedEventArgs e)
     {
