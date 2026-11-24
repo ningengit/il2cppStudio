@@ -65,7 +65,9 @@ git clone https://github.com/ningengit/il2cppStudio.git
 cd il2cppStudio
 dotnet build -c Release
 dotnet publish src\Il2CppStudio.Gui\Il2CppStudio.Gui.csproj -c Release -r win-x64 --self-contained -o dist\win-x64
+dotnet publish src\Il2CppStudio.Gui\Il2CppStudio.Gui.csproj -c Release -r win-arm64 --self-contained -o dist\win-arm64
 dotnet publish src\Il2CppStudio.Gui\Il2CppStudio.Gui.csproj -c Release -r linux-x64 --self-contained -o dist\linux-x64
+dotnet publish src\Il2CppStudio.Gui\Il2CppStudio.Gui.csproj -c Release -r linux-arm64 --self-contained -o dist\linux-arm64
 dotnet publish src\Il2CppStudio.Gui\Il2CppStudio.Gui.csproj -c Release -r osx-arm64 --self-contained -o dist\osx-arm64
 dotnet publish src\Il2CppStudio.Gui\Il2CppStudio.Gui.csproj -c Release -r osx-x64 --self-contained -o dist\osx-x64
 ```
