@@ -9,8 +9,8 @@
     <RootNamespace>Il2CppStudio.Android</RootNamespace>
     <AssemblyName>Il2CppStudio.Android</AssemblyName>
     <ApplicationId>com.il2cppstudio.app</ApplicationId>
-    <ApplicationVersion>1</ApplicationVersion>
-    <ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
+    <ApplicationVersion>20300</ApplicationVersion>
+    <ApplicationDisplayVersion>2.3.0</ApplicationDisplayVersion>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
