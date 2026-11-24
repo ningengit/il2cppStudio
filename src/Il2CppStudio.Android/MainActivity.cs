@@ -8,7 +8,7 @@ namespace Il2CppStudio.Android;
 
 [Activity(
     Label = "Il2CppStudio",
-    Theme = "@android:style/Theme.Material.NoActionBar",
+    Theme = "@style/MyTheme.NoActionBar",
     MainLauncher = true,
     LaunchMode = LaunchMode.SingleTop,
     ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize | ConfigChanges.UiMode)]

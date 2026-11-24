@@ -29,15 +29,32 @@ if (-not $hasAndroidWorkload) {
     exit 0
 }
 
-# Android builds require JDK 17+; upgrade JAVA_HOME automatically if an older JDK 8 is active.
-if ([string]::IsNullOrWhiteSpace($env:JAVA_HOME) -or $env:JAVA_HOME -match "jdk[-_]?1\.?8|jdk-8") {
+# Detect local Android Studio SDK if ANDROID_HOME is unset or missing on disk.
+if ([string]::IsNullOrWhiteSpace($env:ANDROID_HOME) -or -not (Test-Path $env:ANDROID_HOME)) {
+    $sdkCandidate = Join-Path $env:LOCALAPPDATA "Android\Sdk"
+    if (Test-Path $sdkCandidate) {
+        $env:ANDROID_HOME = $sdkCandidate
+    }
+}
+
+# .NET 11 Android requires JDK 21+; upgrade JAVA_HOME automatically if unset, missing, or < 21.
+$needsJdk = [string]::IsNullOrWhiteSpace($env:JAVA_HOME) -or
+    -not (Test-Path (Join-Path $env:JAVA_HOME "bin\java.exe")) -or
+    ($env:JAVA_HOME -match "jdk[-_]?1\.?8|jdk-8|jdk-11|jdk-17|jdk-18|jdk-19|jdk-20")
+if (-not $needsJdk) {
+    $verOut = (& (Join-Path $env:JAVA_HOME "bin\java.exe") -version 2>&1) -join "`n"
+    if ($verOut -match 'version "(\d+)') {
+        if ([int]$matches[1] -lt 21) { $needsJdk = $true }
+    }
+}
+if ($needsJdk) {
     $jdkCandidates = @(
-        "C:\Program Files\Android\AndroidStudioLatest\jbr",
         "C:\Program Files\Android\Android Studio\jbr",
+        "C:\Program Files\Android\AndroidStudioLatest\jbr",
+        "C:\Program Files\Eclipse Adoptium\jdk-25*",
         "C:\Program Files\Eclipse Adoptium\jdk-21*",
-        "C:\Program Files\Eclipse Adoptium\jdk-17*",
-        "C:\Program Files\Java\jdk-21*",
-        "C:\Program Files\Java\jdk-17*"
+        "C:\Program Files\Java\jdk-25*",
+        "C:\Program Files\Java\jdk-21*"
     )
     foreach ($pat in $jdkCandidates) {
         $match = Get-ChildItem $pat -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -49,9 +66,11 @@ if ([string]::IsNullOrWhiteSpace($env:JAVA_HOME) -or $env:JAVA_HOME -match "jdk[
 }
 
 $outApkDir = Join-Path $PSScriptRoot "dist\android-arm64"
+$androidAssets = Join-Path $PSScriptRoot "src\Il2CppStudio.Android\obj\project.assets.json"
 [string[]]$apkArgs = @(
     "publish", "src\Il2CppStudio.Android\Il2CppStudio.Android.csproj",
     "-c", $Configuration,
+    "-f", "net11.0-android",
     "-r", "android-arm64",
     "-p:AndroidPackageFormat=apk",
     "-p:UseSharedCompilation=false",
@@ -60,7 +79,13 @@ $outApkDir = Join-Path $PSScriptRoot "dist\android-arm64"
     "-o", $outApkDir,
     "-clp:NoSummary;ErrorsOnly"
 )
-if (-not $Restore) { $apkArgs += "--no-restore" }
+if (-not [string]::IsNullOrWhiteSpace($env:ANDROID_HOME) -and (Test-Path $env:ANDROID_HOME)) {
+    $apkArgs += "-p:AndroidSdkDirectory=$env:ANDROID_HOME"
+}
+if (-not [string]::IsNullOrWhiteSpace($env:JAVA_HOME) -and (Test-Path $env:JAVA_HOME)) {
+    $apkArgs += "-p:JavaSdkDirectory=$env:JAVA_HOME"
+}
+if (-not $Restore -and (Test-Path $androidAssets)) { $apkArgs += "--no-restore" }
 & dotnet @apkArgs 2>&1 |
     Where-Object { $_ -notmatch "MSBuild-Server|MSBuild server|NativeCommandError|CategoryInfo|FullyQualifiedErrorId|In Zeile|^\+ " }
 exit $LASTEXITCODE
