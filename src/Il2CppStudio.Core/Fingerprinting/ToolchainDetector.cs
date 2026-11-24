@@ -23,7 +23,7 @@ public static class ToolchainDetector
     {
         if (file.Length >= 4 && file[..4].SequenceEqual("\0asm"u8))
             return new(NativeCompiler.Emscripten, "wasm32", "WebAssembly", null, ["'\\0asm' magic: Unity WebGL builds use Emscripten (Clang/LLVM)."]);
-        if (file.Length >= 4 && BinaryPrimitives.ReadUInt32LittleEndian(file) is 0xFEEDFACF or 0xFEEDFACE or 0xBEBAFECA)
+        if (file.Length >= 4 && BinaryPrimitives.ReadUInt32LittleEndian(file) is 0xFEEDFACF or 0xFEEDFACE or 0xBEBAFECA or 0xBFBAFECA)
             return new(NativeCompiler.Clang, MachOArch(file), "Mach-O", null, ["Mach-O container: Apple toolchains are Clang-only (iOS/macOS)."]);
         if (file.Length >= 0x40 && file[0] == 0x7F && file[1] == 'E' && file[2] == 'L' && file[3] == 'F')
             return ElfToolchain.Detect(file);

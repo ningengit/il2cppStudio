@@ -1129,34 +1129,79 @@ internal sealed class Arm64BlockTranslator
         _ = pc;
     }
 
-    private Arm64HelperKind ClassifyNativeHelper(ulong va)
+    private Arm64HelperKind ClassifyNativeHelper(ulong va) =>
+        ClassifyNativeHelper(_sym.Registration.Reader, _helperCache, va);
+
+    internal static Arm64HelperKind ClassifyNativeHelper(
+        Binary.VirtualReader reader,
+        ConcurrentDictionary<ulong, Arm64HelperKind> cache,
+        ulong va)
     {
-        if (_helperCache.TryGetValue(va, out var cached)) return cached;
-        var kind = InspectHelper(va);
-        _helperCache[va] = kind;
+        if (cache.TryGetValue(va, out var cached)) return cached;
+        var kind = InspectHelper(reader, va, depth: 0);
+        cache[va] = kind;
         return kind;
     }
 
-    private Arm64HelperKind InspectHelper(ulong va)
+    private static Arm64HelperKind InspectHelper(Binary.VirtualReader reader, ulong va, int depth)
     {
-        var reader = _sym.Registration.Reader;
-        var head = reader.Slice(va, 24);
+        var impl = FollowBThunks(reader, va);
+        var scanVa = impl;
+        var head = reader.Slice(scanVa, 64);
         if (head.Length >= 8)
         {
-            // Wrapper with BL -> UDF (no return path) such as il2cpp_codegen_raise_exception
             var sawBl = false;
             var sawRet = false;
+            var sawBr = false;
+            var sawCond = false;
+            List<ulong>? blTargets = depth == 0 ? [] : null;
             for (var off = 0; off + 4 <= head.Length; off += 4)
             {
-                var ins = Arm64Instruction.Decode(BinaryPrimitives.ReadUInt32LittleEndian(head.Slice(off, 4)));
-                if (ins.Mnemonic == Arm64Mnemonic.RET) { sawRet = true; break; }
-                if (ins.Mnemonic == Arm64Mnemonic.BL) sawBl = true;
-                else if (sawBl && ins.Mnemonic is Arm64Mnemonic.UDF or Arm64Mnemonic.BRK) return Arm64HelperKind.NoReturn;
+                var raw = BinaryPrimitives.ReadUInt32LittleEndian(head.Slice(off, 4));
+                if (raw == 0) break;
+                var ins = Arm64Instruction.Decode(raw);
+                if (ins.Id == Arm64InstructionId.Invalid) break;
+                var m = ins.Mnemonic;
+                if (m is Arm64Mnemonic.RET or Arm64Mnemonic.BR)
+                {
+                    if (m == Arm64Mnemonic.RET) sawRet = true;
+                    else sawBr = true;
+                    break;
+                }
+                if (m is Arm64Mnemonic.CBZ or Arm64Mnemonic.CBNZ or Arm64Mnemonic.TBZ or Arm64Mnemonic.TBNZ
+                    || (m == Arm64Mnemonic.B && ins.OperandCount == 2))
+                {
+                    sawCond = true;
+                }
+                else if (m == Arm64Mnemonic.BL)
+                {
+                    sawBl = true;
+                    if (blTargets is not null)
+                    {
+                        var target = Arm64Lifter.BranchTarget(scanVa + (ulong)off, ins, 0);
+                        if (target != scanVa && target != va) blTargets.Add(target);
+                    }
+                }
+                else if (sawBl && m is Arm64Mnemonic.UDF or Arm64Mnemonic.BRK)
+                {
+                    return Arm64HelperKind.NoReturn;
+                }
             }
-            if (sawBl && !sawRet && head.Length < 16) return Arm64HelperKind.NoReturn;
+            if (sawBl && !sawRet && !sawBr && !sawCond)
+            {
+                if (head.Length < 16) return Arm64HelperKind.NoReturn;
+                if (blTargets is not null)
+                {
+                    foreach (var target in blTargets)
+                    {
+                        if (InspectHelper(reader, target, depth + 1) == Arm64HelperKind.NoReturn)
+                            return Arm64HelperKind.NoReturn;
+                    }
+                }
+            }
         }
+        if (depth > 0) return Arm64HelperKind.Unknown;
 
-        var impl = FollowBThunks(reader, va);
         var body = reader.Slice(impl, 96);
         if (body.Length < 8) return Arm64HelperKind.Unknown;
 

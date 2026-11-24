@@ -1,0 +1,222 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Il2CppStudio.Gui.ViewModels"
+             xmlns:diag="using:Il2CppStudio.Core.Diagnostics"
+             xmlns:ae="using:AvaloniaEdit"
+             x:Class="Il2CppStudio.Gui.Views.MainView"
+             x:DataType="vm:MainViewModel">
+  <Grid>
+    <DockPanel>
+      <!-- Menu bar -->
+      <Menu DockPanel.Dock="Top">
+        <MenuItem Header="_File">
+          <MenuItem Header="_Load Folder…" Command="{Binding LoadFolderCommand}" InputGesture="Ctrl+O" />
+          <MenuItem Header="Load _File…" Command="{Binding LoadFileCommand}" InputGesture="Ctrl+Shift+O" />
+          <MenuItem Header="_Export All…" Command="{Binding ExportAllCommand}" InputGesture="Ctrl+E" />
+          <Separator />
+          <MenuItem Header="E_xit" Click="OnExit" />
+        </MenuItem>
+        <MenuItem Header="_View">
+          <MenuItem Header="Substitute BCL (Clean/Fast)" ToggleType="CheckBox" IsChecked="{Binding SubstituteBcl}" />
+        </MenuItem>
+        <MenuItem Header="_Tools">
+          <MenuItem Header="Configure Diagnostic _Boot Flags…" Command="{Binding ConfigureBootFlagsCommand}" />
+          <MenuItem Header="Export _Resources…" Command="{Binding ExportResourcesCommand}" />
+        </MenuItem>
+      </Menu>
+
+      <!-- Status bar -->
+      <Border DockPanel.Dock="Bottom" Background="#1E1E1E" Padding="8,3">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Right" Text="{Binding ModeLabel}" Foreground="#4EC9B0" FontWeight="SemiBold" />
+          <ProgressBar DockPanel.Dock="Right" IsIndeterminate="True" IsVisible="{Binding IsBusy}" Width="120" Margin="8,0" />
+          <TextBlock Text="{Binding Status}" TextTrimming="CharacterEllipsis" />
+        </DockPanel>
+      </Border>
+
+      <Grid ColumnDefinitions="380,4,*">
+        <!-- Left sidebar: assembly tree + virtualized flat search -->
+        <DockPanel Grid.Column="0">
+          <TextBox DockPanel.Dock="Top" Margin="4" Watermark="Search types and methods…" Text="{Binding SearchText}" />
+          <TextBlock DockPanel.Dock="Top"
+                     Margin="6,0,6,4"
+                     FontSize="11"
+                     Foreground="#9CDCFE"
+                     IsVisible="{Binding IsSearching}"
+                     Text="{Binding SearchSummary}" />
+
+          <Grid>
+            <ListBox x:Name="SearchList"
+                     ItemsSource="{Binding SearchResults}"
+                     SelectedItem="{Binding SelectedSearchNode}"
+                     IsVisible="{Binding IsSearching}">
+              <ListBox.ContextMenu>
+                <ContextMenu x:DataType="vm:MainViewModel" IsVisible="{Binding ContextHasMenu}">
+                  <MenuItem Header="Copy RVA" Command="{Binding CopyRvaCommand}" IsEnabled="{Binding ContextIsMethod}" IsVisible="{Binding ContextHasCode}" />
+                  <MenuItem Header="View in HxD" Command="{Binding ViewInHxdCommand}" IsEnabled="{Binding ContextIsMethod}" IsVisible="{Binding ContextHasCode}" />
+                  <Separator IsVisible="{Binding ContextHasCode}" />
+                  <MenuItem Header="Export C#" Command="{Binding ExportCSharpCommand}" IsVisible="{Binding ContextHasCode}" />
+                  <MenuItem Header="Export C++" Command="{Binding ExportCppCommand}" IsVisible="{Binding ContextHasCode}" />
+                  <MenuItem Header="Export This Assembly…" Command="{Binding ExportAssemblyCommand}" IsVisible="{Binding ContextIsAssembly}" />
+                  <MenuItem Header="Export Assembly + References…" Command="{Binding ExportAssemblyWithReferencesCommand}" IsVisible="{Binding ContextIsAssembly}" />
+                </ContextMenu>
+              </ListBox.ContextMenu>
+              <ListBox.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <VirtualizingStackPanel />
+                </ItemsPanelTemplate>
+              </ListBox.ItemsPanel>
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:TreeNodeViewModel">
+                  <Grid ColumnDefinitions="20,*" Background="Transparent">
+                    <TextBlock Grid.Column="0" Text="{Binding Icon}" Foreground="#C586C0" VerticalAlignment="Center" />
+                    <StackPanel Grid.Column="1" Spacing="1">
+                      <TextBlock Text="{Binding Text}" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Text="{Binding Subtitle}" FontSize="11" Foreground="#888888" TextTrimming="CharacterEllipsis" IsVisible="{Binding HasSubtitle}" />
+                    </StackPanel>
+                  </Grid>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+
+            <TreeView x:Name="AssemblyTree"
+                      ItemsSource="{Binding Roots}"
+                      SelectedItem="{Binding SelectedTreeNode}"
+                      IsVisible="{Binding !IsSearching}">
+              <TreeView.ContextMenu>
+                <ContextMenu x:DataType="vm:MainViewModel" IsVisible="{Binding ContextHasMenu}">
+                  <MenuItem Header="Copy RVA" Command="{Binding CopyRvaCommand}" IsEnabled="{Binding ContextIsMethod}" IsVisible="{Binding ContextHasCode}" />
+                  <MenuItem Header="View in HxD" Command="{Binding ViewInHxdCommand}" IsEnabled="{Binding ContextIsMethod}" IsVisible="{Binding ContextHasCode}" />
+                  <Separator IsVisible="{Binding ContextHasCode}" />
+                  <MenuItem Header="Export C#" Command="{Binding ExportCSharpCommand}" IsVisible="{Binding ContextHasCode}" />
+                  <MenuItem Header="Export C++" Command="{Binding ExportCppCommand}" IsVisible="{Binding ContextHasCode}" />
+                  <MenuItem Header="Export This Assembly…" Command="{Binding ExportAssemblyCommand}" IsVisible="{Binding ContextIsAssembly}" />
+                  <MenuItem Header="Export Assembly + References…" Command="{Binding ExportAssemblyWithReferencesCommand}" IsVisible="{Binding ContextIsAssembly}" />
+                </ContextMenu>
+              </TreeView.ContextMenu>
+              <TreeView.Styles>
+                <Style Selector="TreeViewItem" x:DataType="vm:TreeNodeViewModel">
+                  <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                </Style>
+              </TreeView.Styles>
+              <TreeView.ItemTemplate>
+                <TreeDataTemplate x:DataType="vm:TreeNodeViewModel" ItemsSource="{Binding Children}">
+                  <StackPanel Orientation="Horizontal" Spacing="6" Background="Transparent">
+                    <TextBlock Text="{Binding Icon}" Foreground="#C586C0" Width="16" />
+                    <TextBlock Text="{Binding Text}" />
+                  </StackPanel>
+                </TreeDataTemplate>
+              </TreeView.ItemTemplate>
+            </TreeView>
+          </Grid>
+        </DockPanel>
+
+        <GridSplitter Grid.Column="1" ResizeDirection="Columns" />
+
+        <Grid Grid.Column="2" RowDefinitions="*,4,260">
+          <!-- Central 3-tab code viewer -->
+          <TabControl Grid.Row="0">
+            <TabItem Header="C/C++">
+              <ae:TextEditor x:Name="CppEditor" IsReadOnly="True" ShowLineNumbers="True" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="13" />
+            </TabItem>
+            <TabItem Header="IL Code">
+              <ae:TextEditor x:Name="IlEditor" IsReadOnly="True" ShowLineNumbers="True" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="13" />
+            </TabItem>
+            <TabItem Header="C#">
+              <ae:TextEditor x:Name="CSharpEditor" IsReadOnly="True" ShowLineNumbers="True" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="13" />
+            </TabItem>
+          </TabControl>
+
+          <GridSplitter Grid.Row="1" ResizeDirection="Rows" />
+
+          <!-- Bottom panels -->
+          <TabControl Grid.Row="2">
+            <TabItem Header="Diagnostics Logs">
+              <ListBox ItemsSource="{Binding Diagnostics}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12">
+                <ListBox.ItemTemplate>
+                  <DataTemplate x:DataType="diag:Diagnostic">
+                    <TextBlock Text="{Binding}" TextWrapping="NoWrap" />
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </TabItem>
+            <TabItem Header="Binary / Metadata Inspection Info">
+              <ae:TextEditor x:Name="InspectionEditor" IsReadOnly="True" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12" />
+            </TabItem>
+            <TabItem Header="Exported Resources">
+              <ListBox ItemsSource="{Binding ExportedResources}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12" />
+            </TabItem>
+          </TabControl>
+        </Grid>
+      </Grid>
+    </DockPanel>
+
+    <!-- In-view modal overlay for text prompt (works identically on Desktop and Android single-view lifetimes) -->
+    <Border x:Name="PromptOverlay"
+            IsVisible="False"
+            Background="#B0000000">
+      <Border Background="#252526"
+              BorderBrush="#3F3F46"
+              BorderThickness="1"
+              CornerRadius="6"
+              Padding="16"
+              MaxWidth="480"
+              HorizontalAlignment="Center"
+              VerticalAlignment="Center">
+        <StackPanel Spacing="12">
+          <TextBlock x:Name="PromptTitle" FontWeight="SemiBold" FontSize="15" />
+          <TextBlock x:Name="PromptMessage" TextWrapping="Wrap" />
+          <TextBox x:Name="PromptBox" MinWidth="320" />
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+            <Button x:Name="PromptCancelButton" Content="Cancel" MinWidth="80" />
+            <Button x:Name="PromptOkButton" Content="OK" Classes="accent" MinWidth="80" />
+          </StackPanel>
+        </StackPanel>
+      </Border>
+    </Border>
+
+    <!-- In-view modal overlay for diagnostic boot flags -->
+    <Border x:Name="BootConfigOverlay"
+            IsVisible="False"
+            Background="#B0000000">
+      <Border x:Name="BootConfigDialogHost"
+              x:DataType="vm:BootConfigViewModel"
+              Background="#252526"
+              BorderBrush="#3F3F46"
+              BorderThickness="1"
+              CornerRadius="6"
+              Padding="16"
+              MaxWidth="660"
+              HorizontalAlignment="Center"
+              VerticalAlignment="Center">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Text="Configure Diagnostic Boot Flags" FontWeight="SemiBold" FontSize="15" Margin="0,0,0,6" />
+          <TextBlock DockPanel.Dock="Top" Text="{Binding FilePath}" Foreground="Gray" Margin="0,0,0,12" TextTrimming="CharacterEllipsis" />
+          <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,12,0,0">
+            <TextBlock Text="{Binding Status}" Foreground="#4EC9B0" TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+              <Button Content="Restore Backup" Command="{Binding RestoreCommand}" />
+              <Button Content="Apply" Command="{Binding ApplyCommand}" Classes="accent" />
+              <Button Content="Close" Command="{Binding CloseCommand}" />
+            </StackPanel>
+          </StackPanel>
+          <ScrollViewer MaxHeight="260">
+            <ItemsControl ItemsSource="{Binding Entries}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:BootConfigEntry">
+                  <Grid ColumnDefinitions="30,220,*,130" Margin="0,4">
+                    <CheckBox Grid.Column="0" IsChecked="{Binding Enabled}" />
+                    <TextBlock Grid.Column="1" Text="{Binding Key}" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="2" Text="{Binding Value}" />
+                    <TextBlock Grid.Column="3" Text="{Binding Current, StringFormat='current: {0}', TargetNullValue='current: (unset)'}"
+                               Foreground="Gray" VerticalAlignment="Center" Margin="8,0,0,0" />
+                  </Grid>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+        </DockPanel>
+      </Border>
+    </Border>
+  </Grid>
+</UserControl>

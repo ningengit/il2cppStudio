@@ -15,11 +15,16 @@ namespace Il2CppStudio.Gui.ViewModels;
 /// </summary>
 public sealed partial class MainViewModel : ObservableObject, IDisposable
 {
+    private const int SearchDebounceMs = 200;
+    private const int MaxSearchResults = 500;
+
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Serilog.Core.Logger _logger;
     private readonly DiagnosticCollector _sink;
     private Il2CppWorkspace? _ws;
+    private WorkspaceSearchIndex? _searchIndex;
     private CancellationTokenSource? _renderCts;
+    private CancellationTokenSource? _searchCts;
 
     public IUiServices? Ui { get; set; }
 
@@ -31,24 +36,39 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _modeLabel = "No folder loaded";
     [ObservableProperty] private string _status = "Drop a game file/folder here, or use File → Load File / Load Folder…";
     [ObservableProperty] private string _searchText = "";
+    [ObservableProperty] private bool _isSearching;
+    [ObservableProperty] private string _searchSummary = "";
+    [ObservableProperty] private IReadOnlyList<TreeNodeViewModel> _searchResults = Array.Empty<TreeNodeViewModel>();
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private bool _substituteBcl = true;
     [ObservableProperty] private TreeNodeViewModel? _selectedNode;
+    [ObservableProperty] private TreeNodeViewModel? _selectedTreeNode;
+    [ObservableProperty] private TreeNodeViewModel? _selectedSearchNode;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(ContextHasMenu), nameof(ContextHasCode), nameof(ContextIsMethod), nameof(ContextIsAssembly))]
+    private TreeNodeViewModel? _contextNode;
     [ObservableProperty] private string _cppText = "";
     [ObservableProperty] private string _ilText = "";
     [ObservableProperty] private string _cSharpText = "";
     [ObservableProperty] private string _inspectionText = "";
     [ObservableProperty] private DiagnosticSeverity _minimumSeverity = DiagnosticSeverity.Information;
 
+    private TreeNodeViewModel? ContextTarget => ContextNode ?? SelectedNode;
+    public bool ContextHasMenu => ContextTarget?.HasMenu ?? false;
+    public bool ContextHasCode => ContextTarget?.HasCode ?? false;
+    public bool ContextIsMethod => ContextTarget?.IsMethod ?? false;
+    public bool ContextIsAssembly => ContextTarget?.IsAssembly ?? false;
+
     public MainViewModel()
     {
         _logger = LoggingSetup.CreateLogger(new LoggingOptions { EnableConsole = false });
         _sink = new DiagnosticCollector(_logger);
-        _sink.DiagnosticReported += d =>
-        {
-            if (d.Severity < MinimumSeverity) return;
-            if (Ui is { } ui) ui.Post(() => AddDiagnostic(d));
-        };
+        _sink.DiagnosticReported += OnDiagnosticReported;
+    }
+
+    private void OnDiagnosticReported(Diagnostic d)
+    {
+        if (d.Severity < MinimumSeverity) return;
+        if (Ui is { } ui) ui.Post(() => AddDiagnostic(d));
     }
 
     private void AddDiagnostic(Diagnostic d)
@@ -71,7 +91,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private async Task LoadFile()
     {
         if (Ui is null) return;
-        var file = await Ui.PickFileAsync("Select an APK, XAPK, PS4 PKG/PRX, Switch NSP/main, IL2CPP binary, WebGL wasm, or global-metadata.dat");
+        var file = await Ui.PickFileAsync("Select an APK, XAPK, iOS IPA/Mach-O, PS4 PKG/PRX, Switch NSP/main, IL2CPP binary, WebGL wasm, or global-metadata.dat");
         if (file is null) return;
         await LoadPathAsync(file);
     }
@@ -111,8 +131,24 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public async Task LoadFolderAsync(string folder, string? switchKeysetPath, string? ps4Passcode)
     {
+        CancelSearch();
+        _renderCts?.Cancel();
+        _renderCts?.Dispose();
+        _renderCts = null;
+
+        SelectedTreeNode = null;
+        SelectedSearchNode = null;
+        SelectedNode = null;
+        ContextNode = null;
+        IsSearching = false;
+        SearchSummary = "";
+        SearchResults = Array.Empty<TreeNodeViewModel>();
+        SearchText = "";
+        ReleaseTree();
+
         await RunBusy($"Loading {folder}…", () =>
         {
+            _searchIndex = null;
             _ws?.Dispose();
             _ws = null;
             var ws = Il2CppWorkspace.Load(folder, _sink, new WorkspaceOptions
@@ -122,13 +158,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 Ps4PkgPasscode = ps4Passcode,
             });
             WorkspaceSetup.Attach(ws);
+            _searchIndex = WorkspaceSearchIndex.Build(ws.Model);
             _ws = ws;
         });
         if (_ws is null) return;
         ModeLabel = _ws.ModeLabel;
         Title = $"Il2CppStudio — {_ws.Files.Root}";
         InspectionText = BuildInspectionText(_ws);
-        RebuildTree();
+        PopulateRoots();
         Status = $"{_ws.ModeLabel}  {_ws.Model.Statistics.Types:N0} types, {_ws.Model.Statistics.Methods:N0} methods.";
     }
 
@@ -199,50 +236,137 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _ = RenderSelectionAsync();
     }
 
-    // ------------------------------------------------------------------ tree
+    // ------------------------------------------------------------------ tree & flat search
 
-    partial void OnSearchTextChanged(string value) => RebuildTree();
-
-    private void RebuildTree()
+    partial void OnSearchTextChanged(string value)
     {
-        Roots.Clear();
-        if (_ws is null) return;
-        var filter = SearchText.Trim();
-        foreach (var asm in _ws.Model.Assemblies.OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase))
+        CancelSearch();
+        var filter = value?.Trim() ?? "";
+        if (filter.Length == 0 || _searchIndex is not { } index)
         {
-            if (filter.Length == 0)
-            {
-                Roots.Add(AssemblyNode(asm, null));
-                continue;
-            }
-            var matches = asm.Namespaces.SelectMany(n => n.Types).SelectMany(Flatten)
-                .Where(t => t.FullName.Contains(filter, StringComparison.OrdinalIgnoreCase)
-                            || t.Methods.Any(m => m.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)))
-                .ToList();
-            if (matches.Count == 0) continue;
-            var node = AssemblyNode(asm, matches);
-            node.IsExpanded = true;
-            Roots.Add(node);
+            ClearSearchState();
+            return;
+        }
+
+        var cts = new CancellationTokenSource();
+        _searchCts = cts;
+        _ = RunDebouncedSearchAsync(index, filter, cts);
+    }
+
+    private void CancelSearch()
+    {
+        var old = _searchCts;
+        _searchCts = null;
+        if (old is not null)
+        {
+            old.Cancel();
+            old.Dispose();
         }
     }
 
-    private static IEnumerable<TypeModel> Flatten(TypeModel t) => new[] { t }.Concat(t.NestedTypes.SelectMany(Flatten));
+    private void ClearSearchState()
+    {
+        SelectedSearchNode = null;
+        if (ContextNode?.Subtitle is not null) ContextNode = null;
+        IsSearching = false;
+        SearchSummary = "";
+        SearchResults = Array.Empty<TreeNodeViewModel>();
+    }
 
-    private TreeNodeViewModel AssemblyNode(AssemblyModel asm, List<TypeModel>? filtered)
+    private async Task RunDebouncedSearchAsync(WorkspaceSearchIndex index, string filter, CancellationTokenSource cts)
+    {
+        try
+        {
+            await Task.Delay(SearchDebounceMs, cts.Token);
+            var ws = _ws;
+            if (ws is null || cts.IsCancellationRequested || !ReferenceEquals(_searchCts, cts)) return;
+
+            var result = await Task.Run(() => index.Search(filter, MaxSearchResults, cts.Token), cts.Token);
+            if (cts.IsCancellationRequested || !ReferenceEquals(_searchCts, cts)) return;
+
+            var nodes = new TreeNodeViewModel[result.Matches.Count];
+            for (var i = 0; i < result.Matches.Count; i++)
+            {
+                if ((i & 63) == 0) cts.Token.ThrowIfCancellationRequested();
+                var m = result.Matches[i];
+                if (m.Method is { } method)
+                {
+                    var rva = ws.GetMethodRva(method);
+                    var text = rva != 0 ? $"{method.DisplaySignature}  @0x{rva:X}" : method.DisplaySignature;
+                    nodes[i] = new TreeNodeViewModel(NodeKind.Method, text)
+                    {
+                        Assembly = m.Assembly,
+                        Type = m.Type,
+                        Method = method,
+                        Subtitle = $"{m.Type.FullName}  [{m.Assembly.Name}]",
+                    };
+                }
+                else
+                {
+                    var sub = m.Type.DeclaringType is { } decl
+                        ? $"{decl.FullName}  [{m.Assembly.Name}]"
+                        : string.IsNullOrEmpty(m.Type.Namespace) ? m.Assembly.Name : $"{m.Type.Namespace}  [{m.Assembly.Name}]";
+                    nodes[i] = new TreeNodeViewModel(NodeKind.Type, m.Type.DisplayName)
+                    {
+                        Assembly = m.Assembly,
+                        Type = m.Type,
+                        Subtitle = sub,
+                    };
+                }
+            }
+
+            if (cts.IsCancellationRequested || !ReferenceEquals(_searchCts, cts)) return;
+
+            var summary = result.IsTruncated
+                ? $"Showing {nodes.Length:N0} of {result.TotalMatches:N0} matches — refine search"
+                : $"{nodes.Length:N0} match{(nodes.Length == 1 ? "" : "es")}";
+
+            void Apply()
+            {
+                if (cts.IsCancellationRequested || !ReferenceEquals(_searchCts, cts)) return;
+                SelectedSearchNode = null;
+                SearchSummary = summary;
+                SearchResults = nodes;
+                IsSearching = true;
+            }
+
+            if (Ui is { } ui) ui.Post(Apply);
+            else Apply();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private void ReleaseTree()
+    {
+        foreach (var root in Roots)
+            root.ReleaseChildren();
+        Roots.Clear();
+    }
+
+    private void PopulateRoots()
+    {
+        ReleaseTree();
+        if (_ws is null) return;
+        foreach (var asm in _ws.Model.Assemblies.OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase))
+            Roots.Add(AssemblyNode(asm));
+    }
+
+    private TreeNodeViewModel AssemblyNode(AssemblyModel asm)
     {
         var bcl = _ws!.SubstituteBcl && Core.Decompilation.BclReferenceProvider.IsBclAssembly(asm.Name);
-        return new TreeNodeViewModel(this, NodeKind.Assembly, $"{asm.Name} ({asm.Version}){(bcl ? "  [BCL]" : "")}", () =>
+        return new TreeNodeViewModel(NodeKind.Assembly, $"{asm.Name} ({asm.Version}){(bcl ? "  [BCL]" : "")}", () =>
         {
-            var groups = filtered is null
-                ? asm.Namespaces.Select(n => (n.Name, Types: (IEnumerable<TypeModel>)n.Types))
-                : filtered.GroupBy(t => t.Namespace).OrderBy(g => g.Key).Select(g => (g.Key, Types: (IEnumerable<TypeModel>)g));
-            return groups.Select(g => new TreeNodeViewModel(this, NodeKind.Namespace, g.Item1.Length == 0 ? "-" : g.Item1,
-                () => g.Types.Select(TypeNode)) { IsExpanded = filtered is not null });
+            return asm.Namespaces.Select(ns => new TreeNodeViewModel(
+                NodeKind.Namespace,
+                ns.Name.Length == 0 ? "-" : ns.Name,
+                () => ns.Types.Select(TypeNode)));
         }) { Assembly = asm };
     }
 
     private TreeNodeViewModel TypeNode(TypeModel t) =>
-        new(this, NodeKind.Type, t.DeclaringType is null ? t.DisplayName : t.DisplayName, () => TypeChildren(t)) { Type = t };
+        new(NodeKind.Type, t.DisplayName, () => TypeChildren(t)) { Type = t };
 
     private IEnumerable<TreeNodeViewModel> TypeChildren(TypeModel t)
     {
@@ -250,11 +374,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         foreach (var m in t.Methods)
         {
             var rva = _ws!.GetMethodRva(m);
-            yield return new TreeNodeViewModel(this, NodeKind.Method, $"{m.DisplaySignature}{(rva != 0 ? $"  @0x{rva:X}" : "")}") { Type = t, Method = m };
+            yield return new TreeNodeViewModel(NodeKind.Method, $"{m.DisplaySignature}{(rva != 0 ? $"  @0x{rva:X}" : "")}") { Type = t, Method = m };
         }
-        foreach (var p in t.Properties) yield return new TreeNodeViewModel(this, NodeKind.Property, p.Name) { Type = t };
-        foreach (var f in t.Fields) yield return new TreeNodeViewModel(this, NodeKind.Field, $"{f.Name} : {_ws!.Names.CSharpName(f.TypeIndex)}") { Type = t };
-        foreach (var e in t.Events) yield return new TreeNodeViewModel(this, NodeKind.Event, e.Name) { Type = t };
+        foreach (var p in t.Properties) yield return new TreeNodeViewModel(NodeKind.Property, p.Name) { Type = t };
+        foreach (var f in t.Fields) yield return new TreeNodeViewModel(NodeKind.Field, $"{f.Name} : {_ws!.Names.CSharpName(f.TypeIndex)}") { Type = t };
+        foreach (var e in t.Events) yield return new TreeNodeViewModel(NodeKind.Event, e.Name) { Type = t };
+    }
+
+    partial void OnSelectedTreeNodeChanged(TreeNodeViewModel? value)
+    {
+        if (value is not null) SelectedNode = value;
+    }
+
+    partial void OnSelectedSearchNodeChanged(TreeNodeViewModel? value)
+    {
+        if (value is not null) SelectedNode = value;
     }
 
     partial void OnSelectedNodeChanged(TreeNodeViewModel? value) => _ = RenderSelectionAsync();
@@ -265,6 +399,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var node = SelectedNode;
         if (_ws is null || node?.Type is not { } type) return;
         _renderCts?.Cancel();
+        _renderCts?.Dispose();
         var cts = _renderCts = new CancellationTokenSource();
         var method = node.Method;
         var target = method is null ? type.FullName : $"{type.FullName}::{method.DisplaySignature}";
@@ -284,7 +419,43 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Status = method is not null && _ws.GetMethodRva(method) is var rva and > 0 ? $"{target}  RVA 0x{rva:X}  file offset 0x{_ws.GetMethodFileOffset(method):X}" : target;
     }
 
-    // ------------------------------------------------------------------ context menu
+    // ------------------------------------------------------------------ context menu commands
+
+    [RelayCommand]
+    private async Task CopyRva()
+    {
+        if (ContextTarget is { } node) await CopyRvaAsync(node);
+    }
+
+    [RelayCommand]
+    private async Task ViewInHxd()
+    {
+        if (ContextTarget is { } node) await ViewInHxdAsync(node);
+    }
+
+    [RelayCommand]
+    private async Task ExportCSharp()
+    {
+        if (ContextTarget is { } node) await ExportNodeAsync(node, CodeView.CSharp);
+    }
+
+    [RelayCommand]
+    private async Task ExportCpp()
+    {
+        if (ContextTarget is { } node) await ExportNodeAsync(node, CodeView.Cpp);
+    }
+
+    [RelayCommand]
+    private async Task ExportAssembly()
+    {
+        if (ContextTarget is { } node) await ExportAssemblyAsync(node, withReferences: false);
+    }
+
+    [RelayCommand]
+    private async Task ExportAssemblyWithReferences()
+    {
+        if (ContextTarget is { } node) await ExportAssemblyAsync(node, withReferences: true);
+    }
 
     public async Task CopyRvaAsync(TreeNodeViewModel node)
     {
@@ -309,12 +480,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (_ws is null || node.Type is null || Ui is null) return;
         var name = node.Method is null ? node.Type.Name : $"{node.Type.Name}.{node.Method.Name}";
         var ext = view == CodeView.CSharp ? "cs" : "cpp";
-        var path = await Ui.SaveFileAsync($"Export {(view == CodeView.CSharp ? "C#" : "C++")}", WorkspaceSerializer.Sanitize(name) + "." + ext, ext);
-        if (path is null) return;
         string text = "";
-        await RunBusy("Exporting…", () => text = _ws.Render(node.Type, node.Method, view));
-        await File.WriteAllTextAsync(path, text);
-        Status = $"Saved {path}.";
+        await RunBusy("Rendering export…", () => text = _ws.Render(node.Type, node.Method, view));
+        var savedPath = await Ui.SaveTextFileAsync($"Export {(view == CodeView.CSharp ? "C#" : "C++")}", WorkspaceSerializer.Sanitize(name) + "." + ext, ext, text);
+        if (savedPath is not null)
+            Status = $"Saved {savedPath}.";
     }
 
     // ------------------------------------------------------------------ helpers
@@ -370,7 +540,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        _sink.DiagnosticReported -= OnDiagnosticReported;
+        CancelSearch();
+        _renderCts?.Cancel();
+        _renderCts?.Dispose();
+        _renderCts = null;
+        _searchIndex = null;
+        SearchResults = Array.Empty<TreeNodeViewModel>();
+        ReleaseTree();
         _ws?.Dispose();
+        _ws = null;
         _logger.Dispose();
     }
 }

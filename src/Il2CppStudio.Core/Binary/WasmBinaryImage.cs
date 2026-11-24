@@ -493,7 +493,7 @@ public sealed class WasmBinaryImage : IBinaryImage
             p += size;
         }
         if (segments.Count == 0) return;
-        var lo = segments.Min(s => s.Offset);
+        var lo = segments.Min(s => s.Offset) & ~7L;
         var hi = segments.Max(s => s.Offset + s.Size);
         _memory = new byte[hi - lo];
         foreach (var s in segments) Buffer.BlockCopy(_data, s.FileOffset, _memory, (int)(s.Offset - lo), s.Size);

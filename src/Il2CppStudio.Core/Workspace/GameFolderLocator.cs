@@ -12,7 +12,7 @@ public sealed record GameFiles(string Root, string? BinaryPath, string? Metadata
 /// </summary>
 public static class GameFolderLocator
 {
-    private static readonly string[] BinaryNames = ["GameAssembly.dll", "GameAssembly.so", "libil2cpp.so", "Il2CppUserAssemblies.prx"];
+    private static readonly string[] BinaryNames = ["GameAssembly.dll", "GameAssembly.so", "GameAssembly.dylib", "libil2cpp.so", "Il2CppUserAssemblies.prx"];
 
     public static GameFiles Locate(string path, IDiagnosticSink sink) => Locate(path, sink, null);
 
@@ -29,6 +29,13 @@ public static class GameFolderLocator
             {
                 return ApkExtractor.Extract(path, sink) is { } extractedApk
                     ? LocateCore(extractedApk, sink, explicitBinary: null)
+                    : new GameFiles(path, null, null, null, null);
+            }
+
+            if (IpaExtractor.IsIpaPath(path))
+            {
+                return IpaExtractor.Extract(path, sink) is { } extractedIpa
+                    ? LocateCore(extractedIpa, sink, explicitBinary: null)
                     : new GameFiles(path, null, null, null, null);
             }
 
@@ -50,7 +57,10 @@ public static class GameFolderLocator
             if (name.Equals("global-metadata.dat", StringComparison.OrdinalIgnoreCase))
                 return new GameFiles(Path.GetDirectoryName(path)!, null, path, null, null);
 
-            if (BinaryNames.Contains(name, StringComparer.OrdinalIgnoreCase) || ConsoleBinaryPluginRegistry.CanOpen(path))
+            if (BinaryNames.Contains(name, StringComparer.OrdinalIgnoreCase)
+                || name.Equals("UnityFramework", StringComparison.OrdinalIgnoreCase)
+                || ConsoleBinaryPluginRegistry.CanOpen(path)
+                || MachOBinaryImage.IsMachO(path))
             {
                 var root = FindAncestorGameRoot(Path.GetDirectoryName(path)!);
                 return LocateCore(root, sink, explicitBinary: path);
@@ -74,6 +84,7 @@ public static class GameFolderLocator
 
         var binary = explicitBinary;
         binary ??= BinaryNames.Select(n => Path.Combine(path, n)).FirstOrDefault(File.Exists);
+        binary ??= FindMachOBinary(path);
         binary ??= PreferAbi(Directory.EnumerateFiles(path, "libil2cpp.so", SearchOption.AllDirectories));
         binary ??= new[] { Path.Combine(path, "main"), Path.Combine(path, "exefs", "main"), Path.Combine(path, "0", "main") }
             .Concat(Directory.EnumerateFiles(path, "main", SearchOption.AllDirectories))
@@ -138,6 +149,12 @@ public static class GameFolderLocator
         var ps4Media = Path.Combine(path, "Media");
         if (Directory.Exists(ps4Media) && (File.Exists(Path.Combine(ps4Media, "globalgamemanagers")) || File.Exists(Path.Combine(ps4Media, "data.unity3d"))))
             return ps4Media;
+        var macData = Path.Combine(path, "Contents", "Resources", "Data");
+        if (Directory.Exists(macData))
+            return macData;
+        var directData = Path.Combine(path, "Data");
+        if (Directory.Exists(directData))
+            return directData;
         if (searchRoot != path)
             return searchRoot;
         if (metadata is not null)
@@ -153,16 +170,64 @@ public static class GameFolderLocator
         return null;
     }
 
+    private static string? FindMachOBinary(string path)
+    {
+        var macFramework = Path.Combine(path, "Contents", "Frameworks", "UnityFramework.framework", "UnityFramework");
+        if (File.Exists(macFramework) && MachOBinaryImage.IsMachO(macFramework)) return macFramework;
+        var macFrameworkVersioned = Path.Combine(path, "Contents", "Frameworks", "UnityFramework.framework", "Versions", "A", "UnityFramework");
+        if (File.Exists(macFrameworkVersioned) && MachOBinaryImage.IsMachO(macFrameworkVersioned)) return macFrameworkVersioned;
+        var macDylib = Path.Combine(path, "Contents", "Frameworks", "GameAssembly.dylib");
+        if (File.Exists(macDylib) && MachOBinaryImage.IsMachO(macDylib)) return macDylib;
+
+        var iosFramework = Path.Combine(path, "Frameworks", "UnityFramework.framework", "UnityFramework");
+        if (File.Exists(iosFramework) && MachOBinaryImage.IsMachO(iosFramework)) return iosFramework;
+
+        var payloadDir = Path.Combine(path, "Payload");
+        if (Directory.Exists(payloadDir))
+        {
+            foreach (var appDir in Directory.EnumerateDirectories(payloadDir, "*.app"))
+            {
+                var uf = Path.Combine(appDir, "Frameworks", "UnityFramework.framework", "UnityFramework");
+                if (File.Exists(uf) && MachOBinaryImage.IsMachO(uf)) return uf;
+                var exeName = Path.GetFileNameWithoutExtension(appDir);
+                var exe = Path.Combine(appDir, exeName);
+                if (File.Exists(exe) && MachOBinaryImage.IsMachO(exe)) return exe;
+            }
+        }
+
+        foreach (var uf in Directory.EnumerateFiles(path, "UnityFramework", SearchOption.AllDirectories))
+        {
+            if (MachOBinaryImage.IsMachO(uf)) return uf;
+        }
+
+        var macOsDir = Path.Combine(path, "Contents", "MacOS");
+        if (Directory.Exists(macOsDir))
+        {
+            foreach (var exe in Directory.EnumerateFiles(macOsDir))
+                if (MachOBinaryImage.IsMachO(exe)) return exe;
+        }
+
+        if (path.EndsWith(".app", StringComparison.OrdinalIgnoreCase))
+        {
+            var appExe = Path.Combine(path, Path.GetFileNameWithoutExtension(path));
+            if (File.Exists(appExe) && MachOBinaryImage.IsMachO(appExe)) return appExe;
+        }
+
+        return null;
+    }
+
     private static string FindAncestorGameRoot(string dir)
     {
         var cur = dir;
-        for (var i = 0; i < 4 && cur is not null; i++)
+        for (var i = 0; i < 5 && cur is not null; i++)
         {
             if (Directory.EnumerateDirectories(cur, "*_Data").Any()
                 || Directory.Exists(Path.Combine(cur, "assets", "bin", "Data"))
                 || Directory.Exists(Path.Combine(cur, "romfs", "Data"))
                 || Directory.Exists(Path.Combine(cur, "1", "Data"))
                 || Directory.Exists(Path.Combine(cur, "Media", "Metadata"))
+                || Directory.Exists(Path.Combine(cur, "Data", "Managed", "Metadata"))
+                || Directory.Exists(Path.Combine(cur, "Contents", "Resources", "Data"))
                 || File.Exists(Path.Combine(cur, "Media", "globalgamemanagers"))
                 || Directory.EnumerateFiles(cur, "global-metadata.dat", SearchOption.AllDirectories).Any())
                 return cur;

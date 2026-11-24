@@ -25,10 +25,10 @@ public sealed partial class Il2CppWorkspace
     /// <summary>Why method bodies are not lifted for this build (null when lifting is available or not yet attempted).</summary>
     public string? LiftingUnavailableReason { get; private set; }
 
-    /// <summary>Calling convention of the binary: System V for ELF (Linux), Win32 for x86, Wasm32 for WebGL, Win64 otherwise.</summary>
+    /// <summary>Calling convention of the binary: System V for ELF / Mach-O (Linux/macOS/iOS), Win32 for x86, Wasm32 for WebGL, Win64 otherwise.</summary>
     public Lifting.NativeAbi Abi => Binary switch
     {
-        { Format: Core.Binary.BinaryFormat.Elf } => Lifting.NativeAbi.SysV,
+        { Format: Core.Binary.BinaryFormat.Elf or Core.Binary.BinaryFormat.MachO } => Lifting.NativeAbi.SysV,
         { Architecture: Core.Binary.CpuArchitecture.X86 } => Lifting.NativeAbi.Win32,
         { Architecture: Core.Binary.CpuArchitecture.Wasm32 } => Lifting.NativeAbi.Wasm32,
         _ => Lifting.NativeAbi.Win64,

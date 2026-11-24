@@ -24,6 +24,12 @@ public sealed partial class Il2CppRegistration
 
     private ulong At(ulong va, int index) => Reader.ReadPointer(va + (ulong)(index * Ptr));
 
+    private ulong AlignUp(ulong va)
+    {
+        var mask = (ulong)(Ptr - 1);
+        return (va + mask) & ~mask;
+    }
+
     private ReadOnlySpan<ulong> Words64(ulong start, ulong end)
     {
         var span = Reader.Slice(start, (int)(end - start));

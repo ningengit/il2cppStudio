@@ -309,4 +309,37 @@ public static class CompileHygiene
         foreach (var p in parts.Skip(1)) t = new MemberType(t, p);
         return t;
     }
+
+    public static void PruneUnusedNativeUsing(SyntaxTree tree)
+    {
+        var nativeUsings = AstWalk.Collect<UsingDeclaration>(tree, static u => u.Namespace == "Il2CppStudio.Native");
+        if (nativeUsings.Count == 0) return;
+
+        var stack = new Stack<AstNode>(64);
+        stack.Push(tree);
+        while (stack.Count > 0)
+        {
+            var n = stack.Pop();
+            if (n is UsingDeclaration) continue;
+
+            if (n is IdentifierExpression { Identifier: "NativeIntrinsics" }
+                || n is SimpleType { Identifier: "NativeIntrinsics" }
+                || n is MemberType { MemberName: "NativeIntrinsics" }
+                || n is MemberReferenceExpression { MemberName: "NativeIntrinsics" }
+                || n.Annotation<ResolveResult>()?.Type.Namespace == "Il2CppStudio.Native")
+            {
+                return;
+            }
+
+            var ch = n.LastChild;
+            while (ch is not null)
+            {
+                stack.Push(ch);
+                ch = ch.PrevSibling;
+            }
+        }
+
+        foreach (var u in nativeUsings)
+            u.Remove();
+    }
 }

@@ -357,11 +357,7 @@ public sealed class MemoryResolver
 
         if (type is SzArrayTypeSignature arr)
         {
-            if (index is not null && scale == 1 && index is BinaryExpr { Op.Code: CilCode.Mul, Left: var mulIdx, Right: ConstExpr { Value: > 1 and var mulScale } })
-            {
-                index = mulIdx;
-                scale = (int)mulScale;
-            }
+            PeelScale(ref index, ref scale);
             if (index is BinaryExpr { Op.Code: CilCode.Add, Left: var innerIdx, Right: ConstExpr { Value: var c } })
             {
                 index = innerIdx;
@@ -515,11 +511,7 @@ public sealed class MemoryResolver
         if (baseExpr.Type is SzArrayTypeSignature arr)
         {
             int elemSize = ValueSize(arr.BaseType);
-            if (index is not null && scale == 1 && index is BinaryExpr { Op.Code: CilCode.Mul, Left: var mulIdx, Right: ConstExpr { Value: > 1 and var mulScale } })
-            {
-                index = mulIdx;
-                scale = (int)mulScale;
-            }
+            PeelScale(ref index, ref scale);
             if (index is BinaryExpr { Op.Code: CilCode.Add, Left: var innerIdx, Right: ConstExpr { Value: var c } })
             {
                 index = innerIdx;
@@ -583,8 +575,30 @@ public sealed class MemoryResolver
         if (index is null || scale != 1 || index.Kind is not (ValueKind.I4 or ValueKind.I8) || Expr.KindOf(arr.BaseType) == ValueKind.Struct) return null;
         var size = ValueSize(arr.BaseType);
         if (size <= 1) return null;
-        var k = index.Kind;
-        return new BinaryExpr(CilOpCodes.Div, OffsetIndex(index, disp - ArrayDataOffset), new ConstExpr(size, k), k);
+        return UnscaleIndex(OffsetIndex(index, disp - ArrayDataOffset), size);
+    }
+
+    private static void PeelScale(ref Expr? index, ref int scale)
+    {
+        if (index is null || scale != 1) return;
+        var inner = UnwrapIntConv(index);
+        if (inner is BinaryExpr { Op.Code: CilCode.Mul, Left: var mulIdx, Right: ConstExpr { Value: > 1 and <= 65536 and var mulScale } })
+        {
+            index = UnwrapIntConv(mulIdx);
+            scale = (int)mulScale;
+        }
+        else if (inner is BinaryExpr { Op.Code: CilCode.Shl, Left: var shIdx, Right: ConstExpr { Value: >= 1 and <= 5 and var sh } })
+        {
+            index = UnwrapIntConv(shIdx);
+            scale = 1 << (int)sh;
+        }
+    }
+
+    private static Expr UnwrapIntConv(Expr e)
+    {
+        while (e is ConvExpr c && c.Operand.Kind is ValueKind.I4 or ValueKind.I8 && c.Kind is ValueKind.I4 or ValueKind.I8)
+            e = c.Operand;
+        return e;
     }
 
     private static Expr OffsetIndex(Expr index, long offset) => offset == 0 ? index
@@ -595,13 +609,25 @@ public sealed class MemoryResolver
         if (ratio <= 1) return index;
         if (index is ConvExpr cv) return new ConvExpr(UnscaleIndex(cv.Operand, ratio), cv.Type);
         if (index is BinaryExpr { Op.Code: CilCode.Mul, Left: var l, Right: ConstExpr { Value: var m } } && m == ratio) return l;
-        if (index is BinaryExpr { Op.Code: CilCode.Shl, Left: var sl, Right: ConstExpr { Value: var sh } } && (1L << (int)sh) == ratio) return sl;
+        if (index is BinaryExpr { Op.Code: CilCode.Shl, Left: var sl, Right: ConstExpr { Value: >= 1 and <= 30 and var sh } })
+        {
+            var factor = 1L << (int)sh;
+            if (factor == ratio) return sl;
+            if (factor > ratio && factor % ratio == 0)
+            {
+                var remShift = (int)sh - System.Numerics.BitOperations.TrailingZeroCount((uint)ratio);
+                var sk = sl.Kind == ValueKind.I8 ? ValueKind.I8 : ValueKind.I4;
+                return new BinaryExpr(CilOpCodes.Shl, sl, new ConstExpr(remShift, ValueKind.I4), sk);
+            }
+        }
         if (index is BinaryExpr { Op.Code: CilCode.Add, Left: var a, Right: BinaryExpr { Op.Code: CilCode.Mul, Left: var b, Right: ConstExpr { Value: var k } } }
             && k + 1 == ratio && SameValue(a, b)) return a;
         if (index is BinaryExpr { Op.Code: CilCode.Add, Left: var a2, Right: BinaryExpr { Op.Code: CilCode.Shl, Left: var b2, Right: ConstExpr { Value: var sh2 } } }
             && (1L << (int)sh2) + 1 == ratio && SameValue(a2, b2)) return a2;
         if (index is BinaryExpr { Op.Code: CilCode.Add, Left: var x, Right: ConstExpr { Value: var c } } && c % ratio == 0)
             return OffsetIndex(UnscaleIndex(x, ratio), c / ratio);
+        if (index is BinaryExpr { Op.Code: CilCode.Sub, Left: var sx, Right: ConstExpr { Value: var sc } } && sc % ratio == 0)
+            return OffsetIndex(UnscaleIndex(sx, ratio), -(sc / ratio));
         var kind = index.Kind == ValueKind.I8 ? ValueKind.I8 : ValueKind.I4;
         return new BinaryExpr(CilOpCodes.Div, index, new ConstExpr(ratio, kind), kind);
     }

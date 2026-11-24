@@ -65,7 +65,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             }
             if (insns.Count == 0) return new(methodIndex, false, 0, 0, 0, 0, 0, "empty function");
 
-            var blocks = BuildBlocks(insns, start, sym);
+            var blocks = BuildBlocks(insns, start, sym, _helperCache);
             ComputeLiveness(insns, blocks, start, end);
 
             var body = new CilMethodBody { InitializeLocals = true };
@@ -141,31 +141,51 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         ins.Mnemonic is Arm64Mnemonic.RET or Arm64Mnemonic.B or Arm64Mnemonic.BR or Arm64Mnemonic.BRK or Arm64Mnemonic.UDF
         || ins.Mnemonic.ToString() is "RETAA" or "RETAB" or "BRAA" or "BRAB" or "BRAAZ" or "BRABZ" or "HLT";
 
-    private static List<Arm64Block> BuildBlocks(List<Arm64Insn> insns, ulong funcStart, NativeSymbolizer sym)
+    private static List<Arm64Block> BuildBlocks(List<Arm64Insn> insns, ulong funcStart, NativeSymbolizer sym,
+        ConcurrentDictionary<ulong, Arm64HelperKind> helperCache)
     {
         var indexAtVa = new Dictionary<ulong, int>(insns.Count);
         for (var i = 0; i < insns.Count; i++) indexAtVa[insns[i].Address] = i;
         var funcEnd = insns[^1].Address + 4;
+        var effectiveEnd = insns.Count;
+        while (effectiveEnd > 0 && insns[effectiveEnd - 1].Ins.Mnemonic == Arm64Mnemonic.NOP)
+            effectiveEnd--;
+        var reader = sym.Registration.Reader;
 
         bool IsTrapAt(ulong targetVa)
         {
             if (!indexAtVa.TryGetValue(targetVa, out var idx)) return false;
-            var limit = Math.Min(insns.Count, idx + 4);
+            var limit = Math.Min(effectiveEnd, idx + 10);
             var hasCall = false;
-            for (var k = idx; k < limit; k++)
+            var k = idx;
+            for (; k < limit; k++)
             {
-                var m = insns[k].Ins.Mnemonic;
+                var ins = insns[k].Ins;
+                var m = ins.Mnemonic;
                 if (m is Arm64Mnemonic.RET or Arm64Mnemonic.BR) return false;
+                if (m is Arm64Mnemonic.CBZ or Arm64Mnemonic.CBNZ or Arm64Mnemonic.TBZ or Arm64Mnemonic.TBNZ
+                    || (m == Arm64Mnemonic.B && ins.OperandCount == 2))
+                    return false;
+                if (m is Arm64Mnemonic.BRK or Arm64Mnemonic.UDF) return true;
                 if (m == Arm64Mnemonic.BL)
                 {
-                    if (sym.Map.SymbolAt(BranchTarget(insns[k].Address, insns[k].Ins, 0)) is not null) return false;
+                    var target = BranchTarget(insns[k].Address, ins, 0);
+                    if (sym.Map.SymbolAt(target) is not null) return false;
+                    if (Arm64BlockTranslator.ClassifyNativeHelper(reader, helperCache, target) == Arm64HelperKind.NoReturn)
+                        return true;
                     hasCall = true;
                     continue;
                 }
-                if (m is Arm64Mnemonic.BRK or Arm64Mnemonic.UDF) return true;
-                if (hasCall && m == Arm64Mnemonic.B) return false;
+                if (m == Arm64Mnemonic.B)
+                {
+                    var target = BranchTarget(insns[k].Address, ins, 0);
+                    if ((target < funcStart || target >= funcEnd)
+                        && Arm64BlockTranslator.ClassifyNativeHelper(reader, helperCache, target) == Arm64HelperKind.NoReturn)
+                        return true;
+                    return false;
+                }
             }
-            return hasCall && idx >= insns.Count - 4;
+            return hasCall && k >= effectiveEnd;
         }
 
         bool IsMathErrnoBranch(int i)
@@ -303,7 +323,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         {
             if (b.End <= b.Start || b == blocks[0]) continue;
             var lastIdx = b.End - 1;
-            if (lastIdx - b.Start <= 2 && IsTrapAt(b.Va))
+            if (lastIdx - b.Start <= 8 && IsTrapAt(b.Va))
                 b.IsTrap = true;
         }
 

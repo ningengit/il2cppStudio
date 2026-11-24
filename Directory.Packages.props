@@ -16,6 +16,7 @@
     <PackageVersion Include="System.CommandLine" Version="2.0.14" />
     <!-- GUI -->
     <PackageVersion Include="Avalonia" Version="11.3.0" />
+    <PackageVersion Include="Avalonia.Android" Version="11.3.0" />
     <PackageVersion Include="Avalonia.Desktop" Version="11.3.0" />
     <PackageVersion Include="Avalonia.Themes.Fluent" Version="11.3.0" />
     <PackageVersion Include="Avalonia.Fonts.Inter" Version="11.3.0" />

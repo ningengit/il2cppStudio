@@ -80,7 +80,9 @@ internal static class DecompileCache
             if (hdrBr.ReadUInt32() != Magic || hdrBr.ReadInt32() != FormatVersion) return false;
             if (hdrBr.ReadString() != cacheKey) return false;
 
-            using var br = new BinaryReader(new BrotliStream(fs, CompressionMode.Decompress, leaveOpen: false), Encoding.UTF8);
+            using var brotli = new BrotliStream(fs, CompressionMode.Decompress, leaveOpen: false);
+            using var buffered = new BufferedStream(brotli, 65536);
+            using var br = new BinaryReader(buffered, Encoding.UTF8);
             var count = br.ReadInt32();
             if (count < 0 || count > 2_000_000) return false;
             entries = new List<CachedDecompiledType>(count);
@@ -119,7 +121,9 @@ internal static class DecompileCache
                     hdrBw.Write(FormatVersion);
                     hdrBw.Write(cacheKey);
                 }
-                using var bw = new BinaryWriter(new BrotliStream(fs, CompressionLevel.Fastest, leaveOpen: false), Encoding.UTF8);
+                using var brotli = new BrotliStream(fs, new BrotliCompressionOptions { Quality = 0 }, leaveOpen: false);
+                using var buffered = new BufferedStream(brotli, 65536);
+                using var bw = new BinaryWriter(buffered, Encoding.UTF8);
                 bw.Write(entries.Count);
                 foreach (var e in entries)
                 {

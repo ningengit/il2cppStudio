@@ -188,8 +188,10 @@ public sealed partial class Il2CppRegistration
         var candidates = new List<ulong>();
         foreach (var (start, end, _) in Reader.DataRanges())
         {
-            if (Ptr == 8) ScanMetadataCandidates(Words64(start, end), start, typeDefCount, candidates);
-            else ScanMetadataCandidates(Words32(start, end), start, (uint)typeDefCount, candidates);
+            var aligned = AlignUp(start);
+            if (aligned >= end) continue;
+            if (Ptr == 8) ScanMetadataCandidates(Words64(aligned, end), aligned, typeDefCount, candidates);
+            else ScanMetadataCandidates(Words32(aligned, end), aligned, (uint)typeDefCount, candidates);
         }
 
         if (candidates.Count == 0)
@@ -261,9 +263,11 @@ public sealed partial class Il2CppRegistration
         var imageNames = _md.Images.Select(i => _md.GetString(i.NameIndex)).ToHashSet(StringComparer.Ordinal);
         foreach (var (start, end, _) in Reader.DataRanges())
         {
+            var aligned = AlignUp(start);
+            if (aligned >= end) continue;
             var found = Ptr == 8
-                ? TryFindCodeRegistration(Words64(start, end), start, imageCount, imageNames, out var fieldVa, out var arrayVa)
-                : TryFindCodeRegistration(Words32(start, end), start, (uint)imageCount, imageNames, out fieldVa, out arrayVa);
+                ? TryFindCodeRegistration(Words64(aligned, end), aligned, imageCount, imageNames, out var fieldVa, out var arrayVa)
+                : TryFindCodeRegistration(Words32(aligned, end), aligned, (uint)imageCount, imageNames, out fieldVa, out arrayVa);
             if (!found) continue;
 
             // codeGenModulesCount index: v31+ = 15, v27-v29 = 13, v24.3-24.4 (genericAdjustorThunks) = 15, v24.2 = 14.
@@ -378,8 +382,10 @@ public sealed partial class Il2CppRegistration
         foreach (var (start, end, writable) in Reader.DataRanges())
         {
             if (!writable) continue;
-            if (Ptr == 8) ScanUsageWords(Words64(start, end), start, limits, map);
-            else ScanUsageWords(Words32(start, end), start, limits, map);
+            var aligned = AlignUp(start);
+            if (aligned >= end) continue;
+            if (Ptr == 8) ScanUsageWords(Words64(aligned, end), aligned, limits, map);
+            else ScanUsageWords(Words32(aligned, end), aligned, limits, map);
         }
         MetadataUsages = map;
         EmitMetadataUsagesDiagnostic(map, fromV24Table: false);

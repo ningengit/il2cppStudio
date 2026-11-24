@@ -20,9 +20,11 @@ public sealed partial class Il2CppRegistration
         if (methodCount == 0) return false;
         foreach (var (start, end, _) in Reader.DataRanges())
         {
+            var aligned = AlignUp(start);
+            if (aligned >= end) continue;
             var va = Ptr == 8
-                ? FindCodeRegistrationV24(Words64(start, end), start, methodCount, attrCount)
-                : FindCodeRegistrationV24(Words32(start, end), start, (uint)methodCount, attrCount);
+                ? FindCodeRegistrationV24(Words64(aligned, end), aligned, methodCount, attrCount)
+                : FindCodeRegistrationV24(Words32(aligned, end), aligned, (uint)methodCount, attrCount);
             if (va != 0)
                 return ParseCodeRegistrationV24(va, methodCount);
         }

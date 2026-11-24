@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0-android</TargetFramework>
+    <SupportedOSPlatformVersion>24.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifier>android-arm64</RuntimeIdentifier>
+    <RuntimeIdentifiers>android-arm64</RuntimeIdentifiers>
+    <RootNamespace>Il2CppStudio.Android</RootNamespace>
+    <AssemblyName>Il2CppStudio.Android</AssemblyName>
+    <ApplicationId>com.il2cppstudio.app</ApplicationId>
+    <ApplicationVersion>1</ApplicationVersion>
+    <ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
+    <AndroidPackageFormat>apk</AndroidPackageFormat>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Il2CppStudio.Ui\Il2CppStudio.Ui.csproj" />
+    <PackageReference Include="Avalonia.Android" />
+  </ItemGroup>
+
+</Project>

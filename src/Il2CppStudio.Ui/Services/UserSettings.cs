@@ -9,10 +9,16 @@ public sealed class UserSettings
 
     public string? SwitchKeysetPath { get; set; }
 
-    public static string SettingsFilePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Il2CppStudio",
-        "settings.json");
+    public static string SettingsFilePath
+    {
+        get
+        {
+            var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrWhiteSpace(baseDir))
+                baseDir = Path.GetTempPath();
+            return Path.Combine(baseDir, "Il2CppStudio", "settings.json");
+        }
+    }
 
     public static UserSettings Load()
     {

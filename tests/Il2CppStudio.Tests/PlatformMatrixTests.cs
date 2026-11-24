@@ -1064,6 +1064,27 @@ public sealed class PlatformMatrixTests
         return nca;
     }
 
+    [Fact]
+    public void IosIpa_Granny_LoadsMachOAndDecompilesRealMethods()
+    {
+        var ipa = Target("sample game unity ios.ipa")!;
+        using var ws = Il2CppWorkspace.Load(ipa, Sink());
+        WorkspaceSetup.Attach(ws);
+        var macho = Assert.IsType<MachOBinaryImage>(ws.Binary);
+        Assert.Equal(CpuArchitecture.Arm64, macho.Architecture);
+        Assert.NotNull(ws.Registration);
+        Assert.True(ws.Registration!.IsComplete);
+        Assert.True(ws.AddressMap!.ResolvedMethodCount > 1000);
+
+        var acs = ws.Model.Assemblies.First(a => a.Name == "Assembly-CSharp");
+        var candidates = acs.Namespaces.SelectMany(n => n.Types)
+            .Where(t => !t.Raw.IsInterface && !t.Raw.IsEnum && t.GenericParameters.Count == 0 && !t.Name.StartsWith('<'))
+            .SelectMany(t => t.Methods.Where(m => !m.IsAbstract && !m.Name.StartsWith('.') && ws.GetMethodRva(m) != 0).Select(m => (t, m)))
+            .Take(12);
+        var rendered = candidates.Select(p => ws.Render(p.t, p.m, CodeView.CSharp)).ToList();
+        Assert.Contains(rendered, cs => cs.Contains('{') && !cs.Contains("throw null;", StringComparison.Ordinal));
+    }
+
     private static void CryptNcaCtr(Span<byte> buf, long sectionOffset, byte[] key, ReadOnlySpan<byte> sectionCtr)
     {
         using var aes = Aes.Create();

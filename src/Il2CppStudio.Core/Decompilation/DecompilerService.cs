@@ -83,6 +83,7 @@ public sealed class DecompilerService
             Transforms.EmptyIfRemover.Apply(tree);
             Transforms.IdenticalBranchFolder.Apply(tree);
             Transforms.RedundantCastRemover.Apply(tree);
+            Transforms.ArrayIndexAndBoundsCleaner.Apply(tree);
             Transforms.DistanceRecognizer.Apply(tree, in flags);
             Transforms.ComparisonNormalizer.Apply(tree);
             Transforms.BankersRoundRecognizer.Apply(tree, in flags);
@@ -114,6 +115,7 @@ public sealed class DecompilerService
                 Transforms.VectorOperatorRecognizer.Apply(tree, in flags);
                 Transforms.BoolNormalizer.Apply(tree);
                 Transforms.ComparisonNormalizer.Apply(tree);
+                Transforms.ArrayIndexAndBoundsCleaner.Apply(tree);
             }
             Transforms.LoopShapeRestorer.Apply(tree);
             Transforms.ForeachRestorer.Apply(tree, in flags);
@@ -157,6 +159,7 @@ public sealed class DecompilerService
 
             tSub = ExportProfiler.Start();
             Transforms.IdentifierEscaper.Apply(tree);   // last: earlier passes match compiler-generated names
+            Transforms.CompileHygiene.PruneUnusedNativeUsing(tree);
             ExportProfiler.RecordHygEscape(tSub);
         }
         ExportProfiler.RecordFinishHygiene(tHyg);
@@ -517,6 +520,7 @@ public sealed class DecompilerService
         _ = Mapper();
 
         var cacheWriteTasks = new ConcurrentBag<Task>();
+        using var cacheWriteGate = new SemaphoreSlim(2, 2);
         try
         {
             // Large misses: one DecompilerTypeSystem at a time for L3 cache locality and bounded GC working set.
@@ -564,7 +568,14 @@ public sealed class DecompilerService
                     _ => { });
 
                 if (cacheBuf is not null)
-                    cacheWriteTasks.Add(Task.Run(() => DecompileCache.Write(key!, cacheBuf), CancellationToken.None));
+                {
+                    cacheWriteTasks.Add(Task.Run(() =>
+                    {
+                        cacheWriteGate.Wait();
+                        try { DecompileCache.Write(key!, cacheBuf); }
+                        finally { cacheWriteGate.Release(); }
+                    }, CancellationToken.None));
+                }
             }
 
             // Small misses: fan out across assemblies so workers stay busy without per-assembly barriers.
@@ -599,7 +610,14 @@ public sealed class DecompilerService
                     }
 
                     if (cacheBuf is not null)
-                        cacheWriteTasks.Add(Task.Run(() => DecompileCache.Write(key!, cacheBuf), CancellationToken.None));
+                    {
+                        cacheWriteTasks.Add(Task.Run(() =>
+                        {
+                            cacheWriteGate.Wait();
+                            try { DecompileCache.Write(key!, cacheBuf); }
+                            finally { cacheWriteGate.Release(); }
+                        }, CancellationToken.None));
+                    }
                 });
             }
         }
