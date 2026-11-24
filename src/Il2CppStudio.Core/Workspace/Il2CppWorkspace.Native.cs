@@ -41,7 +41,9 @@ public sealed partial class Il2CppWorkspace
         if (Binary is null)
         {
             Names = new TypeNameService(Metadata, Model, null);
-            LiftingUnavailableReason = "no native binary was found (WebGL/WebAssembly, iOS project or metadata-only input)";
+            LiftingUnavailableReason = Files.LegacyAsmJsPath is not null
+                ? "pre-5.6 WebGL asm.js build (no WebAssembly module; native method-body lifting is skipped while metadata and signatures remain available)"
+                : "no native binary was found (WebGL/WebAssembly, iOS project or metadata-only input)";
             return;
         }
 

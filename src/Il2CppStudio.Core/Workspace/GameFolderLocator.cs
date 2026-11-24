@@ -4,7 +4,7 @@ using Il2CppStudio.Core.Plugins;
 
 namespace Il2CppStudio.Core.Workspace;
 
-public sealed record GameFiles(string Root, string? BinaryPath, string? MetadataPath, string? DataFolder, string? BackupFolder);
+public sealed record GameFiles(string Root, string? BinaryPath, string? MetadataPath, string? DataFolder, string? BackupFolder, string? LegacyAsmJsPath = null);
 
 /// <summary>
 /// Locates the IL2CPP binary, global-metadata.dat and (optionally) the build backup folder from a game
@@ -66,10 +66,10 @@ public static class GameFolderLocator
                 return LocateCore(root, sink, explicitBinary: path);
             }
 
-            if (WasmFiles.IsWasmPath(path) || IsWebDataPath(path))
+            if (WasmFiles.IsWasmPath(path) || WebDataExtractor.IsDataFilePath(path) || WebDataExtractor.IsLegacyAsmJsPath(path))
             {
                 var dir = Path.GetDirectoryName(path)!;
-                var root = Path.GetFileName(dir).Equals("Build", StringComparison.OrdinalIgnoreCase)
+                var root = WebDataExtractor.IsWebGlSubdir(Path.GetFileName(dir))
                     ? (Directory.GetParent(dir)?.FullName ?? dir)
                     : dir;
                 return LocateCore(root, sink, explicitBinary: WasmFiles.IsWasmPath(path) ? path : null);
@@ -93,15 +93,22 @@ public static class GameFolderLocator
             .Concat(Directory.EnumerateFiles(path, "Il2CppUserAssemblies.prx", SearchOption.AllDirectories))
             .FirstOrDefault(p => File.Exists(p) && (ElfBinaryImage.IsElf(p) || ConsoleBinaryPluginRegistry.CanOpen(p)));
 
-        // WebGL: no native binary; metadata lives inside the (optionally brotli/gzip-compressed) UnityWebData container.
+        // WebGL: no native binary; metadata lives inside the (optionally brotli/gzip-compressed) UnityWebData / Emscripten data container.
         string? wasm = null;
+        string? legacyAsmJs = null;
         var searchRoot = path;
         if ((binary is null || WasmFiles.IsWasmPath(binary)) && WebDataExtractor.FindDataFile(path) is { } webData)
         {
             if (binary is null) wasm = WasmFiles.Find(path);
+            if (binary is null && wasm is null) legacyAsmJs = WebDataExtractor.FindLegacyAsmJs(path);
             if (!Directory.EnumerateFiles(path, "global-metadata.dat", SearchOption.AllDirectories).Any()
                 && WebDataExtractor.Extract(webData, sink) is { } extracted)
                 searchRoot = extracted;
+        }
+        else if (binary is null)
+        {
+            wasm = WasmFiles.Find(path);
+            if (wasm is null) legacyAsmJs = WebDataExtractor.FindLegacyAsmJs(path);
         }
 
         var metadataCandidates = Directory.EnumerateFiles(searchRoot, "global-metadata.dat", SearchOption.AllDirectories)
@@ -124,13 +131,19 @@ public static class GameFolderLocator
             sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.BinaryNotFound,
                 $"WebGL build: using WebAssembly module '{Path.GetFileName(wasm)}'.", new() { File = path });
         }
+        else if (binary is null && legacyAsmJs is not null)
+        {
+            sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.BinaryFormatUnsupported,
+                $"Legacy WebGL asm.js build detected ('{Path.GetFileName(legacyAsmJs)}'): metadata loaded; native method-body lifting is skipped for pre-5.6 asm.js builds (no WebAssembly module).",
+                new() { File = legacyAsmJs });
+        }
         else if (binary is null)
             sink.Warn(DiagnosticCategory.Workspace, DiagnosticCodes.BinaryNotFound,
                 "No GameAssembly.dll / libil2cpp.so found. If Managed/Assembly-CSharp.dll exists this is a Mono build, not IL2CPP.", new() { File = path });
         if (metadata is null)
             sink.Error(DiagnosticCategory.Workspace, DiagnosticCodes.MetadataNotFound, "global-metadata.dat not found.", new() { File = path });
 
-        return new GameFiles(path, binary, metadata, dataFolder, backup);
+        return new GameFiles(path, binary, metadata, dataFolder, backup, legacyAsmJs);
     }
 
     private static string? FindDataFolder(string path, string searchRoot, string? metadata)
@@ -235,12 +248,6 @@ public static class GameFolderLocator
         }
         return dir;
     }
-
-    private static bool IsWebDataPath(string path) =>
-        path.EndsWith(".data", StringComparison.OrdinalIgnoreCase)
-        || path.EndsWith(".data.br", StringComparison.OrdinalIgnoreCase)
-        || path.EndsWith(".data.gz", StringComparison.OrdinalIgnoreCase)
-        || path.EndsWith(".data.unityweb", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Android multi-ABI: prefer 64-bit (arm64-v8a, x86_64) over 32-bit libraries.</summary>
     private static string? PreferAbi(IEnumerable<string> libs) =>

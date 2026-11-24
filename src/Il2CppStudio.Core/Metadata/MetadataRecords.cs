@@ -81,9 +81,13 @@ public readonly record struct Il2CppMethodDefinition(
             invokerIndex = r.ReadInt32();
             r.ReadInt32(); r.ReadInt32(); r.ReadInt32();   // delegateWrapperIndex, rgctxStartIndex, rgctxCount
         }
-        return new(name, declaring, ret, retToken, paramStart, container, r.ReadUInt32(),
+        return new(name, declaring, ret, retToken, paramStart, container,
+            NormalizeToken(r.ReadUInt32(), 0x06000000u, v),
             r.ReadUInt16(), r.ReadUInt16(), r.ReadUInt16(), r.ReadUInt16(), methodIndex, invokerIndex);
     }
+
+    private static uint NormalizeToken(uint token, uint tableBit, MetadataVersion v) =>
+        !v.HasTokens && token != 0 && (token & 0xFF000000u) == 0 ? token | tableBit : token;
 }
 
 public readonly record struct Il2CppParameterDefinition(int NameIndex, uint Token, int TypeIndex)
@@ -93,6 +97,8 @@ public readonly record struct Il2CppParameterDefinition(int NameIndex, uint Toke
     public static Il2CppParameterDefinition Read(ref SpanReader r, MetadataVersion v)
     {
         int name = r.ReadInt32(); var token = r.ReadUInt32();
+        if (!v.HasTokens && token != 0 && (token & 0xFF000000u) == 0)
+            token |= 0x08000000u;
         if (v.HasCustomAttributeIndex) r.ReadInt32();
         return new(name, token, r.ReadInt32());
     }

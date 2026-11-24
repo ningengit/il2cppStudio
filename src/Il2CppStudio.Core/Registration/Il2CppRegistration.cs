@@ -32,12 +32,15 @@ public sealed partial class Il2CppRegistration
     public IReadOnlyList<ulong> FieldOffsetTableVas { get; private set; } = [];
     public bool FieldOffsetsArePointers { get; private set; } = true;
     public IReadOnlyList<ulong> TypeSizeTableVas { get; private set; } = [];
+    public bool TypeSizesArePointers { get; private set; } = true;
 
     private int[] _flatFieldOffsets = [];
+    private int[] _flatTypeInstanceSizes = [];
 
     /// <summary>Il2CppTypeDefinitionSizes.instance_size (includes the 16-byte object header, also for value types), or 0.</summary>
-    public int GetInstanceSize(int typeDefIndex) =>
-        (uint)typeDefIndex < (uint)TypeSizeTableVas.Count && TypeSizeTableVas[typeDefIndex] != 0 ? Reader.ReadI32(TypeSizeTableVas[typeDefIndex]) : 0;
+    public int GetInstanceSize(int typeDefIndex) => TypeSizesArePointers
+        ? ((uint)typeDefIndex < (uint)TypeSizeTableVas.Count && TypeSizeTableVas[typeDefIndex] != 0 ? Reader.ReadI32(TypeSizeTableVas[typeDefIndex]) : 0)
+        : ((uint)typeDefIndex < (uint)_flatTypeInstanceSizes.Length ? _flatTypeInstanceSizes[typeDefIndex] : 0);
 
     /// <summary>Unboxed size of a value type (instance_size minus the object header), or 0 if unknown.</summary>
     public int GetValueTypeSize(int typeDefIndex) => Math.Max(0, GetInstanceSize(typeDefIndex) - 2 * Ptr);
@@ -295,13 +298,42 @@ public sealed partial class Il2CppRegistration
             _flatFieldOffsets = ReadInt32Array(fieldOffVa, fieldOffCount);
         }
 
-        TypeSizeTableVas = ReadPointerArray(F(typeSizeIdx + 1), (int)Math.Min(F(typeSizeIdx), 2_000_000));
+        var typeSizeCount = (int)Math.Min(F(typeSizeIdx), 2_000_000);
+        var typeSizeVa = F(typeSizeIdx + 1);
+        TypeSizesArePointers = DetermineTypeSizesArePointers(typeSizeCount, typeSizeVa);
+        if (TypeSizesArePointers)
+        {
+            TypeSizeTableVas = ReadPointerArray(typeSizeVa, typeSizeCount);
+            _flatTypeInstanceSizes = [];
+        }
+        else
+        {
+            TypeSizeTableVas = [];
+            _flatTypeInstanceSizes = ReadArray(typeSizeVa, typeSizeCount, 16, s => BitConverter.ToInt32(s));
+        }
         for (var i = 0; i < TypeVas.Count; i++) _typeIndexByVa.TryAdd(TypeVas[i], i);
 
         _sink.Info(DiagnosticCategory.Registration, DiagnosticCodes.RegistrationFound,
             $"MetadataRegistration at RVA 0x{va - Reader.ImageBase:X}: {TypeVas.Count:N0} types, {GenericInstVas.Count:N0} generic insts, " +
             $"{MethodSpecs.Count:N0} method specs, {GenericMethodTable.Count:N0} generic method functions.",
             new() { Rva = va - Reader.ImageBase, VirtualAddress = va });
+    }
+
+    private bool DetermineTypeSizesArePointers(int count, ulong va)
+    {
+        if (_md.Version.Major >= 22) return true;
+        if (_md.Version.Major <= 20) return false;
+        if (count <= 0 || !Reader.IsMapped(va)) return true;
+
+        var sample = ReadPointerArray(va, Math.Min(count, 64));
+        var nonZero = 0;
+        foreach (var entry in sample)
+        {
+            if (entry == 0) continue;
+            nonZero++;
+            if (!Reader.IsMapped(entry)) return false;
+        }
+        return nonZero > 0;
     }
 
     private bool DetermineFieldOffsetsArePointers(int count, ulong va)

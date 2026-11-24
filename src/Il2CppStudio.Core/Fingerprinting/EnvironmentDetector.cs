@@ -86,7 +86,7 @@ public static partial class EnvironmentDetector
             sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.PlayerLogLocation, $"Player.log location: {playerLog}", new() { File = playerLog });
         }
 
-        var backend = binaryPath is not null ? "IL2CPP"
+        var backend = binaryPath is not null || model is not null ? "IL2CPP"
             : dataFolder is not null && File.Exists(Path.Combine(dataFolder, "Managed", "Assembly-CSharp.dll")) ? "Mono"
             : "Unknown";
         sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.ScriptingBackendDetected, $"Scripting backend: {backend}.", new() { File = gameRoot });

@@ -48,7 +48,7 @@ internal static class Leb
 public static class WasmFiles
 {
     public static string? Find(string root) =>
-        new[] { System.IO.Path.Combine(root, "Build"), root }
+        Workspace.WebDataExtractor.SearchSubdirs.Select(s => Path.Combine(root, s)).Append(root)
             .Where(Directory.Exists)
             .SelectMany(Directory.EnumerateFiles)
             .FirstOrDefault(IsWasmPath);

@@ -1,10 +1,12 @@
 using System.Buffers.Binary;
+using System.IO.Compression;
 using System.Text;
 using Il2CppStudio.Core.Analysis;
 using Il2CppStudio.Core.Binary;
 using Il2CppStudio.Core.Diagnostics;
 using Il2CppStudio.Core.Metadata;
 using Il2CppStudio.Core.Registration;
+using Il2CppStudio.Core.Workspace;
 
 namespace Il2CppStudio.Tests;
 
@@ -133,8 +135,11 @@ public sealed class PreV24MetadataTests
 
             var reg = Il2CppRegistration.Load(image, md, sink);
             Assert.True(reg.IsComplete);
-            Assert.Equal(!((major <= 20) || (major == 21 && !v21PointerFieldOffsets)), reg.FieldOffsetsArePointers);
+            var expectFlat = (major <= 20) || (major == 21 && !v21PointerFieldOffsets);
+            Assert.Equal(!expectFlat, reg.FieldOffsetsArePointers);
+            Assert.Equal(!expectFlat, reg.TypeSizesArePointers);
             Assert.Equal(expectedFieldOffset, reg.GetFieldOffset(0, 0));
+            Assert.Equal(24, reg.GetInstanceSize(0));
 
             var names = new TypeNameService(md, model, reg);
             var map = new MethodAddressMap(md, model, reg, names, [], null, sink);
@@ -157,6 +162,7 @@ public sealed class PreV24MetadataTests
             Assert.Equal(reg.MetadataRegistrationVa, regCached.MetadataRegistrationVa);
             Assert.Equal(reg.CodeRegistrationVa, regCached.CodeRegistrationVa);
             Assert.Equal(expectedFieldOffset, regCached.GetFieldOffset(0, 0));
+            Assert.Equal(24, regCached.GetInstanceSize(0));
             Assert.Empty(sink.Query(DiagnosticSeverity.Error));
         }
         finally
@@ -166,9 +172,182 @@ public sealed class PreV24MetadataTests
         }
     }
 
+    [Fact]
+    public void WebDataExtractor_UnpacksDatagzEmscriptenManifestAndDetectsAsmJs()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"il2cppstudio-datagz-manifest-{Guid.NewGuid():N}");
+        var release = Path.Combine(root, "Release");
+        Directory.CreateDirectory(release);
+        try
+        {
+            var dataUnity3d = BuildUnityFsBundle("5.3.0f1");
+            var metaBytes = BuildSyntheticMetadata(new MetadataVersion(16), out _, rawMethodToken: 1u);
+
+            var dataEnd = dataUnity3d.Length;
+            var metaStart = dataEnd;
+            var metaEnd = metaStart + metaBytes.Length;
+            var rawBlob = new byte[metaEnd];
+            Buffer.BlockCopy(dataUnity3d, 0, rawBlob, 0, dataUnity3d.Length);
+            Buffer.BlockCopy(metaBytes, 0, rawBlob, metaStart, metaBytes.Length);
+
+            var dataGzPath = Path.Combine(release, "game.datagz");
+            File.WriteAllBytes(dataGzPath, CompressGzip(rawBlob));
+            File.WriteAllBytes(Path.Combine(release, "game.jsgz"), CompressGzip("// asm.js\n"u8.ToArray()));
+            File.WriteAllBytes(Path.Combine(release, "game.js.memgz"), CompressGzip([1, 2, 3, 4]));
+            File.WriteAllText(Path.Combine(release, "UnityLoader.js"),
+                $"new t(0,{dataEnd},0,0).open(\"GET\",\"/data.unity3d\"),new t({metaStart},{metaEnd},0,0).open(\"GET\",\"/Il2CppData/Metadata/global-metadata.dat\")");
+
+            foreach (var target in new[] { root, release, dataGzPath })
+            {
+                var sink = new DiagnosticCollector(new Serilog.LoggerConfiguration().CreateLogger());
+                using var ws = Il2CppWorkspace.Load(target, sink);
+                Assert.Empty(sink.Query(DiagnosticSeverity.Error));
+                Assert.Empty(sink.Query(DiagnosticSeverity.Warning));
+                Assert.Equal(16, ws.Metadata.Version.Major);
+                Assert.Equal("5.3.0f1", ws.Environment.UnityVersion);
+                Assert.Equal("IL2CPP", ws.Environment.ScriptingBackend);
+                Assert.NotNull(ws.Files.LegacyAsmJsPath);
+                Assert.Contains("asm.js", ws.LiftingUnavailableReason ?? "", StringComparison.OrdinalIgnoreCase);
+                Assert.Contains(sink.Query(DiagnosticSeverity.Information), d =>
+                    d.Severity == DiagnosticSeverity.Information && d.Code == DiagnosticCodes.BinaryFormatUnsupported && d.Message.Contains("asm.js", StringComparison.OrdinalIgnoreCase));
+
+                var player = Assert.Single(ws.Model.Types, t => t.Name == "Player" && t.Namespace == "Game");
+                var run = Assert.Single(player.Methods);
+                Assert.Equal("Run", run.Name);
+                Assert.Equal(0x06000001u, run.Token);
+                Assert.Equal("hp", Assert.Single(player.Fields).Name);
+                Assert.Equal("Score", Assert.Single(player.Properties).Name);
+                Assert.Equal("OnHit", Assert.Single(player.Events).Name);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void WebDataExtractor_UnpacksDatagzRawFallbackAndUnityWebDataGzip()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), $"il2cppstudio-datagz-fallback-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tmp);
+        try
+        {
+            // (a) Compressed/game.datagz raw concatenated blob with NO UnityLoader.js
+            var rootRaw = Path.Combine(tmp, "raw");
+            var compressedDir = Path.Combine(rootRaw, "Compressed");
+            Directory.CreateDirectory(compressedDir);
+
+            var dataUnity3d = BuildUnityFsBundle("5.4.1f1");
+            var metaBytes = BuildSyntheticMetadata(new MetadataVersion(20), out _);
+            var rawConcat = new byte[dataUnity3d.Length + metaBytes.Length];
+            Buffer.BlockCopy(dataUnity3d, 0, rawConcat, 0, dataUnity3d.Length);
+            Buffer.BlockCopy(metaBytes, 0, rawConcat, dataUnity3d.Length, metaBytes.Length);
+            File.WriteAllBytes(Path.Combine(compressedDir, "game.datagz"), CompressGzip(rawConcat));
+            File.WriteAllText(Path.Combine(compressedDir, "game.asm.js"), "// asm.js");
+
+            var sinkRaw = new DiagnosticCollector(new Serilog.LoggerConfiguration().CreateLogger());
+            using (var wsRaw = Il2CppWorkspace.Load(rootRaw, sinkRaw))
+            {
+                Assert.Empty(sinkRaw.Query(DiagnosticSeverity.Error));
+                Assert.Empty(sinkRaw.Query(DiagnosticSeverity.Warning));
+                Assert.Equal(20, wsRaw.Metadata.Version.Major);
+                Assert.Equal("5.4.1f1", wsRaw.Environment.UnityVersion);
+                Assert.NotNull(wsRaw.Files.LegacyAsmJsPath);
+            }
+
+            // (b) Release/game.datagz wrapping gzip-compressed UnityWebData1.0\0
+            var rootUwd = Path.Combine(tmp, "uwd");
+            var releaseUwd = Path.Combine(rootUwd, "Release");
+            Directory.CreateDirectory(releaseUwd);
+            var uwdBytes = BuildUnityWebData([
+                ("Il2CppData/Metadata/global-metadata.dat", metaBytes),
+                ("data.unity3d", dataUnity3d),
+            ]);
+            File.WriteAllBytes(Path.Combine(releaseUwd, "game.datagz"), CompressGzip(uwdBytes));
+
+            var sinkUwd = new DiagnosticCollector(new Serilog.LoggerConfiguration().CreateLogger());
+            using (var wsUwd = Il2CppWorkspace.Load(rootUwd, sinkUwd))
+            {
+                Assert.Empty(sinkUwd.Query(DiagnosticSeverity.Error));
+                Assert.Equal(20, wsUwd.Metadata.Version.Major);
+                Assert.Equal("5.4.1f1", wsUwd.Environment.UnityVersion);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tmp)) Directory.Delete(tmp, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void RealUnity53WebGlBuild_DatagzAndV16Metadata_ReconstructsCSharpAndUnityScript()
+    {
+        const string realRoot = @"C:\Users\13131313\Downloads\webgl";
+        var releaseDir = Path.Combine(realRoot, "Release");
+        if (!Directory.Exists(releaseDir))
+            Assert.Skip($"Local Unity 5.3 WebGL test fixture not found at '{releaseDir}'.");
+
+        foreach (var target in new[] { realRoot, releaseDir })
+        {
+            var sink = new DiagnosticCollector(new Serilog.LoggerConfiguration().CreateLogger());
+            using var ws = Il2CppWorkspace.Load(target, sink);
+            WorkspaceSetup.Attach(ws);
+
+            Assert.Empty(sink.Query(DiagnosticSeverity.Error));
+            Assert.Empty(sink.Query(DiagnosticSeverity.Warning));
+            Assert.Equal(16, ws.Metadata.Version.Major);
+            Assert.Equal("5.3.0f1", ws.Environment.UnityVersion);
+            Assert.Equal("IL2CPP", ws.Environment.ScriptingBackend);
+            Assert.NotNull(ws.Files.LegacyAsmJsPath);
+            Assert.Contains("asm.js", ws.LiftingUnavailableReason ?? "", StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(sink.Query(DiagnosticSeverity.Information), d =>
+                d.Severity == DiagnosticSeverity.Information && d.Code == DiagnosticCodes.BinaryFormatUnsupported && d.Message.Contains("asm.js", StringComparison.OrdinalIgnoreCase));
+
+            Assert.All(ws.Metadata.SectionReports, r =>
+            {
+                Assert.True(r.InBounds, $"Section {r.Name} out of bounds");
+                Assert.True(r.Aligned, $"Section {r.Name} misaligned");
+            });
+
+            Assert.Equal(7, ws.Model.Assemblies.Count);
+            Assert.Contains(ws.Model.Assemblies, a => a.Name == "Assembly-CSharp");
+            Assert.Contains(ws.Model.Assemblies, a => a.Name == "Assembly-UnityScript");
+
+            var pc = Assert.Single(ws.FindTypes("PlayerController"));
+            Assert.Equal(["moveSpeed", "turnSpeed", "startColor", "objRenderer"], pc.Fields.Select(f => f.Name));
+            Assert.Equal([".ctor", "Start", "Update"], pc.Methods.Select(m => m.Name));
+            Assert.Equal([0x06000001u, 0x06000002u, 0x06000003u], pc.Methods.Select(m => m.Token));
+
+            var ur = Assert.Single(ws.FindTypes("objRenderer"));
+            Assert.Equal(["moveSpeed", "turnSpeed", "startColor", "objRenderer"], ur.Fields.Select(f => f.Name));
+            Assert.Equal([".ctor", "Start", "Update", "Main"], ur.Methods.Select(m => m.Name));
+
+            var literals = Enumerable.Range(0, ws.Metadata.StringLiterals.Length)
+                .Select(ws.Metadata.GetStringLiteral)
+                .ToHashSet(StringComparer.Ordinal);
+            Assert.Contains("Vertical", literals);
+            Assert.Contains("Horizontal", literals);
+            Assert.Contains("Jump pressed in C#!", literals);
+            Assert.Contains("Jump pressed in UnityScript!", literals);
+
+            var csPc = ws.Render(pc, method: null, CodeView.CSharp);
+            Assert.Contains("class PlayerController", csPc);
+            Assert.Contains("moveSpeed", csPc);
+            Assert.Contains("Start()", csPc);
+            Assert.Contains("Update()", csPc);
+            Assert.Contains("asm.js", csPc, StringComparison.OrdinalIgnoreCase);
+
+            var csUr = ws.Render(ur, method: null, CodeView.CSharp);
+            Assert.Contains("class objRenderer", csUr);
+            Assert.Contains("Main()", csUr);
+            Assert.Contains("asm.js", csUr, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     // ------------------------------------------------------------------ synthetic fixtures
 
-    private static byte[] BuildSyntheticMetadata(MetadataVersion v, out string expectedLiteral)
+    private static byte[] BuildSyntheticMetadata(MetadataVersion v, out string expectedLiteral, uint rawMethodToken = 0x06000001u)
     {
         expectedLiteral = "pre_v24_ok";
 
@@ -236,7 +415,7 @@ public sealed class PreV24MetadataTests
                 w.Write(-1); // rgctxStartIndex
                 w.Write(0);  // rgctxCount
             }
-            w.Write(0x06000001u); // token
+            w.Write(rawMethodToken); // token
             w.Write((ushort)0x0086); // Public
             w.Write((ushort)0);
             w.Write(ushort.MaxValue);
@@ -451,12 +630,23 @@ public sealed class PreV24MetadataTests
         var typesArrOff = Alloc(ptrSize);
         WritePtr(typesArrOff, imageBase + (ulong)type0Off);
 
-        // typeDefinitionsSizes[2]
-        var tdSize0Off = Alloc(16);
-        BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(tdSize0Off, 4), 24);
-        var tdSizesArrOff = Alloc(ptrSize * 2);
-        WritePtr(tdSizesArrOff, imageBase + (ulong)tdSize0Off);
-        WritePtr(tdSizesArrOff + ptrSize, imageBase + (ulong)tdSize0Off);
+        // typeDefinitionsSizes[2]: flat 16-byte structs for v16-v20 (and early v21), pointer table otherwise
+        var flatTypeSizes = (md.Version.Major <= 20) || (md.Version.Major == 21 && !v21PointerFieldOffsets);
+        int tdSizesArrOff;
+        if (flatTypeSizes)
+        {
+            tdSizesArrOff = Alloc(16 * 2);
+            BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(tdSizesArrOff, 4), 24);
+            BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(tdSizesArrOff + 16, 4), 24);
+        }
+        else
+        {
+            var tdSize0Off = Alloc(16);
+            BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(tdSize0Off, 4), 24);
+            tdSizesArrOff = Alloc(ptrSize * 2);
+            WritePtr(tdSizesArrOff, imageBase + (ulong)tdSize0Off);
+            WritePtr(tdSizesArrOff + ptrSize, imageBase + (ulong)tdSize0Off);
+        }
 
         // fieldOffsets (either flat int32[1] or pointer table[2])
         int fieldOffsetsOff;
@@ -529,6 +719,54 @@ public sealed class PreV24MetadataTests
             new(".data", dataRva, 0x2000, (long)dataRva, 0x2000, IsExecutable: false, IsWritable: true, IsReadable: true),
         };
         return new SyntheticBinaryImage(is64Bit, imageBase, buf, sections);
+    }
+
+    private static byte[] CompressGzip(ReadOnlySpan<byte> payload)
+    {
+        using var ms = new MemoryStream();
+        using (var gz = new GZipStream(ms, CompressionLevel.Fastest, leaveOpen: true))
+            gz.Write(payload);
+        return ms.ToArray();
+    }
+
+    private static byte[] BuildUnityFsBundle(string unityRevision)
+    {
+        using var ms = new MemoryStream();
+        ms.Write("UnityFS\0"u8);
+        ms.Write([0, 0, 0, 6]); // format 6
+        ms.Write("5.x.x\0"u8);
+        ms.Write(Encoding.ASCII.GetBytes(unityRevision));
+        ms.WriteByte(0);
+        ms.Write(new byte[32]);
+        return ms.ToArray();
+    }
+
+    private static byte[] BuildUnityWebData((string Name, byte[] Data)[] files)
+    {
+        const string magic = "UnityWebData1.0\0";
+        var nameBytes = files.Select(f => Encoding.UTF8.GetBytes(f.Name)).ToArray();
+        var headerSize = magic.Length + 4 + nameBytes.Sum(nb => 12 + nb.Length);
+        var totalSize = headerSize + files.Sum(f => f.Data.Length);
+        var buf = new byte[totalSize];
+        Encoding.ASCII.GetBytes(magic, buf.AsSpan(0, magic.Length));
+        BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(magic.Length, 4), headerSize);
+
+        var hdrPos = magic.Length + 4;
+        var dataPos = headerSize;
+        for (var i = 0; i < files.Length; i++)
+        {
+            var nb = nameBytes[i];
+            var payload = files[i].Data;
+            BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(hdrPos, 4), dataPos);
+            BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(hdrPos + 4, 4), payload.Length);
+            BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(hdrPos + 8, 4), nb.Length);
+            nb.CopyTo(buf.AsSpan(hdrPos + 12));
+            hdrPos += 12 + nb.Length;
+
+            payload.CopyTo(buf.AsSpan(dataPos));
+            dataPos += payload.Length;
+        }
+        return buf;
     }
 
     private sealed class SyntheticBinaryImage(bool is64Bit, ulong imageBase, byte[] data, IReadOnlyList<BinarySection> sections) : IBinaryImage
