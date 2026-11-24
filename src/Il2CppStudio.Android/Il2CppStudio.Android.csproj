@@ -35,6 +35,14 @@
     <PackageReference Include="Avalonia.Android" />
   </ItemGroup>
 
+  <ItemGroup>
+    <TrimmerRootAssembly Include="AvaloniaEdit" />
+    <TrimmerRootAssembly Include="AvaloniaEdit.TextMate" />
+    <TrimmerRootAssembly Include="TextMateSharp" />
+    <TrimmerRootAssembly Include="TextMateSharp.Grammars" />
+    <TrimmerRootAssembly Include="Onigwrap" />
+  </ItemGroup>
+
   <Target Name="CopyReleaseApkToDist"
           AfterTargets="Build"
           Condition="'$(Configuration)' == 'Release' and '$(BuildingInsideVisualStudio)' != 'true' and Exists('$(ApkFileSigned)')">

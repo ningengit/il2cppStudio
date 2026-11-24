@@ -54,8 +54,9 @@ public sealed class MethodAddressMap
                 {
                     var token = md.Methods[m].Token;
                     var rid = (int)(token & 0x00FFFFFF);
-                    if (rid < 1 || rid > module.MethodPointers.Count) continue;
-                    var va = module.MethodPointers[rid - 1];
+                    var va = rid >= 1 && rid <= module.MethodPointers.Count ? module.MethodPointers[rid - 1] : 0UL;
+                    if (va == 0 && md.Version.HasCodegenIndices && (uint)md.Methods[m].MethodIndex < (uint)reg.GlobalMethodPointers.Count)
+                        va = reg.GlobalMethodPointers[md.Methods[m].MethodIndex];
                     if (va == 0) continue;
                     if (wasmSplit is not null)
                     {

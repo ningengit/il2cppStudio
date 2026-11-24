@@ -23,7 +23,7 @@ public static class TextDisassemblerFactory
         Binary.CpuArchitecture.X64 => new IcedTextDisassembler(64),
         Binary.CpuArchitecture.X86 => new IcedTextDisassembler(32),
         Binary.CpuArchitecture.Arm64 => new Arm64TextDisassembler(),
-        Binary.CpuArchitecture.Arm => CapstoneArmDisassembler.TryCreate(),
+        Binary.CpuArchitecture.Arm => new Arm32Disassembler(),
         Binary.CpuArchitecture.Wasm32 => new WasmTextDisassembler(),
         _ => null,
     };

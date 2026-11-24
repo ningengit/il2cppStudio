@@ -1,18 +1,28 @@
-using System.Runtime.InteropServices;
 using Il2CppStudio.Core.Diagnostics;
+using Il2CppStudio.Core.Metadata;
 
 namespace Il2CppStudio.Core.Registration;
 
 /// <summary>
-/// Metadata v24.0/24.1 (Unity 2018.x) registration. CodeRegistration has no codeGenModules; instead a global
-/// <c>methodPointers</c> table is indexed by Il2CppMethodDefinition.methodIndex. Fields (64-bit):
-/// [0] methodPointersCount [1] methodPointers [2..3] reversePInvoke [4] genericMethodPointersCount [5] genericMethodPointers
-/// [6..7] invokers [8] customAttributeCount [9] customAttributeGenerators [10..11] unresolvedVirtualCalls [12..13] interopData.
-/// The table is found by its count (max methodIndex + 1) and confirmed by customAttributeCount (= attributesInfo rows).
+/// Pre-v24.2 metadata registration (v16–v24.1, Unity 5.3–2018.4). CodeRegistration has no codeGenModules; instead a
+/// global <c>methodPointers</c> table is indexed by Il2CppMethodDefinition.methodIndex. Word slots vary by version:
+/// v16-20 (14 words): gmp@8, invokers@10, attr@12;
+/// v21 (18 words): gmp@10, invokers@12, attr@14;
+/// v22 (20 words): gmp@10, invokers@12, attr@14;
+/// v23-24.1 (14 words): gmp@4, invokers@6, attr@8.
 /// Per-image <see cref="CodeGenModuleRecord"/>s indexed by token RID - 1 are synthesized so the rest of the pipeline is unchanged.
 /// </summary>
 public sealed partial class Il2CppRegistration
 {
+    private static (int GmpIndex, int InvokerIndex, int AttrIndex, int TotalWords) GetPreV242CodeRegLayout(MetadataVersion v) =>
+        v.Major switch
+        {
+            <= 20 => (8, 10, 12, 14),
+            21 => (10, 12, 14, 18),
+            22 => (10, 12, 14, 20),
+            _ => (4, 6, 8, 14),
+        };
+
     private bool LocateCodeRegistrationV24()
     {
         var methodCount = _md.Methods.Length == 0 ? 0UL : (ulong)(_md.Methods.Max(m => m.MethodIndex) + 1);
@@ -34,30 +44,84 @@ public sealed partial class Il2CppRegistration
     private ulong FindCodeRegistrationV24<TWord>(ReadOnlySpan<TWord> words, ulong start, TWord target, ulong attrCount)
         where TWord : unmanaged, IEquatable<TWord>
     {
+        var (gmpIdx, invIdx, attrIdx, totalWords) = GetPreV242CodeRegLayout(_md.Version);
+        var methodCount = WordToU64(target);
+        var metaRegBytes = (ulong)((MetadataFieldOffsetsWordIndex + (_md.Version.HasMetadataUsageTables ? 6 : 4)) * Ptr);
         var pos = 0;
-        while (pos < words.Length - 14)
+        while (pos <= words.Length - totalWords)
         {
             var hit = words[pos..].IndexOf(target);
             if (hit < 0) break;
             var i = pos + hit;
             pos = i + 1;
-            if (i + 13 >= words.Length || !Reader.IsMapped(WordToU64(words[i + 1]))) continue;
-            if (WordToU64(words[i + 8]) != attrCount || WordToU64(words[i + 4]) > 5_000_000) continue;
+            if (i + totalWords > words.Length) break;
+
+            var candidateVa = start + (ulong)(i * Ptr);
+            if (MetadataRegistrationVa != 0 && candidateVa >= MetadataRegistrationVa && candidateVa < MetadataRegistrationVa + metaRegBytes)
+                continue;
+
+            var ptrsVa = WordToU64(words[i + 1]);
+            if (!Reader.IsMapped(ptrsVa)) continue;
+
+            var gmpCount = WordToU64(words[i + gmpIdx]);
+            if (gmpCount > 5_000_000 || (gmpCount > 0 && !Reader.IsMapped(WordToU64(words[i + gmpIdx + 1])))) continue;
+
+            var invCount = WordToU64(words[i + invIdx]);
+            if (invCount > 5_000_000 || (invCount > 0 && !Reader.IsMapped(WordToU64(words[i + invIdx + 1])))) continue;
+
+            var candAttrCount = WordToU64(words[i + attrIdx]);
+            if (_md.Version.HasCustomAttributeTables)
+            {
+                if (candAttrCount != attrCount) continue;
+            }
+            else if (candAttrCount > 5_000_000)
+            {
+                continue;
+            }
+
+            if (!HasValidMethodPointerSample(ptrsVa, methodCount)) continue;
             return start + (ulong)(i * Ptr);
         }
         return 0;
     }
 
+    private bool HasValidMethodPointerSample(ulong ptrsVa, ulong methodCount)
+    {
+        var sampleCount = (int)Math.Min(methodCount, 256UL);
+        var ptrs = ReadPointerArray(ptrsVa, sampleCount);
+        if (ptrs.Length != sampleCount) return false;
+
+        var requireExec = Reader.Image.Architecture != Binary.CpuArchitecture.Wasm32
+            && Reader.Image.Sections.Any(s => s.IsExecutable);
+        var checkedNonZero = 0;
+        foreach (var raw in ptrs)
+        {
+            if (raw == 0) continue;
+            var addr = Reader.Image.Architecture == Binary.CpuArchitecture.Arm ? (raw & ~1UL) : raw;
+            if (!Reader.IsMapped(addr)) return false;
+            if (requireExec)
+            {
+                var rva = addr - Reader.ImageBase;
+                if (Reader.Image.FindSectionByRva(rva) is not { IsExecutable: true })
+                    return false;
+            }
+            if (++checkedNonZero >= 8) break;
+        }
+        return checkedNonZero > 0 || methodCount == 0;
+    }
+
     private bool ParseCodeRegistrationV24(ulong codeRegVa, ulong methodCount)
     {
+        var (gmpIdx, _, _, _) = GetPreV242CodeRegLayout(_md.Version);
         var ptrsVa = At(codeRegVa, 1);
-        var gmpCount = At(codeRegVa, 4);
-        var gmpVa = At(codeRegVa, 5);
+        var gmpCount = At(codeRegVa, gmpIdx);
+        var gmpVa = At(codeRegVa, gmpIdx + 1);
         if (!Reader.IsMapped(ptrsVa) || gmpCount > 5_000_000) return false;
 
         CodeRegistrationVa = codeRegVa;
         var pointers = CodePointers(ReadPointerArray(ptrsVa, (int)methodCount));
-        GenericMethodPointers = CodePointers(ReadPointerArray(gmpVa, (int)gmpCount));
+        GlobalMethodPointers = pointers;
+        GenericMethodPointers = gmpCount > 0 ? CodePointers(ReadPointerArray(gmpVa, (int)gmpCount)) : [];
         CodeGenModules = SynthesizeModules(pointers);
         _sink.Info(DiagnosticCategory.Registration, DiagnosticCodes.RegistrationFound,
             $"CodeRegistration (v{_md.Version}) at RVA 0x{CodeRegistrationVa - Reader.ImageBase:X}: {pointers.Length:N0} method pointers, " +

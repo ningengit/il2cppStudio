@@ -154,13 +154,13 @@
           <!-- Central 3-tab code viewer -->
           <TabControl Grid.Row="0">
             <TabItem Header="C/C++">
-              <ae:TextEditor x:Name="CppEditor" IsReadOnly="True" ShowLineNumbers="True" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="13" />
+              <ae:TextEditor x:Name="CppEditor" IsReadOnly="True" ShowLineNumbers="True" Background="#1E1E1E" Foreground="#D4D4D4" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="13" />
             </TabItem>
             <TabItem Header="IL Code">
-              <ae:TextEditor x:Name="IlEditor" IsReadOnly="True" ShowLineNumbers="True" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="13" />
+              <ae:TextEditor x:Name="IlEditor" IsReadOnly="True" ShowLineNumbers="True" Background="#1E1E1E" Foreground="#D4D4D4" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="13" />
             </TabItem>
             <TabItem Header="C#">
-              <ae:TextEditor x:Name="CSharpEditor" IsReadOnly="True" ShowLineNumbers="True" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="13" />
+              <ae:TextEditor x:Name="CSharpEditor" IsReadOnly="True" ShowLineNumbers="True" Background="#1E1E1E" Foreground="#D4D4D4" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="13" />
             </TabItem>
           </TabControl>
 

@@ -94,24 +94,62 @@ public sealed class MetadataHeader
     public static int SizeFor(MetadataVersion v) => 8 + SectionNames(v).Count * 8;
 
     /// <summary>
-    /// Section order for a version. v27+: CommonPrefix, attribute pair, CommonSuffix. v24 inserts rgctxEntries (24.0-24.1)
-    /// before images and metadataUsageLists/Pairs before fieldRefs, and has no windowsRuntimeStrings.
+    /// Section order for a version (v16 through v31):
+    /// common 20-section prefix (adding rgctxEntries after typeDefinitions through v24.1),
+    /// images, assemblies, optional metadataUsageLists/Pairs (v19-v24), optional fieldRefs (v19+),
+    /// optional referencedAssemblies (v20+), attribute tables (v21-v27 or v29+),
+    /// optional unresolvedIndirectCall* (v22+), windowsRuntimeTypeNames (v23+),
+    /// windowsRuntimeStrings (v27+), and exportedTypeDefinitions (v24+).
     /// </summary>
     public static List<(string Name, string Description)> SectionNames(MetadataVersion v)
     {
         var names = new List<(string, string)>(36);
         foreach (var entry in CommonPrefix)
         {
-            if (v.IsV24 && entry.Name == "images" && v.HasCodegenIndices) names.Add(("rgctxEntries", "Il2CppRGCTXDefinition"));
-            if (v.IsV24 && entry.Name == "fieldRefs")
+            if (entry.Name == "images")
             {
-                names.Add(("metadataUsageLists", "Il2CppMetadataUsageList"));
-                names.Add(("metadataUsagePairs", "Il2CppMetadataUsagePair"));
+                if (v.HasCodegenIndices)
+                    names.Add(("rgctxEntries", "Il2CppRGCTXDefinition"));
+                names.Add(entry);
+                continue;
+            }
+            if (entry.Name == "fieldRefs")
+            {
+                if (v.HasMetadataUsageTables)
+                {
+                    names.Add(("metadataUsageLists", "Il2CppMetadataUsageList"));
+                    names.Add(("metadataUsagePairs", "Il2CppMetadataUsagePair"));
+                }
+                if (v.HasFieldRefs)
+                    names.Add(entry);
+                continue;
+            }
+            if (entry.Name == "referencedAssemblies")
+            {
+                if (v.HasReferencedAssemblies)
+                    names.Add(entry);
+                continue;
             }
             names.Add(entry);
         }
-        names.AddRange(v.HasAttributeDataBlobs ? V29Attributes : V27Attributes);
-        names.AddRange(CommonSuffix.Where(s => v.HasWindowsRuntimeStrings || s.Name != "windowsRuntimeStrings"));
+
+        if (v.HasAttributeDataBlobs)
+            names.AddRange(V29Attributes);
+        else if (v.HasCustomAttributeTables)
+            names.AddRange(V27Attributes);
+
+        foreach (var s in CommonSuffix)
+        {
+            var include = s.Name switch
+            {
+                "unresolvedIndirectCallParameterTypes" or "unresolvedIndirectCallParameterRanges" => v.HasUnresolvedIndirectCalls,
+                "windowsRuntimeTypeNames" => v.HasWindowsRuntimeTypeNames,
+                "windowsRuntimeStrings" => v.HasWindowsRuntimeStrings,
+                "exportedTypeDefinitions" => v.HasExportedTypeDefinitions,
+                _ => true,
+            };
+            if (include) names.Add(s);
+        }
         return names;
     }
 

@@ -22,11 +22,10 @@
     <PackageReference Include="Serilog.Formatting.Compact" />
   </ItemGroup>
 
-  <!-- Vendored disassemblers (sources + licenses under src/vendor): ARM64, WebAssembly; ARMv7 through native Capstone. -->
+  <!-- Vendored/built-in disassemblers (sources + licenses under src/vendor): ARM64, WebAssembly, pure-C# ARMv7/Thumb-2. -->
   <ItemGroup>
     <ProjectReference Include="..\vendor\AsmArm64\AsmArm64.csproj" />
     <ProjectReference Include="..\vendor\WasmDisassembler\WasmDisassembler.csproj" />
-    <None Include="..\vendor\capstone\capstone.dll" Link="capstone.dll" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'win-x64' or ('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows')))" />
   </ItemGroup>
 
 </Project>

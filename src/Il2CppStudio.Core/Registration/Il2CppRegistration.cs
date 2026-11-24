@@ -23,13 +23,17 @@ public sealed partial class Il2CppRegistration
     public ulong MetadataRegistrationVa { get; private set; }
 
     public IReadOnlyList<CodeGenModuleRecord> CodeGenModules { get; private set; } = [];
+    public IReadOnlyList<ulong> GlobalMethodPointers { get; private set; } = [];
     public IReadOnlyList<ulong> GenericMethodPointers { get; private set; } = [];
     public IReadOnlyList<ulong> TypeVas { get; private set; } = [];
     public IReadOnlyList<Il2CppMethodSpecRecord> MethodSpecs { get; private set; } = [];
     public IReadOnlyList<Il2CppGenericMethodFunction> GenericMethodTable { get; private set; } = [];
     public IReadOnlyList<ulong> GenericInstVas { get; private set; } = [];
     public IReadOnlyList<ulong> FieldOffsetTableVas { get; private set; } = [];
+    public bool FieldOffsetsArePointers { get; private set; } = true;
     public IReadOnlyList<ulong> TypeSizeTableVas { get; private set; } = [];
+
+    private int[] _flatFieldOffsets = [];
 
     /// <summary>Il2CppTypeDefinitionSizes.instance_size (includes the 16-byte object header, also for value types), or 0.</summary>
     public int GetInstanceSize(int typeDefIndex) =>
@@ -85,7 +89,11 @@ public sealed partial class Il2CppRegistration
             return false;
 
         var typeDefCount = (ulong)_md.TypeDefinitions.Length;
-        if (At(cached.MetadataRegistrationVa, 10) != typeDefCount || At(cached.MetadataRegistrationVa, 12) != typeDefCount)
+        var fieldOffIdx = MetadataFieldOffsetsWordIndex;
+        var typeSizeIdx = fieldOffIdx + 2;
+        var fieldOffCount = At(cached.MetadataRegistrationVa, fieldOffIdx);
+        if ((fieldOffCount != typeDefCount && fieldOffCount != (ulong)_md.Fields.Length)
+            || At(cached.MetadataRegistrationVa, typeSizeIdx) != typeDefCount)
             return false;
         var typesCount = At(cached.MetadataRegistrationVa, 6);
         if (typesCount == 0 || typesCount > 2_000_000 || !Reader.IsMapped(At(cached.MetadataRegistrationVa, 7)))
@@ -93,10 +101,11 @@ public sealed partial class Il2CppRegistration
 
         if (_md.Version.HasCodegenIndices)
         {
+            var (_, _, attrIndex, _) = GetPreV242CodeRegLayout(_md.Version);
             var methodCount = _md.Methods.Length == 0 ? 0UL : (ulong)(_md.Methods.Max(m => m.MethodIndex) + 1);
             if (methodCount == 0
                 || At(cached.CodeRegistrationVa, 0) != methodCount
-                || At(cached.CodeRegistrationVa, 8) != (ulong)_md.AttributeTypeRanges.Length
+                || (_md.Version.HasCustomAttributeTables && At(cached.CodeRegistrationVa, attrIndex) != (ulong)_md.AttributeTypeRanges.Length)
                 || !Reader.IsMapped(At(cached.CodeRegistrationVa, 1)))
                 return false;
 
@@ -137,7 +146,7 @@ public sealed partial class Il2CppRegistration
     public Il2CppTypeRecord GetTypeAt(ulong va)
     {
         if (_typeCache.TryGetValue(va, out var t)) return t;
-        t = new Il2CppTypeRecord(va, P(va), _md.Version.IsV24 ? NormalizeTypeBitsV24(Reader.ReadU32(va + (ulong)Ptr)) : Reader.ReadU32(va + (ulong)Ptr));
+        t = new Il2CppTypeRecord(va, P(va), _md.Version.IsPreV27 ? NormalizeTypeBitsV24(Reader.ReadU32(va + (ulong)Ptr)) : Reader.ReadU32(va + (ulong)Ptr));
         _typeCache[va] = t;
         return t;
     }
@@ -145,13 +154,13 @@ public sealed partial class Il2CppRegistration
     public int TypeIndexOfVa(ulong va) => _typeIndexByVa.GetValueOrDefault(va, -1);
 
     /// <summary>
-    /// Il2CppGenericClass. v27+: { Il2CppType* type; context; cached_class }. v24: the first field is the generic
+    /// Il2CppGenericClass. v27+: { Il2CppType* type; context; cached_class }. Pre-v27: the first field is the generic
     /// TypeDefinitionIndex instead; it is mapped to that definition's byval Il2CppType so callers see one layout.
     /// </summary>
     public Il2CppGenericClassRecord ReadGenericClass(ulong va)
     {
         var first = P(va);
-        if (_md.Version.IsV24)
+        if (_md.Version.IsPreV27)
         {
             var td = unchecked((int)first);
             first = (uint)td < (uint)_md.TypeDefinitions.Length && (uint)_md.TypeDefinitions[td].ByvalTypeIndex < (uint)TypeVas.Count
@@ -175,12 +184,20 @@ public sealed partial class Il2CppRegistration
     /// <summary>Field offset of field <paramref name="fieldOrdinal"/> (0-based within its type), or -1.</summary>
     public int GetFieldOffset(int typeDefIndex, int fieldOrdinal)
     {
+        if (!FieldOffsetsArePointers)
+        {
+            if ((uint)typeDefIndex >= (uint)_md.TypeDefinitions.Length) return -1;
+            var fieldIndex = _md.TypeDefinitions[typeDefIndex].FieldStart + fieldOrdinal;
+            return (uint)fieldIndex < (uint)_flatFieldOffsets.Length ? _flatFieldOffsets[fieldIndex] : -1;
+        }
         if ((uint)typeDefIndex >= (uint)FieldOffsetTableVas.Count) return -1;
         var table = FieldOffsetTableVas[typeDefIndex];
         return table == 0 ? -1 : Reader.ReadI32(table + (ulong)fieldOrdinal * 4);
     }
 
     // ------------------------------------------------------------------ locating
+
+    private int MetadataFieldOffsetsWordIndex => _md.Version.HasMethodReferencesInMetadataReg ? 12 : 10;
 
     private void LocateMetadataRegistration()
     {
@@ -211,19 +228,39 @@ public sealed partial class Il2CppRegistration
         where TWord : unmanaged, IEquatable<TWord>
     {
         var typeDefCount = WordToU64(target);
+        var fieldOffIdx = MetadataFieldOffsetsWordIndex;
+        var typeSizeIdx = fieldOffIdx + 2;
+        var fieldsCount = (ulong)_md.Fields.Length;
+
         var pos = 0;
-        while (pos < words.Length - 4)
+        while (pos < words.Length - 2)
         {
             var hit = words[pos..].IndexOf(target);
             if (hit < 0) break;
-            var i = pos + hit;
+            var i = pos + hit; // candidate index for typeDefinitionsSizesCount (word typeSizeIdx)
             pos = i + 1;
-            if (i + 3 >= words.Length || i < 10) continue;
-            if (WordToU64(words[i + 2]) != typeDefCount) continue;
-            if (!Reader.IsMapped(WordToU64(words[i + 1])) || !Reader.IsMapped(WordToU64(words[i + 3]))) continue;
-            var typesCount = WordToU64(words[i - 4]);
-            if (typesCount == 0 || typesCount > 2_000_000 || !Reader.IsMapped(WordToU64(words[i - 3]))) continue;
-            candidates.Add(start + (ulong)((i - 10) * Ptr));
+            if (i < typeSizeIdx || i + 1 >= words.Length) continue;
+
+            var typeSizesPtr = WordToU64(words[i + 1]);
+            if (typeDefCount > 0 && !Reader.IsMapped(typeSizesPtr)) continue;
+
+            var fieldOffCount = WordToU64(words[i - 2]);
+            var fieldOffPtr = WordToU64(words[i - 1]);
+            if (fieldOffCount != typeDefCount && (_md.Version.Major > 21 || fieldOffCount != fieldsCount)) continue;
+            if (fieldOffCount > 0 && !Reader.IsMapped(fieldOffPtr)) continue;
+
+            var baseIdx = i - typeSizeIdx;
+            var typesCount = WordToU64(words[baseIdx + 6]);
+            var typesPtr = WordToU64(words[baseIdx + 7]);
+            if (typesCount == 0 || typesCount > 2_000_000 || !Reader.IsMapped(typesPtr)) continue;
+
+            var gInstCount = WordToU64(words[baseIdx + 2]);
+            var gmCount = WordToU64(words[baseIdx + 4]);
+            var mSpecCount = WordToU64(words[baseIdx + 8]);
+            if (gInstCount > 1_000_000 || gmCount > 2_000_000 || mSpecCount > 2_000_000) continue;
+            if (!Reader.IsMapped(P(typesPtr))) continue;
+
+            candidates.Add(start + (ulong)(baseIdx * Ptr));
         }
     }
 
@@ -232,22 +269,65 @@ public sealed partial class Il2CppRegistration
         MetadataRegistrationVa = va;
         ulong F(int i) => At(va, i);
 
+        var fieldOffIdx = MetadataFieldOffsetsWordIndex;
+        var typeSizeIdx = fieldOffIdx + 2;
+
         GenericInstVas = ReadPointerArray(F(3), (int)Math.Min(F(2), 1_000_000));
-        // Il2CppGenericMethodIndices: {methodIndex, invokerIndex} in v24.0-24.4, + adjustorThunkIndex from 24.5/27.1.
-        var gmStride = _md.Version.IsV24 ? 12 : 16;
+        // Il2CppGenericMethodIndices: {methodIndex, invokerIndex} in pre-v27 (v16-v24.4), + adjustorThunkIndex from 24.5/27.1.
+        var gmStride = _md.Version.IsPreV27 ? 12 : 16;
         GenericMethodTable = ReadArray(F(5), (int)Math.Min(F(4), 2_000_000), gmStride,
             s => new Il2CppGenericMethodFunction(BitConverter.ToInt32(s), BitConverter.ToInt32(s[4..]), BitConverter.ToInt32(s[8..]), s.Length >= 16 ? BitConverter.ToInt32(s[12..]) : -1));
         TypeVas = ReadPointerArray(F(7), (int)Math.Min(F(6), 2_000_000));
         MethodSpecs = ReadArray(F(9), (int)Math.Min(F(8), 2_000_000), 12,
             s => new Il2CppMethodSpecRecord(BitConverter.ToInt32(s), BitConverter.ToInt32(s[4..]), BitConverter.ToInt32(s[8..])));
-        FieldOffsetTableVas = ReadPointerArray(F(11), (int)Math.Min(F(10), 2_000_000));
-        TypeSizeTableVas = ReadPointerArray(F(13), (int)Math.Min(F(12), 2_000_000));
+
+        var fieldOffCount = (int)Math.Min(F(fieldOffIdx), 2_000_000);
+        var fieldOffVa = F(fieldOffIdx + 1);
+        FieldOffsetsArePointers = DetermineFieldOffsetsArePointers(fieldOffCount, fieldOffVa);
+        if (FieldOffsetsArePointers)
+        {
+            FieldOffsetTableVas = ReadPointerArray(fieldOffVa, fieldOffCount);
+            _flatFieldOffsets = [];
+        }
+        else
+        {
+            FieldOffsetTableVas = [];
+            _flatFieldOffsets = ReadInt32Array(fieldOffVa, fieldOffCount);
+        }
+
+        TypeSizeTableVas = ReadPointerArray(F(typeSizeIdx + 1), (int)Math.Min(F(typeSizeIdx), 2_000_000));
         for (var i = 0; i < TypeVas.Count; i++) _typeIndexByVa.TryAdd(TypeVas[i], i);
 
         _sink.Info(DiagnosticCategory.Registration, DiagnosticCodes.RegistrationFound,
             $"MetadataRegistration at RVA 0x{va - Reader.ImageBase:X}: {TypeVas.Count:N0} types, {GenericInstVas.Count:N0} generic insts, " +
             $"{MethodSpecs.Count:N0} method specs, {GenericMethodTable.Count:N0} generic method functions.",
             new() { Rva = va - Reader.ImageBase, VirtualAddress = va });
+    }
+
+    private bool DetermineFieldOffsetsArePointers(int count, ulong va)
+    {
+        if (_md.Version.Major >= 22) return true;
+        if (_md.Version.Major <= 20) return false;
+        // v21 transitioned between flat int32_t[] (fieldOffsetsCount == Fields.Length) and pointer tables.
+        if (count == _md.Fields.Length && count != _md.TypeDefinitions.Length) return false;
+        if (count <= 0 || !Reader.IsMapped(va)) return true;
+
+        var sample = ReadPointerArray(va, Math.Min(count, 64));
+        var nonZero = 0;
+        foreach (var entry in sample)
+        {
+            if (entry == 0) continue;
+            nonZero++;
+            if (!Reader.IsMapped(entry)) return false;
+        }
+        return nonZero > 0 || count == _md.TypeDefinitions.Length;
+    }
+
+    private int[] ReadInt32Array(ulong va, int count)
+    {
+        if (count <= 0 || !Reader.IsMapped(va)) return [];
+        var span = Reader.Slice(va, count * 4);
+        return span.Length < count * 4 ? [] : MemoryMarshal.Cast<byte, int>(span).ToArray();
     }
 
     private void LocateCodeRegistration()
@@ -367,6 +447,12 @@ public sealed partial class Il2CppRegistration
             var v24Map = ReadMetadataUsagesV24();
             MetadataUsages = v24Map;
             EmitMetadataUsagesDiagnostic(v24Map, fromV24Table: true);
+            return;
+        }
+        if (_md.Version.Major < 19)
+        {
+            MetadataUsages = new Dictionary<ulong, MetadataUsage>();
+            EmitMetadataUsagesDiagnostic(MetadataUsages, fromV24Table: false);
             return;
         }
         var map = new Dictionary<ulong, MetadataUsage>();

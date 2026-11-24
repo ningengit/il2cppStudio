@@ -12,10 +12,10 @@ using Il2CppStudio.Core.Registration;
 namespace Il2CppStudio.Core.Lifting.Arm32;
 
 /// <summary>
-/// AAPCS32 (ARMv7 / Thumb-2) native method lifter using the Capstone ARM decoder, lifting directly into
+/// AAPCS32 (ARMv7 / Thumb-2) native method lifter using the pure-C# ARM32 decoder, lifting directly into
 /// shared Unified IR expressions and CIL method bodies for Android armeabi-v7a.
 /// </summary>
-public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs, CapstoneArmDisassembler disasm,
+public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs, Arm32Disassembler disasm,
     IDiagnosticSink sink, Runtime.RuntimeHelperMap? helpers = null) : IMethodLifter
 {
     private readonly Dictionary<string, int> _typeIndex = MemoryResolver.BuildTypeIndex(sym.Model);
@@ -100,7 +100,7 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         }
     }
 
-    private static bool IsArm32Terminator(CapstoneArmDisassembler.Arm32Insn ins)
+    private static bool IsArm32Terminator(Arm32Insn ins)
     {
         var m = ins.Mnemonic;
         return m is "b" or "bx" or "udf" or "bkpt"
@@ -108,7 +108,7 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             && ins.Operands.Contains("pc", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static HashSet<int> FindElidedNullChecks(IReadOnlyList<CapstoneArmDisassembler.Arm32Insn> insns, NativeSymbolizer sym)
+    private static HashSet<int> FindElidedNullChecks(IReadOnlyList<Arm32Insn> insns, NativeSymbolizer sym)
     {
         var elided = new HashSet<int>();
         for (var i = 0; i + 2 < insns.Count; i++)
@@ -126,7 +126,7 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         return elided;
     }
 
-    private static List<Block> BuildBlocks(IReadOnlyList<CapstoneArmDisassembler.Arm32Insn> insns, NativeSymbolizer sym)
+    private static List<Block> BuildBlocks(IReadOnlyList<Arm32Insn> insns, NativeSymbolizer sym)
     {
         var idxAt = new Dictionary<ulong, int>(insns.Count);
         for (var i = 0; i < insns.Count; i++) idxAt[insns[i].Address] = i;
@@ -229,11 +229,11 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         return [.. blocks.Where(seen.Contains)];
     }
 
-    private static bool IsReturn(in CapstoneArmDisassembler.Arm32Insn ins) =>
+    private static bool IsReturn(in Arm32Insn ins) =>
         ins.Mnemonic == "bx" && ins.Operands.Trim() == "lr"
         || ins.Mnemonic == "pop" && ins.Operands.Contains("pc");
 
-    private static bool TryBranchTarget(in CapstoneArmDisassembler.Arm32Insn ins, out string? cond, out ulong target)
+    private static bool TryBranchTarget(in Arm32Insn ins, out string? cond, out ulong target)
     {
         cond = null; target = 0;
         var m = ins.Mnemonic;
@@ -338,7 +338,7 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             }
         }
 
-        public void TranslateBlock(EmitContext ctx, IReadOnlyList<CapstoneArmDisassembler.Arm32Insn> insns, Block b, Block? nextInEmit, HashSet<Block> emitted)
+        public void TranslateBlock(EmitContext ctx, IReadOnlyList<Arm32Insn> insns, Block b, Block? nextInEmit, HashSet<Block> emitted)
         {
             for (var i = b.Start; i < b.End; i++)
             {
@@ -387,7 +387,7 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                 ctx.IL.Add(CilOpCodes.Br, b.Successors[0].Label);
         }
 
-        private void TranslateOne(EmitContext ctx, in CapstoneArmDisassembler.Arm32Insn ins)
+        private void TranslateOne(EmitContext ctx, in Arm32Insn ins)
         {
             var m = ins.Mnemonic;
             if (m is "push" or "vpush" or "pop" or "vpop" or "nop")
@@ -404,8 +404,10 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             }
             if (m == "vmrs") return;
 
-            // Handle conditional instruction suffixes (e.g. moveq, movne, ldrne, strne)
+            // Handle conditional instruction suffixes (e.g. moveq, movne, ldrne, strne) and Thumb flag-setting 's'
             var baseMnem = StripConditionSuffix(m, out var condSuffix);
+            if (baseMnem is "movs" or "adds" or "subs" or "muls" or "ands" or "orrs" or "eors" or "lsls" or "lsrs" or "asrs")
+                baseMnem = baseMnem[..^1];
             CilInstructionLabel? skipCond = null;
             if (condSuffix is not null && BuildBranchCondition(ins, condSuffix) is { } condExpr)
             {
@@ -444,6 +446,13 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             {
                 case "mov" or "movw" when ops.Length == 2:
                     _regs[ops[0]] = ReadOperand(ins, ops[1], preferFloat: false);
+                    break;
+                case "movt" when ops.Length == 2:
+                    if (TryParseImm(ops[1], out var hi16))
+                    {
+                        var lo16 = _regs.TryGetValue(ops[0], out var prev) && prev is ConstExpr lc ? (uint)lc.Value & 0xFFFFu : 0u;
+                        _regs[ops[0]] = new ConstExpr(unchecked((int)(((uint)hi16 << 16) | lo16)), ValueKind.I4);
+                    }
                     break;
                 case "vmov" when ops.Length == 2:
                     _regs[ops[0]] = ReadOperand(ins, ops[1], preferFloat: true);
@@ -576,7 +585,7 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                    ?? new NativeExpr($"*({baseExpr.Describe()}+0x{disp:X})", isF ? ValueKind.R4 : ValueKind.I4);
         }
 
-        private void StoreMemory(EmitContext ctx, in CapstoneArmDisassembler.Arm32Insn ins, string memStr, int size, Expr value)
+        private void StoreMemory(EmitContext ctx, in Arm32Insn ins, string memStr, int size, Expr value)
         {
             ParseMem(memStr, out var baseReg, out var idxReg, out var disp);
             if (baseReg == "sp")
@@ -719,7 +728,7 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             }
         }
 
-        private Expr BuildBranchCondition(in CapstoneArmDisassembler.Arm32Insn ins, string cond)
+        private Expr BuildBranchCondition(in Arm32Insn ins, string cond)
         {
             if (cond is "cbz" or "cbnz")
             {
@@ -747,7 +756,7 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             return new CompareExpr(c, l, r);
         }
 
-        private Expr ReadOperand(in CapstoneArmDisassembler.Arm32Insn ins, string text, bool preferFloat)
+        private Expr ReadOperand(in Arm32Insn ins, string text, bool preferFloat)
         {
             text = text.Trim();
             if (text.StartsWith('#'))

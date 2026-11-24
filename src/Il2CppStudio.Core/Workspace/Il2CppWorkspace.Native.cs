@@ -79,7 +79,7 @@ public sealed partial class Il2CppWorkspace
                 "ARM64 AAPCS64 Unified IR lifter enabled (with HFA struct & ADRP+GOT resolution).", new() { File = Binary.Path });
         else if (Binary.Architecture == Core.Binary.CpuArchitecture.Arm)
             Sink.Info(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatDetected,
-                "ARMv7 AAPCS32 Unified IR lifter enabled (Capstone + PC-relative GOT resolution).", new() { File = Binary.Path });
+                "ARMv7 AAPCS32 Unified IR lifter enabled (pure-C# ARMv7/Thumb-2 + PC-relative GOT resolution).", new() { File = Binary.Path });
         Symbolizer = new NativeSymbolizer(Metadata, Model, Registration, Names, AddressMap);
         if (Binary.Architecture is Core.Binary.CpuArchitecture.X64 or Core.Binary.CpuArchitecture.X86)
             Disassembler = new X64Disassembler(Symbolizer);

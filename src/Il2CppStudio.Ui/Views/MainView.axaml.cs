@@ -10,6 +10,8 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using AvaloniaEdit;
 using AvaloniaEdit.TextMate;
+using Il2CppStudio.Core.Diagnostics;
+using Il2CppStudio.Gui.Highlighting;
 using Il2CppStudio.Gui.ViewModels;
 using TextMateSharp.Grammars;
 
@@ -17,9 +19,17 @@ namespace Il2CppStudio.Gui.Views;
 
 public sealed partial class MainView : UserControl, IUiServices
 {
+    private static readonly object s_tmHookLock = new();
+    private static WeakReference<MainView>? s_activeView;
+    private static bool s_tmHookRegistered;
+
     private MainViewModel? _attachedVm;
     private IInsetsManager? _insetsManager;
     private TaskCompletionSource<string?>? _promptTcs;
+    private TextMate.Installation? _cppTextMate;
+    private TextMate.Installation? _csTextMate;
+    private bool _managedHighlightingFallbackActive;
+    private readonly List<(DiagnosticSeverity Severity, string Message, Exception? Ex)> _pendingDiagnostics = [];
 
     public MainView()
     {
@@ -29,16 +39,7 @@ public sealed partial class MainView : UserControl, IUiServices
             WorkspaceGrid.ColumnDefinitions[0].Width = new GridLength(0.35, GridUnitType.Star);
             WorkspaceGrid.ColumnDefinitions[2].Width = new GridLength(0.65, GridUnitType.Star);
         }
-        try
-        {
-            var options = new RegistryOptions(ThemeName.DarkPlus);
-            Highlight(CppEditor, options, ".cpp");
-            Highlight(CSharpEditor, options, ".cs");
-        }
-        catch
-        {
-            // Keep editors usable even if TextMate grammar resources are unavailable on a target platform.
-        }
+        InitializeSyntaxHighlighting();
 
         DataContextChanged += (_, _) => Attach();
         AttachedToVisualTree += (_, _) => Attach();
@@ -57,10 +58,100 @@ public sealed partial class MainView : UserControl, IUiServices
 
     private TopLevel? HostTopLevel => TopLevel.GetTopLevel(this);
 
-    private static void Highlight(TextEditor editor, RegistryOptions options, string extension)
+    private void InitializeSyntaxHighlighting()
+    {
+        InstallManagedHighlighter(IlEditor, SyntaxLanguage.Il);
+
+        lock (s_tmHookLock)
+        {
+            s_activeView = new WeakReference<MainView>(this);
+            if (!s_tmHookRegistered)
+            {
+                TextMate.RegisterExceptionHandler(OnStaticTextMateException);
+                s_tmHookRegistered = true;
+            }
+        }
+
+        // Probe TextMate + Oniguruma end-to-end before installing on editors; on targets without native libonigwrap
+        // (e.g., Android arm64), DllNotFoundException only fires on first TokenizeLine rather than InstallTextMate().
+        try
+        {
+            var options = new RegistryOptions(ThemeName.DarkPlus);
+            var probeRegistry = new TextMateSharp.Registry.Registry(options);
+            var csScope = options.GetScopeByLanguageId(options.GetLanguageByExtension(".cs").Id);
+            var grammar = probeRegistry.LoadGrammar(csScope)
+                ?? throw new InvalidOperationException($"TextMate grammar '{csScope}' returned null.");
+            var probe = grammar.TokenizeLine("public class Probe { int x = 0; }");
+            if (probe?.Tokens is not { Length: > 0 })
+                throw new InvalidOperationException("TextMate probe produced no tokens.");
+
+            _cppTextMate = Highlight(CppEditor, options, ".cpp");
+            _csTextMate = Highlight(CSharpEditor, options, ".cs");
+        }
+        catch (Exception ex)
+        {
+            var severity = ex is DllNotFoundException && OperatingSystem.IsAndroid()
+                ? DiagnosticSeverity.Information
+                : DiagnosticSeverity.Warning;
+            ReportDiagnostic(severity,
+                $"TextMate highlighter unavailable ({ex.GetType().Name}: {ex.Message}); activated built-in pure-C# Dark+ syntax highlighter.",
+                ex);
+            ActivateManagedFallback();
+        }
+    }
+
+    private static void OnStaticTextMateException(Exception ex)
+    {
+        if (s_activeView is null || !s_activeView.TryGetTarget(out var view)) return;
+        Dispatcher.UIThread.Post(() => view.HandleRuntimeTextMateFailure(ex));
+    }
+
+    private void HandleRuntimeTextMateFailure(Exception ex)
+    {
+        if (_managedHighlightingFallbackActive) return;
+        ReportDiagnostic(DiagnosticSeverity.Warning,
+            $"TextMate highlighter failed at runtime ({ex.GetType().Name}: {ex.Message}); switching to built-in pure-C# Dark+ syntax highlighter.",
+            ex);
+        ActivateManagedFallback();
+    }
+
+    private void ActivateManagedFallback()
+    {
+        _managedHighlightingFallbackActive = true;
+        _cppTextMate?.Dispose();
+        _cppTextMate = null;
+        _csTextMate?.Dispose();
+        _csTextMate = null;
+
+        InstallManagedHighlighter(CppEditor, SyntaxLanguage.Cpp);
+        InstallManagedHighlighter(CSharpEditor, SyntaxLanguage.CSharp);
+    }
+
+    private static void InstallManagedHighlighter(TextEditor editor, SyntaxLanguage language)
+    {
+        var transformers = editor.TextArea.TextView.LineTransformers;
+        for (var i = transformers.Count - 1; i >= 0; i--)
+        {
+            if (transformers[i] is TextMateColoringTransformer or DarkPlusSyntaxHighlighter)
+                transformers.RemoveAt(i);
+        }
+        transformers.Add(new DarkPlusSyntaxHighlighter(language));
+        editor.TextArea.TextView.Redraw();
+    }
+
+    private static TextMate.Installation Highlight(TextEditor editor, RegistryOptions options, string extension)
     {
         var installation = editor.InstallTextMate(options);
         installation.SetGrammar(options.GetScopeByLanguageId(options.GetLanguageByExtension(extension).Id));
+        return installation;
+    }
+
+    private void ReportDiagnostic(DiagnosticSeverity severity, string message, Exception? ex = null)
+    {
+        if (_attachedVm is { } vm)
+            vm.ReportUiDiagnostic(severity, message, ex);
+        else
+            _pendingDiagnostics.Add((severity, message, ex));
     }
 
     private MainViewModel? Vm => DataContext as MainViewModel;
@@ -68,6 +159,10 @@ public sealed partial class MainView : UserControl, IUiServices
     private void Attach()
     {
         Detach();
+        lock (s_tmHookLock)
+        {
+            s_activeView = new WeakReference<MainView>(this);
+        }
         if (HostTopLevel?.InsetsManager is { } insetsManager)
         {
             _insetsManager = insetsManager;
@@ -78,6 +173,13 @@ public sealed partial class MainView : UserControl, IUiServices
         _attachedVm = vm;
         vm.Ui = this;
         vm.PropertyChanged += OnVmPropertyChanged;
+        if (_pendingDiagnostics.Count > 0)
+        {
+            var queued = _pendingDiagnostics.ToArray();
+            _pendingDiagnostics.Clear();
+            foreach (var (sev, msg, ex) in queued)
+                vm.ReportUiDiagnostic(sev, msg, ex);
+        }
     }
 
     private void Detach()

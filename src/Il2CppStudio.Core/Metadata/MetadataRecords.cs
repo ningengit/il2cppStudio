@@ -25,8 +25,12 @@ public readonly record struct Il2CppTypeDefinition(
     public bool IsBlittable => ((Bitfield >> 4) & 0x1) != 0;
     public bool IsInterface => (Flags & 0x20) != 0; // TypeAttributes.Interface
 
-    public static int SizeOf(MetadataVersion v) => 16 * 4 + 8 * 2 + 2 * 4   // 88
-        + (v.HasCustomAttributeIndex ? 4 : 0) + (v.HasByrefTypeIndex ? 4 : 0) + (v.HasCodegenIndices ? 8 : 0);
+    public static int SizeOf(MetadataVersion v) => 16 * 4 + 8 * 2 + (v.HasTokens ? 8 : 4)   // 88 (v27+) or 84 without token
+        + (v.HasCustomAttributeIndex ? 4 : 0)
+        + (v.HasByrefTypeIndex ? 4 : 0)
+        + (v.HasCodegenIndices ? 8 : 0)
+        + (v.HasTypeDelegateAndMarshalingIndices ? 8 : 0)
+        + (v.HasTypeCcwAndGuidIndices ? 8 : 0);
 
     public static Il2CppTypeDefinition Read(ref SpanReader r, MetadataVersion v)
     {
@@ -36,12 +40,15 @@ public readonly record struct Il2CppTypeDefinition(
         if (v.HasByrefTypeIndex) r.ReadInt32();
         int declaring = r.ReadInt32(), parent = r.ReadInt32(), element = r.ReadInt32();
         if (v.HasCodegenIndices) { r.ReadInt32(); r.ReadInt32(); }   // rgctxStartIndex, rgctxCount
-        return new(name, ns, byval, declaring, parent, element, r.ReadInt32(), r.ReadUInt32(),
+        var genericContainer = r.ReadInt32();
+        if (v.HasTypeDelegateAndMarshalingIndices) { r.ReadInt32(); r.ReadInt32(); }   // delegateWrapperFromManagedToNativeIndex, marshalingFunctionsIndex
+        if (v.HasTypeCcwAndGuidIndices) { r.ReadInt32(); r.ReadInt32(); }              // ccwFunctionIndex, guidIndex
+        return new(name, ns, byval, declaring, parent, element, genericContainer, r.ReadUInt32(),
             r.ReadInt32(), r.ReadInt32(), r.ReadInt32(), r.ReadInt32(), r.ReadInt32(),
             r.ReadInt32(), r.ReadInt32(), r.ReadInt32(),
             r.ReadUInt16(), r.ReadUInt16(), r.ReadUInt16(), r.ReadUInt16(),
             r.ReadUInt16(), r.ReadUInt16(), r.ReadUInt16(), r.ReadUInt16(),
-            r.ReadUInt32(), r.ReadUInt32());
+            r.ReadUInt32(), v.HasTokens ? r.ReadUInt32() : 0u);
     }
 }
 
@@ -94,12 +101,12 @@ public readonly record struct Il2CppParameterDefinition(int NameIndex, uint Toke
 public readonly record struct Il2CppFieldDefinition(int NameIndex, int TypeIndex, uint Token)
     : IMetadataRecord<Il2CppFieldDefinition>
 {
-    public static int SizeOf(MetadataVersion v) => v.HasCustomAttributeIndex ? 16 : 12;
+    public static int SizeOf(MetadataVersion v) => 8 + (v.HasCustomAttributeIndex ? 4 : 0) + (v.HasTokens ? 4 : 0);
     public static Il2CppFieldDefinition Read(ref SpanReader r, MetadataVersion v)
     {
         int name = r.ReadInt32(), type = r.ReadInt32();
         if (v.HasCustomAttributeIndex) r.ReadInt32();
-        return new(name, type, r.ReadUInt32());
+        return new(name, type, v.HasTokens ? r.ReadUInt32() : 0u);
     }
 }
 
@@ -121,24 +128,24 @@ public readonly record struct Il2CppFieldMarshaledSize(int FieldIndex, int TypeI
 public readonly record struct Il2CppPropertyDefinition(int NameIndex, int Get, int Set, uint Attrs, uint Token)
     : IMetadataRecord<Il2CppPropertyDefinition>
 {
-    public static int SizeOf(MetadataVersion v) => v.HasCustomAttributeIndex ? 24 : 20;
+    public static int SizeOf(MetadataVersion v) => 16 + (v.HasCustomAttributeIndex ? 4 : 0) + (v.HasTokens ? 4 : 0);
     public static Il2CppPropertyDefinition Read(ref SpanReader r, MetadataVersion v)
     {
         int name = r.ReadInt32(), get = r.ReadInt32(), set = r.ReadInt32(); var attrs = r.ReadUInt32();
         if (v.HasCustomAttributeIndex) r.ReadInt32();
-        return new(name, get, set, attrs, r.ReadUInt32());
+        return new(name, get, set, attrs, v.HasTokens ? r.ReadUInt32() : 0u);
     }
 }
 
 public readonly record struct Il2CppEventDefinition(int NameIndex, int TypeIndex, int Add, int Remove, int Raise, uint Token)
     : IMetadataRecord<Il2CppEventDefinition>
 {
-    public static int SizeOf(MetadataVersion v) => v.HasCustomAttributeIndex ? 28 : 24;
+    public static int SizeOf(MetadataVersion v) => 20 + (v.HasCustomAttributeIndex ? 4 : 0) + (v.HasTokens ? 4 : 0);
     public static Il2CppEventDefinition Read(ref SpanReader r, MetadataVersion v)
     {
         int name = r.ReadInt32(), type = r.ReadInt32(), add = r.ReadInt32(), remove = r.ReadInt32(), raise = r.ReadInt32();
         if (v.HasCustomAttributeIndex) r.ReadInt32();
-        return new(name, type, add, remove, raise, r.ReadUInt32());
+        return new(name, type, add, remove, raise, v.HasTokens ? r.ReadUInt32() : 0u);
     }
 }
 
@@ -163,11 +170,19 @@ public readonly record struct Il2CppImageDefinition(
     int EntryPointIndex, uint Token, int CustomAttributeStart, uint CustomAttributeCount)
     : IMetadataRecord<Il2CppImageDefinition>
 {
-    public static int SizeOf(MetadataVersion v) => v.HasImageAttributeRanges ? 40 : 32;
+    public static int SizeOf(MetadataVersion v) => 20
+        + (v.HasExportedTypeDefinitions ? 8 : 0)
+        + (v.HasTokens ? 4 : 0)
+        + (v.HasImageAttributeRanges ? 8 : 0);
+
     public static Il2CppImageDefinition Read(ref SpanReader r, MetadataVersion v) => new(
-        r.ReadInt32(), r.ReadInt32(), r.ReadInt32(), r.ReadUInt32(), r.ReadInt32(), r.ReadUInt32(),
-        r.ReadInt32(), r.ReadUInt32(),
-        v.HasImageAttributeRanges ? r.ReadInt32() : 0, v.HasImageAttributeRanges ? r.ReadUInt32() : 0u);
+        r.ReadInt32(), r.ReadInt32(), r.ReadInt32(), r.ReadUInt32(),
+        v.HasExportedTypeDefinitions ? r.ReadInt32() : 0,
+        v.HasExportedTypeDefinitions ? r.ReadUInt32() : 0u,
+        r.ReadInt32(),
+        v.HasTokens ? r.ReadUInt32() : 1u,
+        v.HasImageAttributeRanges ? r.ReadInt32() : 0,
+        v.HasImageAttributeRanges ? r.ReadUInt32() : 0u);
 }
 
 public readonly record struct Il2CppAssemblyDefinition(
@@ -179,14 +194,19 @@ public readonly record struct Il2CppAssemblyDefinition(
     public string VersionString => $"{Major}.{Minor}.{Build}.{Revision}";
     public string PublicKeyTokenHex => PublicKeyToken == 0 ? "null" : Convert.ToHexStringLower(BitConverter.GetBytes(PublicKeyToken));
 
-    /// <summary>64 bytes for v24.4+; v24.0 has customAttributeIndex instead of token; v24.0-24.3 add hashValueIndex.</summary>
-    public static int SizeOf(MetadataVersion v) => 4 * 4 + 10 * 4 + 8 + (v.HasHashValueIndex ? 4 : 0);
+    /// <summary>60 bytes for v16-19, 68 bytes for v20-24.3, 64 bytes for v24.4+.</summary>
+    public static int SizeOf(MetadataVersion v) => 8
+        + (v.HasReferencedAssemblies ? 8 : 0)
+        + 10 * 4 + 8
+        + (v.HasHashValueIndex ? 4 : 0);
 
     public static Il2CppAssemblyDefinition Read(ref SpanReader r, MetadataVersion v)
     {
         var image = r.ReadInt32();
-        var tokenOrAttr = r.ReadUInt32();   // token (24.1+) or customAttributeIndex (24.0)
-        int refStart = r.ReadInt32(), refCount = r.ReadInt32(), name = r.ReadInt32(), culture = r.ReadInt32();
+        var tokenOrAttr = r.ReadUInt32();   // token (24.1+) or customAttributeIndex (<= 24.0)
+        int refStart = v.HasReferencedAssemblies ? r.ReadInt32() : 0;
+        int refCount = v.HasReferencedAssemblies ? r.ReadInt32() : 0;
+        int name = r.ReadInt32(), culture = r.ReadInt32();
         if (v.HasHashValueIndex) r.ReadInt32();
         return new(image, v.HasImageAttributeRanges ? tokenOrAttr : 0x20000001u, refStart, refCount, name, culture,
             r.ReadInt32(), r.ReadUInt32(), r.ReadInt32(), r.ReadUInt32(),

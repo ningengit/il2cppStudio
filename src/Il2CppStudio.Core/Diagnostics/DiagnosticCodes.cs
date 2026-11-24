@@ -19,6 +19,7 @@ public static class DiagnosticCodes
     public const string ScriptingBackendDetected = "IS1007";
     public const string StageFailed = "IS1008";
     public const string PlayerLogLocation = "IS1009";
+    public const string SyntaxHighlightingStatus = "IS1010";
 
     // Binary / fingerprint
     public const string BinaryFormatDetected = "IS2000";

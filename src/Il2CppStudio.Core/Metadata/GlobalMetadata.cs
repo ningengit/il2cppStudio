@@ -12,7 +12,7 @@ public sealed record MetadataSectionReport(
     string Name, int Offset, int Size, int ElementSize, int ElementCount, bool InBounds, bool Aligned, string Description);
 
 /// <summary>
-/// Parser for global-metadata.dat, versions 27 to 31. Tables are decoded eagerly into arrays of small
+/// Parser for global-metadata.dat, versions 16 to 31. Tables are decoded eagerly into arrays of small
 /// structs; string tables stay in the memory-mapped file and are decoded on demand with a cache.
 /// </summary>
 public sealed class GlobalMetadata : IDisposable
@@ -113,8 +113,10 @@ public sealed class GlobalMetadata : IDisposable
         Assemblies = version.IsV24 && Images.Length > 0 && Header["assemblies"].Size / Images.Length == 64 && version.HasHashValueIndex
             ? ReadTable<Il2CppAssemblyDefinition>("assemblies", new MetadataVersion(24, 4))
             : ReadTable<Il2CppAssemblyDefinition>("assemblies");
-        FieldRefs = ReadTable<Il2CppFieldRef>("fieldRefs");
-        ReferencedAssemblies = ReadInts("referencedAssemblies");
+        FieldRefs = version.HasFieldRefs ? ReadTable<Il2CppFieldRef>("fieldRefs") : [];
+        ReferencedAssemblies = version.HasReferencedAssemblies ? ReadInts("referencedAssemblies") : [];
+        if (Header.TryGet("rgctxEntries", out _))
+            ReportBlob("rgctxEntries");
         if (version.HasMetadataUsageTables)
         {
             MetadataUsageLists = ReadTable<Il2CppMetadataUsageList>("metadataUsageLists");
@@ -125,15 +127,15 @@ public sealed class GlobalMetadata : IDisposable
             AttributeDataRanges = ReadTable<Il2CppCustomAttributeDataRange>("attributeDataRange");
             ReportBlob("attributeData");
         }
-        else
+        else if (version.HasCustomAttributeTables)
         {
             AttributeTypeRanges = ReadTable<Il2CppCustomAttributeTypeRange>("attributesInfo");
             AttributeTypes = ReadInts("attributeTypes");
         }
-        UnresolvedIndirectCallParameterTypes = ReadInts("unresolvedIndirectCallParameterTypes");
-        UnresolvedIndirectCallParameterRanges = ReadTable<Il2CppMetadataRange>("unresolvedIndirectCallParameterRanges");
-        WindowsRuntimeTypeNames = ReadTable<Il2CppWindowsRuntimeTypeNamePair>("windowsRuntimeTypeNames");
-        ExportedTypeDefinitions = ReadInts("exportedTypeDefinitions");
+        UnresolvedIndirectCallParameterTypes = version.HasUnresolvedIndirectCalls ? ReadInts("unresolvedIndirectCallParameterTypes") : [];
+        UnresolvedIndirectCallParameterRanges = version.HasUnresolvedIndirectCalls ? ReadTable<Il2CppMetadataRange>("unresolvedIndirectCallParameterRanges") : [];
+        WindowsRuntimeTypeNames = version.HasWindowsRuntimeTypeNames ? ReadTable<Il2CppWindowsRuntimeTypeNamePair>("windowsRuntimeTypeNames") : [];
+        ExportedTypeDefinitions = version.HasExportedTypeDefinitions ? ReadInts("exportedTypeDefinitions") : [];
         ReportBlob("stringLiteralData");
         ReportBlob("string");
         ReportBlob("fieldAndParameterDefaultValueData");
@@ -214,22 +216,19 @@ public sealed class GlobalMetadata : IDisposable
     {
         switch (raw)
         {
-            case 27 or 29 or 31:
+            case 16 or 19 or 20 or 21 or 22 or 23 or 27 or 29 or 31:
                 return new MetadataVersion(raw);
             case 24:
                 return ResolveV24Minor();
-            case 28 or 30:
-                throw Fail(DiagnosticCodes.MetadataVersionUnsupported,
-                    $"Version {raw} was never shipped by Unity; the header has likely been altered.");
-            case < 24:
-                throw Fail(DiagnosticCodes.MetadataVersionUnsupported,
-                    $"Metadata v{raw} (pre Unity 2018) is outside the supported range 24-31.");
-            case 25 or 26:
+            case 17 or 18 or 25 or 26 or 28 or 30:
                 throw Fail(DiagnosticCodes.MetadataVersionUnsupported,
                     $"Metadata v{raw} was never shipped by Unity; the header has likely been altered.");
+            case < 16:
+                throw Fail(DiagnosticCodes.MetadataVersionUnsupported,
+                    $"Metadata v{raw} (pre Unity 5.3) is outside the supported range 16-31.");
             default:
                 throw Fail(DiagnosticCodes.MetadataVersionUnsupported,
-                    $"Metadata v{raw} is newer than the supported range 24-31. Add a layout for it before parsing.");
+                    $"Metadata v{raw} is newer than the supported range 16-31. Add a layout for it before parsing.");
         }
     }
 
@@ -285,6 +284,7 @@ public sealed class GlobalMetadata : IDisposable
     /// </summary>
     private void CrossCheckMethodLayout()
     {
+        if (Version.Major < 27) return;
         var size = Header["methods"].Size;
         var chosen = Il2CppMethodDefinition.SizeOf(Version);
         var alt = chosen == 36 ? 32 : 36;

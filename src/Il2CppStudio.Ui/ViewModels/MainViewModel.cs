@@ -76,6 +76,22 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (Ui is { } ui) ui.Post(() => AddDiagnostic(d));
     }
 
+    public void ReportUiDiagnostic(DiagnosticSeverity severity, string message, Exception? ex = null)
+    {
+        switch (severity)
+        {
+            case DiagnosticSeverity.Error:
+                _sink.Error(DiagnosticCategory.Workspace, DiagnosticCodes.SyntaxHighlightingStatus, message, null, ex);
+                break;
+            case DiagnosticSeverity.Warning:
+                _sink.Warn(DiagnosticCategory.Workspace, DiagnosticCodes.SyntaxHighlightingStatus, message, null, ex);
+                break;
+            default:
+                _sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.SyntaxHighlightingStatus, message, null);
+                break;
+        }
+    }
+
     private void AddDiagnostic(Diagnostic d)
     {
         Diagnostics.Add(d);
