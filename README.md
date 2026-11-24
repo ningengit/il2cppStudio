@@ -64,6 +64,8 @@ Everything in Il2CppStudio is kept **100% MIT-licensed** (zero GPL/AGPL dependen
 git clone https://github.com/ningengit/il2cppStudio.git
 cd il2cppStudio
 dotnet build -c Release
+dotnet publish src\Il2CppStudio.Gui\Il2CppStudio.Gui.csproj -c Release -r win-x64 --self-contained -o dist\win-x64
+dotnet publish src\Il2CppStudio.Gui\Il2CppStudio.Gui.csproj -c Release -r linux-x64 --self-contained -o dist\linux-x64
 ```
 
 To run the desktop GUI directly:
