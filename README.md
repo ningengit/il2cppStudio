@@ -70,6 +70,10 @@ dotnet publish src\Il2CppStudio.Gui\Il2CppStudio.Gui.csproj -c Release -r linux-
 dotnet publish src\Il2CppStudio.Gui\Il2CppStudio.Gui.csproj -c Release -r linux-arm64 --self-contained -o dist\linux-arm64
 dotnet publish src\Il2CppStudio.Gui\Il2CppStudio.Gui.csproj -c Release -r osx-arm64 --self-contained -o dist\osx-arm64
 dotnet publish src\Il2CppStudio.Gui\Il2CppStudio.Gui.csproj -c Release -r osx-x64 --self-contained -o dist\osx-x64
+
+or
+cmd /c release.cmd
+cmd /c "dotnet test -c Release"
 ```
 
 To run the desktop GUI directly:
