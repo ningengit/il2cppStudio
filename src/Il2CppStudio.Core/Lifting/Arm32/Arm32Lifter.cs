@@ -48,8 +48,8 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             var (start, end) = sym.Map.GetFunctionBounds(va, 0x4000);
             var code = sym.Registration.Reader.Slice(start, (int)Math.Min(end - start, 0x4000UL));
             var insns = disasm.DisassembleInstructions(code, start, out var isThumb, out var decodedBytes);
-            if ((insns.Count == 0 && code.Length >= 2)
-                || (insns.Count > 0 && decodedBytes + 2 < code.Length - 4 && !IsArm32Terminator(insns[^1])))
+            insns = TrimLiteralPoolAfterReturn(insns, start, end);
+            if (insns.Count == 0 && code.Length >= 2)
             {
                 var off = Math.Min(decodedBytes, code.Length);
                 var rawHex = Convert.ToHexString(code.Slice(off, Math.Min(8, code.Length - off)));
@@ -59,6 +59,11 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             }
             if (insns.Count == 0) return new(methodIndex, false, 0, 0, 0, 0, 0, "empty function");
 
+            var helperResolver = new HelperClassifier(sym.Registration.Reader, disasm);
+            var (v16Usages, v16InitFlags) = md.Version.Major < 19
+                ? ScanV16InitBlock(insns, isThumb, sym, helperResolver)
+                : (new Dictionary<uint, MetadataUsage>(), new HashSet<uint>());
+
             var blocks = BuildBlocks(insns, sym);
             var elidedInsns = FindElidedNullChecks(insns, sym);
             var body = new CilMethodBody { InitializeLocals = true };
@@ -67,7 +72,9 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             var mem = new MemoryResolver(md, sym.Model, sym.Registration, sym.Names, stubs, stub.Module, _typeIndex, pointerSize: 4);
             var shape = MethodShape.Create(md, sym.Registration, stubs, mem, stub.Module, methodIndex, -1);
 
-            var tr = new Translator(sym, stubs, stub.Module, method, shape, mem, body, helpers, isThumb, elidedInsns, notes, start, insns[^1].Address + 4);
+            var funcEnd = insns[^1].Address + (ulong)insns[^1].Size;
+            var tr = new Translator(sym, stubs, stub.Module, method, shape, mem, body, helpers, helperResolver,
+                v16Usages, v16InitFlags, isThumb, elidedInsns, notes, start, funcEnd);
             var order = TopologicalOrder(blocks);
             var emitted = order.ToHashSet();
             for (var bi = 0; bi < order.Count; bi++)
@@ -98,6 +105,261 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             sink.Warn(DiagnosticCategory.Lifting, DiagnosticCodes.LiftFailed, $"ARMv7 lifting failed: {ex.Message}", loc(va), ex);
             return new(methodIndex, false, 0, 0, 0, 0, 0, ex.Message);
         }
+    }
+
+    private static IReadOnlyList<Arm32Insn> TrimLiteralPoolAfterReturn(IReadOnlyList<Arm32Insn> insns, ulong funcStart, ulong funcEnd)
+    {
+        ulong maxBranchTarget = 0;
+        var lastTerm = -1;
+        for (var i = 0; i < insns.Count; i++)
+        {
+            var ins = insns[i];
+            if (TryBranchTarget(ins, out _, out var target) && target >= funcStart && target < funcEnd && target > maxBranchTarget)
+                maxBranchTarget = target;
+            if ((IsReturn(ins) || (TryBranchTarget(ins, out var c, out var bt) && c is null && (bt < funcStart || bt >= funcEnd)))
+                && ins.Address >= maxBranchTarget)
+                lastTerm = i;
+        }
+        return lastTerm >= 0 && lastTerm + 1 < insns.Count ? [.. insns.Take(lastTerm + 1)] : insns;
+    }
+
+    private enum Arm32HelperKind { None, V16MethodInfo, V16TypeInfo, V16StringLiteral, NullCheck, ClassInit }
+
+    private sealed class HelperClassifier
+    {
+        private readonly Binary.VirtualReader _reader;
+        private readonly Arm32Disassembler _disasm;
+        private readonly Dictionary<ulong, string> _exports = [];
+        private readonly Dictionary<ulong, Arm32HelperKind> _cache = [];
+
+        public HelperClassifier(Binary.VirtualReader reader, Arm32Disassembler disasm)
+        {
+            _reader = reader;
+            _disasm = disasm;
+            foreach (var (name, rva) in reader.Image.GetSymbols())
+                _exports.TryAdd((reader.ImageBase + rva) & ~1UL, name);
+        }
+
+        public Arm32HelperKind Classify(ulong targetVa)
+        {
+            var cleanVa = targetVa & ~1UL;
+            if (_cache.TryGetValue(cleanVa, out var cached)) return cached;
+            var kind = ClassifyCore(cleanVa);
+            _cache[cleanVa] = kind;
+            return kind;
+        }
+
+        private Arm32HelperKind ClassifyCore(ulong va)
+        {
+            if (ClassifyName(ResolveSymbolName(va)) is not Arm32HelperKind.None and var direct)
+                return direct;
+
+            var mem = _reader.Slice(va, 64);
+            if (mem.IsEmpty) return Arm32HelperKind.None;
+            var insns = _disasm.DisassembleInstructions(mem, va, out _, out _);
+            ulong singleCallee = 0;
+            var callCount = 0;
+            for (var i = 0; i < insns.Count && i < 20; i++)
+            {
+                var mn = insns[i].Mnemonic;
+                if (mn is "bl" or "blx" or "b" && TryParseHexOrDec(insns[i].Operands, out var callee))
+                {
+                    singleCallee = callee & ~1UL;
+                    callCount++;
+                }
+                if (IsReturn(insns[i]) && callCount > 0) break;
+            }
+            if (callCount == 1 && singleCallee != 0 && singleCallee != va)
+                return ClassifyName(ResolveSymbolName(singleCallee));
+            return Arm32HelperKind.None;
+        }
+
+        private string? ResolveSymbolName(ulong va)
+        {
+            if (_exports.TryGetValue(va, out var direct)) return direct;
+            if (!_reader.IsMapped(va)) return null;
+            // Decode classic ARM32 PLT entry: add ip, pc, #hi; add ip, ip, #mid; ldr pc, [ip, #lo]!
+            var span = _reader.Slice(va, 12);
+            if (span.Length < 12) return null;
+            var w0 = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span);
+            var w1 = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span[4..]);
+            var w2 = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span[8..]);
+            if ((w0 & 0xFFFFF000u) == 0xE28FC000u && (w1 & 0xFFFFF000u) == 0xE28CC000u && (w2 & 0xFFFFF000u) == 0xE5BCF000u)
+            {
+                static uint Ror(uint imm8, uint rot) { var r = (int)(rot * 2); return r == 0 ? imm8 : (imm8 >> r) | (imm8 << (32 - r)); }
+                var gotSlot = (uint)(va + 8) + Ror(w0 & 0xFFu, (w0 >> 8) & 0xFu) + Ror(w1 & 0xFFu, (w1 >> 8) & 0xFu) + (w2 & 0xFFFu);
+                if (_reader.IsMapped(gotSlot))
+                {
+                    var resolved = _reader.ReadU32(gotSlot) & ~1UL;
+                    if (_exports.TryGetValue(resolved, out var symName)) return symName;
+                }
+            }
+            return null;
+        }
+
+        private static Arm32HelperKind ClassifyName(string? name)
+        {
+            if (string.IsNullOrEmpty(name)) return Arm32HelperKind.None;
+            if (name.Contains("GetMethodInfoFromIndex", StringComparison.Ordinal)) return Arm32HelperKind.V16MethodInfo;
+            if (name.Contains("GetTypeInfoFromTypeIndex", StringComparison.Ordinal)) return Arm32HelperKind.V16TypeInfo;
+            if (name.Contains("GetStringLiteralFromIndex", StringComparison.Ordinal)) return Arm32HelperKind.V16StringLiteral;
+            if (name.Contains("RaiseNullReferenceException", StringComparison.Ordinal)) return Arm32HelperKind.NullCheck;
+            if (name.Contains("ClassInit", StringComparison.Ordinal) || name.Contains("il2cpp_runtime_class_init", StringComparison.Ordinal)) return Arm32HelperKind.ClassInit;
+            return Arm32HelperKind.None;
+        }
+    }
+
+    private static (Dictionary<uint, MetadataUsage> Usages, HashSet<uint> InitFlags) ScanV16InitBlock(
+        IReadOnlyList<Arm32Insn> insns, bool isThumb, NativeSymbolizer sym, HelperClassifier helpers)
+    {
+        var usages = new Dictionary<uint, MetadataUsage>();
+        var flags = new HashSet<uint>();
+        var rdr = sym.Registration.Reader;
+        var regs = new Dictionary<string, (uint? Const, MetadataUsage? Usage)>(StringComparer.OrdinalIgnoreCase);
+        var slots = new Dictionary<long, (uint? Const, MetadataUsage? Usage)>();
+        var spDelta = 0L;
+
+        ulong PcVal(ulong addr) => isThumb ? ((addr + 4) & ~3UL) : (addr + 8);
+
+        for (var i = 0; i < insns.Count; i++)
+        {
+            var ins = insns[i];
+            var baseMnem = ins.Mnemonic;
+            if (baseMnem.Length >= 5 && baseMnem is not ("ldrsb" or "ldrsh" or "vsqrt.f32" or "vadd.f32" or "vsub.f32" or "vmul.f32" or "vdiv.f32" or "vmla.f32" or "vmls.f32" or "vcmp.f32"))
+            {
+                var tail = baseMnem[^2..];
+                if (tail is "eq" or "ne" or "lt" or "le" or "gt" or "ge" or "hi" or "ls" or "hs" or "cs" or "lo" or "cc" or "mi" or "pl")
+                    baseMnem = baseMnem[..^2];
+            }
+            if (baseMnem is "movs" or "adds" or "subs") baseMnem = baseMnem[..^1];
+
+            if (baseMnem is "push" or "pop")
+            {
+                var delta = Math.Max(4, ins.Operands.Split(',').Length * 4);
+                spDelta += baseMnem == "push" ? delta : -delta;
+                continue;
+            }
+            if (baseMnem is "bl" or "blx")
+            {
+                if (Translator.TryParseImmPublic(ins.Operands, out var targetL))
+                {
+                    var kind = helpers.Classify(unchecked((ulong)targetL));
+                    if (kind is Arm32HelperKind.V16MethodInfo or Arm32HelperKind.V16TypeInfo or Arm32HelperKind.V16StringLiteral
+                        && regs.TryGetValue("r0", out var arg) && arg.Const is { } c)
+                    {
+                        MetadataUsage? u = kind switch
+                        {
+                            Arm32HelperKind.V16MethodInfo when sym.Registration.TryResolveV16EncodedMethodIndex(c, out var mk, out var tidx)
+                                => new MetadataUsage(0, mk, tidx),
+                            Arm32HelperKind.V16TypeInfo when (int)c >= 0 && (int)c < sym.Registration.TypeCount
+                                => new MetadataUsage(0, MetadataUsageKind.TypeInfo, (int)c),
+                            Arm32HelperKind.V16StringLiteral when (int)c >= 0 && (int)c < sym.Metadata.StringLiterals.Length
+                                => new MetadataUsage(0, MetadataUsageKind.StringLiteral, (int)c),
+                            _ => null,
+                        };
+                        regs["r0"] = (null, u);
+                        continue;
+                    }
+                }
+                regs.Remove("r0"); regs.Remove("r1"); regs.Remove("r2"); regs.Remove("r3"); regs.Remove("r12");
+                continue;
+            }
+
+            var ops = Translator.SplitArgsPublic(ins.Operands);
+            switch (baseMnem)
+            {
+                case "mov" or "movw" when ops.Length == 2:
+                    if (ops[0] != "sp")
+                    {
+                        if (Translator.TryParseImmPublic(ops[1], out var imm))
+                            regs[ops[0]] = (unchecked((uint)imm), null);
+                        else if (regs.TryGetValue(ops[1], out var srcV))
+                            regs[ops[0]] = srcV;
+                        else
+                            regs.Remove(ops[0]);
+                    }
+                    break;
+                case "movt" when ops.Length == 2:
+                    if (Translator.TryParseImmPublic(ops[1], out var hi))
+                    {
+                        var lo = regs.TryGetValue(ops[0], out var pv) && pv.Const is { } lc ? lc & 0xFFFFu : 0u;
+                        regs[ops[0]] = ((unchecked((uint)hi) << 16) | lo, null);
+                    }
+                    break;
+                case "add" when ops.Length == 3:
+                    if (ops[0] == "sp" && ops[1] == "sp" && Translator.TryParseImmPublic(ops[2], out var adjAdd))
+                        spDelta -= adjAdd;
+                    else if (ops[1] == "pc" && regs.TryGetValue(ops[2], out var pcr) && pcr.Const is { } off)
+                        regs[ops[0]] = (unchecked((uint)((long)PcVal(ins.Address) + unchecked((int)off))), null);
+                    else if (regs.TryGetValue(ops[1], out var l) && l.Const is { } lc)
+                    {
+                        var rConst = Translator.TryParseImmPublic(ops[2], out var ri) ? unchecked((uint)ri)
+                            : regs.TryGetValue(ops[2], out var rv) && rv.Const is { } rcv ? rcv : (uint?)null;
+                        if (rConst is { } rc) regs[ops[0]] = (unchecked(lc + rc), null);
+                        else regs.Remove(ops[0]);
+                    }
+                    else
+                        regs.Remove(ops[0]);
+                    break;
+                case "sub" when ops.Length == 3:
+                    if (ops[0] == "sp" && ops[1] == "sp" && Translator.TryParseImmPublic(ops[2], out var adjSub))
+                        spDelta += adjSub;
+                    else if (ops[0] != "sp")
+                        regs.Remove(ops[0]);
+                    break;
+                case "ldr" or "ldrb" when ops.Length >= 2:
+                {
+                    Translator.ParseMemPublic(string.Join(", ", ops[1..]), out var bReg, out var iReg, out var disp);
+                    if (bReg == "pc")
+                    {
+                        if (iReg is not null && regs.TryGetValue(iReg, out var ir) && ir.Const is { } iv) disp = unchecked((int)iv);
+                        var targetVa = unchecked((uint)((long)PcVal(ins.Address) + disp));
+                        regs[ops[0]] = rdr.IsMapped(targetVa) ? (rdr.ReadU32(targetVa), null) : (null, null);
+                    }
+                    else if (bReg == "sp")
+                    {
+                        regs[ops[0]] = slots.TryGetValue(disp - spDelta, out var sv) ? sv : (null, null);
+                    }
+                    else if (regs.TryGetValue(bReg, out var bv) && bv.Const is { } bAddr)
+                    {
+                        var idxVal = iReg is null ? 0u : (regs.TryGetValue(iReg, out var iv) && iv.Const is { } ic ? ic : 0u);
+                        if (iReg is null || regs.GetValueOrDefault(iReg).Const is not null)
+                        {
+                            var addr = unchecked((uint)(bAddr + idxVal + disp));
+                            regs[ops[0]] = rdr.IsMapped(addr) && baseMnem == "ldr" ? (rdr.ReadU32(addr), null) : (null, null);
+                        }
+                        else
+                        {
+                            regs.Remove(ops[0]);
+                        }
+                    }
+                    else
+                    {
+                        regs.Remove(ops[0]);
+                    }
+                    break;
+                }
+                case "str" or "strb" when ops.Length >= 2:
+                {
+                    Translator.ParseMemPublic(string.Join(", ", ops[1..]), out var bReg, out var iReg, out var disp);
+                    var val = regs.GetValueOrDefault(ops[0]);
+                    if (bReg == "sp")
+                    {
+                        slots[disp - spDelta] = val;
+                    }
+                    else if (iReg is null && regs.TryGetValue(bReg, out var bv) && bv.Const is { } bAddr)
+                    {
+                        var addr = unchecked((uint)(bAddr + disp));
+                        if (baseMnem == "str" && val.Usage is { } usage && rdr.IsWritableData(addr))
+                            usages[addr] = usage;
+                        else if (baseMnem == "strb" && val.Const == 1u && rdr.IsWritableData(addr))
+                            flags.Add(addr);
+                    }
+                    break;
+                }
+            }
+        }
+        return (usages, flags);
     }
 
     private static bool IsArm32Terminator(Arm32Insn ins)
@@ -272,6 +534,9 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         private readonly CilMethodBody _body;
         private readonly CorLibTypeFactory _f;
         private readonly Runtime.RuntimeHelperMap? _helpers;
+        private readonly HelperClassifier _classifier;
+        private readonly Dictionary<uint, MetadataUsage> _v16Usages;
+        private readonly HashSet<uint> _v16InitFlags;
         private readonly bool _isThumb;
         private readonly HashSet<int> _elided;
         private readonly List<string> _notes;
@@ -281,6 +546,7 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         private readonly Dictionary<string, CilLocalVariable> _spill = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<Block, Dictionary<string, Expr>> _exit = [];
         private readonly HashSet<Expr> _gotValues = new(ReferenceEqualityComparer.Instance);
+        private readonly HashSet<(int TypeDef, long Offset)> _writtenStructSlice = [];
         private CilLocalVariable? _retBuf;
         private long _spDelta;
         private bool _flagsFloat;
@@ -291,13 +557,20 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         public int Elided { get; private set; }
 
         public Translator(NativeSymbolizer sym, StubAssemblyBuilder stubs, ModuleDefinition module, MethodDefinition method,
-            MethodShape shape, MemoryResolver mem, CilMethodBody body, Runtime.RuntimeHelperMap? helpers, bool isThumb,
-            HashSet<int> elided, List<string> notes, ulong funcStart, ulong funcEnd)
+            MethodShape shape, MemoryResolver mem, CilMethodBody body, Runtime.RuntimeHelperMap? helpers, HelperClassifier classifier,
+            Dictionary<uint, MetadataUsage> v16Usages, HashSet<uint> v16InitFlags,
+            bool isThumb, HashSet<int> elided, List<string> notes, ulong funcStart, ulong funcEnd)
         {
             _sym = sym; _stubs = stubs; _module = module; _method = method; _shape = shape;
-            _mem = mem; _body = body; _f = module.CorLibTypeFactory; _helpers = helpers; _isThumb = isThumb;
-            _elided = elided; _notes = notes; _funcStart = funcStart; _funcEnd = funcEnd;
+            _mem = mem; _body = body; _f = module.CorLibTypeFactory; _helpers = helpers; _classifier = classifier;
+            _v16Usages = v16Usages; _v16InitFlags = v16InitFlags;
+            _isThumb = isThumb; _elided = elided; _notes = notes; _funcStart = funcStart; _funcEnd = funcEnd;
         }
+
+        public static bool TryParseImmPublic(string text, out long val) => TryParseImm(text, out val);
+        public static string[] SplitArgsPublic(string ops) => SplitArgs(ops);
+        public static void ParseMemPublic(string memStr, out string baseReg, out string? indexReg, out long disp) =>
+            ParseMem(memStr, out baseReg, out indexReg, out disp);
 
         private CilLocalVariable NewLocal(TypeSignature t) { var l = new CilLocalVariable(t); _body.LocalVariables.Add(l); return l; }
 
@@ -368,11 +641,18 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                     }
                     var cmpExpr = BuildBranchCondition(ins, cond);
                     SpillOut(ctx, b);
-                    if (cmpExpr is MarkerExpr { Marker: MarkerKind.InitFlag })
+                    if (cmpExpr is MarkerExpr { Marker: MarkerKind.InitFlag } mf)
                     {
                         Elided++;
-                        if (cond == "ne" && targetBlock != nextInEmit) ctx.IL.Add(CilOpCodes.Br, targetBlock.Label);
-                        else if (ft is not null && ft != nextInEmit) ctx.IL.Add(CilOpCodes.Br, ft.Label);
+                        if (mf.Describe() == "cctor_guard")
+                        {
+                            if (targetBlock != nextInEmit) ctx.IL.Add(CilOpCodes.Br, targetBlock.Label);
+                        }
+                        else
+                        {
+                            if (cond == "ne" && targetBlock != nextInEmit) ctx.IL.Add(CilOpCodes.Br, targetBlock.Label);
+                            else if (ft is not null && ft != nextInEmit) ctx.IL.Add(CilOpCodes.Br, ft.Label);
+                        }
                         return;
                     }
                     cmpExpr.Emit(ctx);
@@ -398,8 +678,18 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             }
             if (m is "bl" or "blx")
             {
-                if (TryParseHexOrDec(ins.Operands, out var target)) EmitCallTarget(ctx, target);
-                else { Unresolved++; ctx.IL.Add(CilOpCodes.Ldstr, $"arm32_indirect@{ins.Address:X}"); Emit4Args(ctx); ctx.IL.Add(CilOpCodes.Call, ctx.Intrinsics.CallNative); _regs["r0"] = StoreI64ToI32(ctx); }
+                if (TryParseHexOrDec(ins.Operands, out var target))
+                    EmitCallTarget(ctx, target);
+                else if (_regs.TryGetValue(ins.Operands.Trim(), out var targetExpr) && targetExpr is ConstExpr tc && tc.Value != 0)
+                    EmitCallTarget(ctx, unchecked((uint)tc.Value));
+                else
+                {
+                    Unresolved++;
+                    ctx.IL.Add(CilOpCodes.Ldstr, $"arm32_indirect@{ins.Address:X}");
+                    Emit4Args(ctx);
+                    ctx.IL.Add(CilOpCodes.Call, ctx.Intrinsics.CallNative);
+                    _regs["r0"] = StoreI64ToI32(ctx);
+                }
                 return;
             }
             if (m == "vmrs") return;
@@ -445,7 +735,18 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             switch (baseMnem)
             {
                 case "mov" or "movw" when ops.Length == 2:
-                    _regs[ops[0]] = ReadOperand(ins, ops[1], preferFloat: false);
+                    if (ops[0] == "sp")
+                    {
+                        if (ReadReg(ops[1]) is StackAddrPlaceholder sp) _spDelta = -sp.Key;
+                    }
+                    else if (ops[1] == "sp")
+                    {
+                        _regs[ops[0]] = new StackAddrPlaceholder(-_spDelta);
+                    }
+                    else
+                    {
+                        _regs[ops[0]] = ReadOperand(ins, ops[1], preferFloat: false);
+                    }
                     break;
                 case "movt" when ops.Length == 2:
                     if (TryParseImm(ops[1], out var hi16))
@@ -454,9 +755,14 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                         _regs[ops[0]] = new ConstExpr(unchecked((int)(((uint)hi16 << 16) | lo16)), ValueKind.I4);
                     }
                     break;
-                case "vmov" when ops.Length == 2:
-                    _regs[ops[0]] = ReadOperand(ins, ops[1], preferFloat: true);
+                case "vmov" or "vmov.f32" or "vmov.f64" when ops.Length == 2:
+                {
+                    var val = ReadOperand(ins, ops[1], preferFloat: true);
+                    if (ops[0].StartsWith('s') && val is ConstExpr cBits)
+                        val = new FloatExpr(BitConverter.Int32BitsToSingle(unchecked((int)cBits.Value)), true);
+                    _regs[ops[0]] = val;
                     break;
+                }
                 case "add" when ops.Length == 3:
                 {
                     if (ops[0] == "sp" && ops[1] == "sp" && TryParseImm(ops[2], out var adj)) { _spDelta -= adj; break; }
@@ -475,24 +781,45 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                     }
                     var l = ReadOperand(ins, ops[1], false);
                     var r = ReadOperand(ins, ops[2], false);
-                    if (r is ConstExpr rc && _mem.ResolveFieldAddress(l, rc.Value) is { } fa) _regs[ops[0]] = fa;
+                    if (l is ConstExpr lc && r is ConstExpr rcAdd) _regs[ops[0]] = new ConstExpr(unchecked(lc.Value + rcAdd.Value), ValueKind.I4);
+                    else if (l is StackAddrPlaceholder lsp && r is ConstExpr rcSp) _regs[ops[0]] = new StackAddrPlaceholder(lsp.Key + rcSp.Value);
+                    else if (r is ConstExpr rc && _mem.ResolveFieldAddress(l, rc.Value) is { } fa) _regs[ops[0]] = fa;
                     else _regs[ops[0]] = new BinaryExpr(CilOpCodes.Add, l, r, ValueKind.I4);
                     break;
                 }
                 case "sub" when ops.Length == 3:
                 {
                     if (ops[0] == "sp" && ops[1] == "sp" && TryParseImm(ops[2], out var adj)) { _spDelta += adj; break; }
-                    _regs[ops[0]] = new BinaryExpr(CilOpCodes.Sub, ReadOperand(ins, ops[1], false), ReadOperand(ins, ops[2], false), ValueKind.I4);
+                    if (ops[0] == "sp" && ReadOperand(ins, ops[1], false) is StackAddrPlaceholder sp && TryParseImm(ops[2], out var spAdj))
+                    {
+                        _spDelta = -(sp.Key - spAdj);
+                        break;
+                    }
+                    var sl = ReadOperand(ins, ops[1], false);
+                    var sr = ReadOperand(ins, ops[2], false);
+                    if (sl is ConstExpr slc && sr is ConstExpr src) _regs[ops[0]] = new ConstExpr(unchecked(slc.Value - src.Value), ValueKind.I4);
+                    else if (sl is StackAddrPlaceholder ssp && sr is ConstExpr sRc) _regs[ops[0]] = new StackAddrPlaceholder(ssp.Key - sRc.Value);
+                    else _regs[ops[0]] = new BinaryExpr(CilOpCodes.Sub, sl, sr, ValueKind.I4);
                     break;
                 }
+                case "sxtb" or "uxtb" or "sxth" or "uxth" when ops.Length == 2:
+                    _regs[ops[0]] = ReadOperand(ins, ops[1], false);
+                    break;
                 case "mul" or "and" or "orr" or "eor" or "lsl" or "lsr" or "asr" when ops.Length == 3:
                 {
+                    var al = ReadOperand(ins, ops[1], false);
+                    var ar = ReadOperand(ins, ops[2], false);
+                    if (baseMnem == "and" && ar is ConstExpr { Value: 1 } && (al is MarkerExpr { Marker: MarkerKind.InitFlag } || al.Type?.FullName == "System.Boolean"))
+                    {
+                        _regs[ops[0]] = al;
+                        break;
+                    }
                     var cil = baseMnem switch
                     {
                         "mul" => CilOpCodes.Mul, "and" => CilOpCodes.And, "orr" => CilOpCodes.Or, "eor" => CilOpCodes.Xor,
                         "lsl" => CilOpCodes.Shl, "asr" => CilOpCodes.Shr, _ => CilOpCodes.Shr_Un,
                     };
-                    _regs[ops[0]] = new BinaryExpr(cil, ReadOperand(ins, ops[1], false), ReadOperand(ins, ops[2], false), ValueKind.I4);
+                    _regs[ops[0]] = new BinaryExpr(cil, al, ar, ValueKind.I4);
                     break;
                 }
                 case "vadd.f32" or "vsub.f32" or "vmul.f32" or "vdiv.f32" when ops.Length == 3:
@@ -519,11 +846,50 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                     _flagL = ReadOperand(ins, ops[0], false);
                     _flagR = ReadOperand(ins, ops[1], false);
                     break;
+                case "tst" when ops.Length == 2:
+                {
+                    _flagsFloat = false;
+                    var tl = ReadOperand(ins, ops[0], false);
+                    var tr = ReadOperand(ins, ops[1], false);
+                    if (tr is ConstExpr { Value: 1 } && (tl is MarkerExpr { Marker: MarkerKind.InitFlag } || tl.Type?.FullName == "System.Boolean"
+                        || tl is BinaryExpr { Op.Code: CilCode.And, Right: ConstExpr { Value: 1 } }))
+                    {
+                        _flagL = tl;
+                        _flagR = new ConstExpr(0, ValueKind.I4);
+                    }
+                    else
+                    {
+                        _flagL = new BinaryExpr(CilOpCodes.And, tl, tr, ValueKind.I4);
+                        _flagR = new ConstExpr(0, ValueKind.I4);
+                    }
+                    break;
+                }
                 case "vcmp.f32" when ops.Length == 2:
                     _flagsFloat = true;
                     _flagL = ReadOperand(ins, ops[0], true);
                     _flagR = ReadOperand(ins, ops[1], true);
                     break;
+                case "vld1.32" or "vld1.64" or "vld1.8" when ops.Length >= 2:
+                {
+                    var firstD = ops[0].Trim('{', '}', ' ').Split(',')[0].Trim();
+                    ParseMem(string.Join(", ", ops[1..]), out var bReg, out _, out var disp);
+                    var bExpr = ReadReg(bReg);
+                    if (bExpr is AddressExpr ae && disp == 0)
+                        _regs[firstD] = ae.Target;
+                    else if (bExpr is StackAddrPlaceholder sp && _slots.TryGetValue(sp.Key + disp, out var sv))
+                        _regs[firstD] = sv;
+                    break;
+                }
+                case "vst1.32" or "vst1.64" or "vst1.8" when ops.Length >= 2:
+                {
+                    var firstD = ops[0].Trim('{', '}', ' ').Split(',')[0].Trim();
+                    var srcVal = ReadReg(firstD);
+                    ParseMem(string.Join(", ", ops[1..]), out var bReg, out _, out var disp);
+                    var bExpr = ReadReg(bReg);
+                    if (bExpr is StackAddrPlaceholder sp)
+                        _slots[sp.Key + disp] = srcVal;
+                    break;
+                }
                 case "ldr" or "ldrb" or "ldrh" or "ldrsh" or "ldrsb" or "vldr" when ops.Length >= 2:
                 {
                     var dst = ops[0];
@@ -573,10 +939,32 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             var baseExpr = ReadReg(baseReg);
             if (baseExpr is ConstExpr cb)
             {
-                var addr = unchecked((uint)(cb.Value + disp));
-                if (_sym.TryGetUsage(addr, out var u)) return UsageValue(u);
-                if (size == 1 && _sym.Registration.Reader.IsWritableData(addr)) return new MarkerExpr(MarkerKind.InitFlag, -1, $"arm32_init_{addr:X}");
+                var idxConst = idxReg is null ? 0L : (ReadReg(idxReg) is ConstExpr ic ? ic.Value : long.MinValue);
+                if (idxConst != long.MinValue)
+                {
+                    var addr = unchecked((uint)(cb.Value + idxConst + disp));
+                    if (_v16InitFlags.Contains(addr)) return new MarkerExpr(MarkerKind.InitFlag, -1, "init_flag");
+                    if (idxReg is null && disp == 0 && _v16Usages.TryGetValue(addr, out var lu)) return UsageValue(lu);
+                    if (_sym.TryGetUsage(addr, out var u)) return UsageValue(u);
+                    var rdr = _sym.Registration.Reader;
+                    if (idxReg is not null && size == 4 && rdr.IsMapped(addr))
+                    {
+                        var val = rdr.ReadU32(addr);
+                        if (_sym.TryGetUsage(val, out var gu)) { var ge = UsageValue(gu); _gotValues.Add(ge); return ge; }
+                        return isF ? new FloatExpr(BitConverter.Int32BitsToSingle((int)val), true) : new ConstExpr(unchecked((int)val), ValueKind.I4);
+                    }
+                    if (idxReg is null && disp == 0 && size == 4 && rdr.IsMapped(addr) && !rdr.IsWritableData(addr))
+                    {
+                        var val = rdr.ReadU32(addr);
+                        if (_v16Usages.TryGetValue(val, out var vlu)) return UsageValue(vlu);
+                        if (_sym.TryGetUsage(val, out var vsu)) return UsageValue(vsu);
+                        return isF ? new FloatExpr(BitConverter.Int32BitsToSingle((int)val), true) : new ConstExpr(unchecked((int)val), ValueKind.I4);
+                    }
+                    if (size == 1 && rdr.IsWritableData(addr)) return new MarkerExpr(MarkerKind.InitFlag, -1, $"arm32_init_{addr:X}");
+                }
             }
+            if (baseExpr is MarkerExpr { Marker: MarkerKind.TypeInfo } && idxReg is null && disp is 0xAD or 0x60 or 0xBF or 0x70)
+                return new MarkerExpr(MarkerKind.InitFlag, -1, "cctor_guard");
             if (_gotValues.Contains(baseExpr) && disp == 0 && idxReg is null) return baseExpr;
             if (baseExpr is StackAddrPlaceholder sp && idxReg is null)
                 return _slots.GetValueOrDefault(sp.Key + disp) ?? new NativeExpr($"stack[0x{sp.Key + disp:X}]", isF ? ValueKind.R4 : ValueKind.I4);
@@ -596,6 +984,22 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             var baseExpr = ReadReg(baseReg);
             if (baseExpr is ConstExpr) return;
             if (baseExpr is StackAddrPlaceholder sp && idxReg is null) { _slots[sp.Key + disp] = value; return; }
+            if (idxReg is null && baseExpr.Kind == ValueKind.Ref && _mem.TypeDefOf(baseExpr.Type) is var ownerTd and >= 0)
+            {
+                if (_writtenStructSlice.Contains((ownerTd, disp))) return;
+                if (value is FieldExpr { Instance: var srcStruct } && Expr.KindOf(srcStruct.Type) == ValueKind.Struct
+                    && _mem.FindInstanceField(ownerTd, disp) is { } dstF && _mem.FieldRef(dstF) is { } dstFr
+                    && _mem.FieldType(dstF, baseExpr.Type).FullName == srcStruct.Type?.FullName)
+                {
+                    baseExpr.Emit(ctx);
+                    Expr.EmitAs(ctx, srcStruct, srcStruct.Type!);
+                    ctx.IL.Add(CilOpCodes.Stfld, dstFr);
+                    var structSz = _mem.ValueSize(srcStruct.Type!);
+                    for (var off = 4; off < structSz; off += 4)
+                        _writtenStructSlice.Add((ownerTd, disp + off));
+                    return;
+                }
+            }
             var idx = idxReg is null ? null : ReadReg(idxReg);
             if (_mem.Store(ctx, baseExpr, idx, 1, disp, size, value)) return;
             Unsupported++;
@@ -605,6 +1009,14 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
 
         private void EmitCallTarget(EmitContext ctx, ulong targetVa)
         {
+            var helperKind = _classifier.Classify(targetVa);
+            if (helperKind is Arm32HelperKind.NullCheck or Arm32HelperKind.ClassInit
+                or Arm32HelperKind.V16MethodInfo or Arm32HelperKind.V16TypeInfo or Arm32HelperKind.V16StringLiteral)
+            {
+                Elided++;
+                ClobberVolatiles();
+                return;
+            }
             if (_sym.Map.SymbolAt(targetVa) is not null)
             {
                 var r0 = ReadReg("r0");
@@ -637,8 +1049,13 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                 methodIndex = _sym.Registration.MethodSpecs[specIndex].MethodDefinitionIndex;
             if ((uint)methodIndex >= (uint)_sym.Metadata.Methods.Length) return false;
             var baseShape = MethodShape.Create(_sym.Metadata, _sym.Registration, _stubs, _mem, _module, methodIndex, specIndex);
-            var rPos = (baseShape.HasReturnBuffer ? 1 : 0) + (!baseShape.IsStatic ? 1 : 0) + baseShape.Parameters.Count;
-            if (rPos < 4 && ReadReg($"r{rPos}") is MarkerExpr { Marker: MarkerKind.MethodInfo, Usage: { Kind: MetadataUsageKind.MethodRef } mu }
+            var dummyThisWord = baseShape.IsStatic && _sym.Metadata.Version.StaticMethodsTakeDummyThis ? 1 : 0;
+            var paramWords = baseShape.Parameters.Sum(pt => pt is ByReferenceTypeSignature ? 1
+                : Expr.KindOf(pt) is ValueKind.I8 or ValueKind.R8 ? 2
+                : Expr.KindOf(pt) == ValueKind.Struct ? Math.Max(1, (_mem.ValueSize(pt) + 3) / 4) : 1);
+            var rPos = (baseShape.HasReturnBuffer ? 1 : 0) + (baseShape.IsStatic ? dummyThisWord : 1) + paramWords;
+            var miExpr = rPos < 4 ? ReadReg($"r{rPos}") : _slots.GetValueOrDefault(4L * (rPos - 4) - _spDelta);
+            if (miExpr is MarkerExpr { Marker: MarkerKind.MethodInfo, Usage: { Kind: MetadataUsageKind.MethodRef } mu }
                 && (uint)mu.Index < (uint)_sym.Registration.MethodSpecs.Count && _sym.Registration.MethodSpecs[mu.Index].MethodDefinitionIndex == methodIndex)
                 specIndex = mu.Index;
 
@@ -648,6 +1065,7 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             var rIdx = 0;
             var retPtr = shape.HasReturnBuffer ? ReadReg($"r{rIdx++}") : null;
             var thisExpr = shape.IsStatic ? null : ReadReg($"r{rIdx++}");
+            if (shape.IsStatic && _sym.Metadata.Version.StaticMethodsTakeDummyThis) rIdx++;
             CallEmitter.RebindReceiverGeneric(ref target, ref shape, thisExpr, _sym.Metadata, _sym.Registration, _stubs, _mem, _module, methodIndex, specIndex);
 
             if (thisExpr is not null)
@@ -664,8 +1082,17 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             for (var p = 0; p < shape.Parameters.Count; p++)
             {
                 var pt = shape.Parameters[p];
-                var arg = rIdx < 4 ? ReadReg($"r{rIdx++}") : new ConstExpr(0, ValueKind.I4);
-                if (Expr.KindOf(pt) is ValueKind.I8 or ValueKind.R8) rIdx++;
+                var arg = rIdx < 4 ? ReadReg($"r{rIdx}") : (_slots.GetValueOrDefault(4L * (rIdx - 4) - _spDelta) ?? new ConstExpr(0, ValueKind.I4));
+                if (pt is not ByReferenceTypeSignature && Expr.KindOf(pt) == ValueKind.Struct)
+                {
+                    if (arg is FieldExpr { Instance: var srcStruct } && srcStruct.Type?.FullName == pt.FullName)
+                        arg = srcStruct;
+                    rIdx += Math.Max(1, (_mem.ValueSize(pt) + 3) / 4);
+                }
+                else
+                {
+                    rIdx += Expr.KindOf(pt) is ValueKind.I8 or ValueKind.R8 ? 2 : 1;
+                }
                 Expr.EmitAs(ctx, arg, pt);
             }
             ctx.IL.Add(!shape.IsStatic && !shape.DeclaringIsValueType ? CilOpCodes.Callvirt : CilOpCodes.Call, target);
@@ -801,7 +1228,7 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         private static string StripConditionSuffix(string m, out string? cond)
         {
             cond = null;
-            if (m.Length >= 5 && m is not ("ldrsb" or "ldrsh" or "vsqrt.f32" or "vadd.f32" or "vsub.f32" or "vmul.f32" or "vdiv.f32" or "vmla.f32" or "vmls.f32" or "vcmp.f32"))
+            if (m.Length >= 5 && m is not ("ldrsb" or "ldrsh" or "vsqrt.f32" or "vadd.f32" or "vsub.f32" or "vmul.f32" or "vdiv.f32" or "vmla.f32" or "vmls.f32" or "vcmp.f32" or "vmov.f32" or "vmov.f64" or "vld1.32" or "vld1.64" or "vld1.8" or "vst1.32" or "vst1.64" or "vst1.8"))
             {
                 var tail = m[^2..];
                 if (tail is "eq" or "ne" or "lt" or "le" or "gt" or "ge" or "hi" or "ls" or "hs" or "cs" or "lo" or "cc" or "mi" or "pl")

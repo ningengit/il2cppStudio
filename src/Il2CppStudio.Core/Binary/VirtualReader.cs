@@ -13,6 +13,7 @@ public sealed class VirtualReader
     private readonly IBinaryImage _image;
     private readonly ReadOnlyMemory<byte> _data;
     private readonly (ulong VaStart, ulong VaEnd, long FileOffset, bool Exec, bool Write)[] _ranges;
+    private readonly (ulong VaStart, ulong VaEnd)[] _writableRanges;
 
     public ulong ImageBase { get; }
     public int PointerSize { get; }
@@ -25,6 +26,10 @@ public sealed class VirtualReader
         PointerSize = image.Is64Bit ? 8 : 4;
         _ranges = [.. image.Sections.Where(s => s.RawSize > 0)
             .Select(s => (image.ImageBase + s.Rva, image.ImageBase + s.Rva + (ulong)s.RawSize, s.FileOffset, s.IsExecutable, s.IsWritable))
+            .OrderBy(r => r.Item1)];
+        _writableRanges = [.. image.Sections.Where(s => s.IsWritable && !s.IsExecutable)
+            .Select(s => (image.ImageBase + s.Rva, image.ImageBase + s.Rva + Math.Max(s.VirtualSize, (ulong)s.RawSize)))
+            .Where(r => r.Item2 > r.Item1)
             .OrderBy(r => r.Item1)];
     }
 
@@ -52,7 +57,7 @@ public sealed class VirtualReader
 
     public bool IsWritableData(ulong va)
     {
-        foreach (var r in _ranges) if (va >= r.VaStart && va < r.VaEnd) return r.Write && !r.Exec;
+        foreach (var r in _writableRanges) if (va >= r.VaStart && va < r.VaEnd) return true;
         return false;
     }
 

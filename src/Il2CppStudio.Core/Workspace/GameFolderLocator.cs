@@ -133,9 +133,19 @@ public static class GameFolderLocator
         }
         else if (binary is null && legacyAsmJs is not null)
         {
-            sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.BinaryFormatUnsupported,
-                $"Legacy WebGL asm.js build detected ('{Path.GetFileName(legacyAsmJs)}'): metadata loaded; native method-body lifting is skipped for pre-5.6 asm.js builds (no WebAssembly module).",
-                new() { File = legacyAsmJs });
+            if (AsmJsBinaryImage.CanLoad(legacyAsmJs))
+            {
+                binary = legacyAsmJs;
+                sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.BinaryNotFound,
+                    $"Legacy WebGL asm.js build: using '{Path.GetFileName(legacyAsmJs)}' + memory initializer.",
+                    new() { File = legacyAsmJs });
+            }
+            else
+            {
+                sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.BinaryFormatUnsupported,
+                    $"Legacy WebGL asm.js build detected ('{Path.GetFileName(legacyAsmJs)}'): metadata loaded; native method-body lifting is skipped for pre-5.6 asm.js builds (no WebAssembly module).",
+                    new() { File = legacyAsmJs });
+            }
         }
         else if (binary is null)
             sink.Warn(DiagnosticCategory.Workspace, DiagnosticCodes.BinaryNotFound,

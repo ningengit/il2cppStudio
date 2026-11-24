@@ -1,8 +1,8 @@
 namespace Il2CppStudio.Core.Binary;
 
-public enum BinaryFormat { Unknown, PE, Elf, MachO, Wasm, Nso }
+public enum BinaryFormat { Unknown, PE, Elf, MachO, Wasm, Nso, AsmJs }
 
-public enum CpuArchitecture { Unknown, X86, X64, Arm, Arm64, Wasm32 }
+public enum CpuArchitecture { Unknown, X86, X64, Arm, Arm64, Wasm32, AsmJs }
 
 public sealed record BinarySection(
     string Name,

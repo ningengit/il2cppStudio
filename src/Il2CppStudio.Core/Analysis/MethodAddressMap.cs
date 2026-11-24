@@ -35,6 +35,7 @@ public sealed class MethodAddressMap
         _functions = [.. functions];
         _methodVa = new ulong[md.Methods.Length];
         var wasmSplit = reg.Reader.Image is WasmBinaryImage { IsSplitFunctionTable: true } w ? w : null;
+        var asmJs = reg.Reader.Image as AsmJsBinaryImage;
 
         var moduleByName = reg.CodeGenModules.ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
         var backupByName = backup?.CodeGenModules.ToDictionary(m => m.AssemblyName, StringComparer.OrdinalIgnoreCase);
@@ -63,6 +64,11 @@ public sealed class MethodAddressMap
                         va = ResolveWasmMethodSlot(md, model, reg, wasmSplit, m, null, va);
                         if (va == 0) continue;
                     }
+                    else if (asmJs is not null)
+                    {
+                        va = ResolveAsmJsMethodSlot(md, model, reg, asmJs, m, null, va);
+                        if (va == 0) continue;
+                    }
                     _methodVa[m] = va;
                     resolved++;
                     var cpp = backupModule?.SymbolForToken(token);
@@ -86,6 +92,11 @@ public sealed class MethodAddressMap
             if (wasmSplit is not null)
             {
                 va = ResolveWasmMethodSlot(md, model, reg, wasmSplit, spec.MethodDefinitionIndex, spec, va);
+                if (va == 0) continue;
+            }
+            else if (asmJs is not null)
+            {
+                va = ResolveAsmJsMethodSlot(md, model, reg, asmJs, spec.MethodDefinitionIndex, spec, va);
                 if (va == 0) continue;
             }
             generic++;
@@ -208,6 +219,90 @@ public sealed class MethodAddressMap
             }
         }
         return 0;
+    }
+
+    private static ulong ResolveAsmJsMethodSlot(
+        GlobalMetadata md, MetadataModel model, Il2CppRegistration reg, AsmJsBinaryImage asm,
+        int methodIndex, Il2CppMethodSpecRecord? spec, ulong rawSlot)
+    {
+        var method = md.Methods[methodIndex];
+        IReadOnlyList<ulong>? classArgs = null;
+        IReadOnlyList<ulong>? methodArgs = null;
+        if (spec is { ClassInstIndex: >= 0 } s && (uint)s.ClassInstIndex < (uint)reg.GenericInstVas.Count)
+            classArgs = reg.ReadGenericInst(reg.GenericInstVas[s.ClassInstIndex]).TypeArgVas;
+        if (spec is { MethodInstIndex: >= 0 } ms && (uint)ms.MethodInstIndex < (uint)reg.GenericInstVas.Count)
+            methodArgs = reg.ReadGenericInst(reg.GenericInstVas[ms.MethodInstIndex]).TypeArgVas;
+
+        var isStatic = (method.Flags & 0x0010) != 0;
+        var hasThis = !isStatic || md.Version.StaticMethodsTakeDummyThis;
+        var retInfo = reg.TryGetType(method.ReturnType, out var rt)
+            ? ClassifyWasmType(md, model, reg, rt, classArgs, methodArgs, isReturn: true, depth: 0)
+            : (Primary: 'i', Alt: (char?)null, HasRetBuf: false);
+
+        var retVariants = new List<(char Ret, bool RetBuf)>(2);
+        if (retInfo.HasRetBuf)
+        {
+            if (retInfo.Alt is { } altRet) retVariants.Add((altRet, false));
+            retVariants.Add(('v', true));
+        }
+        else
+        {
+            retVariants.Add((retInfo.Primary == 'j' ? 'i' : retInfo.Primary, false));
+        }
+
+        var paramChoices = new List<(char Primary, char? Alt)>(method.ParameterCount);
+        var altIndices = new List<int>(4);
+        for (var p = 0; p < method.ParameterCount; p++)
+        {
+            var pi = method.ParameterStart + p;
+            if ((uint)pi >= (uint)md.Parameters.Length || !reg.TryGetType(md.Parameters[pi].TypeIndex, out var pt))
+            {
+                paramChoices.Add(('i', null));
+                continue;
+            }
+            var c = ClassifyWasmType(md, model, reg, pt, classArgs, methodArgs, isReturn: false, depth: 0);
+            if (c.Alt is not null && altIndices.Count < 4) altIndices.Add(paramChoices.Count);
+            paramChoices.Add((c.Primary, c.Alt));
+        }
+
+        var comboCount = 1 << altIndices.Count;
+        foreach (var (retChar, useRetBuf) in retVariants)
+        {
+            for (var mask = 0; mask < comboCount; mask++)
+            {
+                var sig = BuildAsmJsSig(retChar, useRetBuf, hasThis, paramChoices, altIndices, mask);
+                if (asm.TryResolveTableSlot(sig, rawSlot, out var funcVa)
+                    && asm.TryGetFunctionParamCount(funcVa, out var pCount)
+                    && pCount == sig.Length - 1)
+                    return funcVa;
+            }
+        }
+        return 0;
+    }
+
+    private static string BuildAsmJsSig(
+        char retChar, bool useRetBuf, bool hasThis,
+        List<(char Primary, char? Alt)> paramChoices, List<int> altIndices, int altMask)
+    {
+        var overrides = new char[paramChoices.Count];
+        for (var i = 0; i < paramChoices.Count; i++) overrides[i] = paramChoices[i].Primary;
+        for (var a = 0; a < altIndices.Count; a++)
+        {
+            if ((altMask & (1 << a)) != 0 && paramChoices[altIndices[a]].Alt is { } alt)
+                overrides[altIndices[a]] = alt;
+        }
+
+        var sb = new System.Text.StringBuilder(paramChoices.Count + 4);
+        sb.Append(retChar == 'j' ? 'i' : retChar);
+        if (useRetBuf) sb.Append('i');
+        if (hasThis) sb.Append('i');
+        foreach (var c in overrides)
+        {
+            if (c == 'j') sb.Append("ii");   // Emscripten legalizes i64 args into two i32 halves
+            else sb.Append(c);
+        }
+        sb.Append('i'); // MethodInfo*
+        return sb.ToString();
     }
 
     private static (char Primary, char? Alt, bool HasRetBuf) ClassifyWasmType(

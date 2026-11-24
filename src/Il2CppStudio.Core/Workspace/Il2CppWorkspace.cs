@@ -75,6 +75,9 @@ public sealed partial class Il2CppWorkspace : IDisposable
                 pe = PeBinaryImage.Load(bin, sink);
             else if (files.BinaryPath is { } wasmPath && WasmFiles.IsWasmPath(wasmPath))
                 pe = WasmBinaryImage.Load(wasmPath, sink);
+            else if (files.BinaryPath is { } asmJsPath && WebDataExtractor.IsLegacyAsmJsPath(asmJsPath)
+                && AsmJsBinaryImage.TryLoad(asmJsPath, sink) is { } asmJsImg)
+                pe = asmJsImg;
             else if (files.BinaryPath is { } so && ElfBinaryImage.IsElf(so))
                 pe = ElfBinaryImage.Load(so, sink);
             else if (files.BinaryPath is { } macho && MachOBinaryImage.IsMachO(macho))

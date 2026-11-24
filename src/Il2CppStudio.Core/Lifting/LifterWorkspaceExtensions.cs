@@ -103,6 +103,7 @@ public static class LifterWorkspaceExtensions
         IMethodLifter? lifter = ws.Binary switch
         {
             Binary.WasmBinaryImage wasm => new Wasm.WasmLifter(ws.Symbolizer, ws.Stubs, wasm, ws.Sink),
+            Binary.AsmJsBinaryImage asmJs => new AsmJs.AsmJsLifter(ws.Symbolizer, ws.Stubs, asmJs, ws.Sink),
             _ when ws.Binary?.Architecture == Binary.CpuArchitecture.Arm64 => new Arm64.Arm64Lifter(ws.Symbolizer, ws.Stubs, ws.Sink, ws.RuntimeHelpers),
             _ when ws.Binary?.Architecture == Binary.CpuArchitecture.Arm && ws.TextDisassembler is Disassembly.Arm32Disassembler arm32
                 => new Arm32.Arm32Lifter(ws.Symbolizer, ws.Stubs, arm32, ws.Sink, ws.RuntimeHelpers),

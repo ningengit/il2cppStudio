@@ -91,6 +91,18 @@ public sealed partial class Il2CppRegistration
         var ptrs = ReadPointerArray(ptrsVa, sampleCount);
         if (ptrs.Length != sampleCount) return false;
 
+        if (Reader.Image is Binary.AsmJsBinaryImage asmJs)
+        {
+            var checkedSlots = 0;
+            foreach (var raw in ptrs)
+            {
+                if (raw == 0) continue;
+                if (raw > (ulong)asmJs.MaxTableSlot) return false;
+                if (++checkedSlots >= 8) break;
+            }
+            return checkedSlots > 0;
+        }
+
         var requireExec = Reader.Image.Architecture != Binary.CpuArchitecture.Wasm32
             && Reader.Image.Sections.Any(s => s.IsExecutable);
         var checkedNonZero = 0;

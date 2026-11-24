@@ -30,7 +30,7 @@ public sealed partial class Il2CppWorkspace
     {
         { Format: Core.Binary.BinaryFormat.Elf or Core.Binary.BinaryFormat.MachO } => Lifting.NativeAbi.SysV,
         { Architecture: Core.Binary.CpuArchitecture.X86 } => Lifting.NativeAbi.Win32,
-        { Architecture: Core.Binary.CpuArchitecture.Wasm32 } => Lifting.NativeAbi.Wasm32,
+        { Architecture: Core.Binary.CpuArchitecture.Wasm32 or Core.Binary.CpuArchitecture.AsmJs } => Lifting.NativeAbi.Wasm32,
         _ => Lifting.NativeAbi.Win64,
     };
 
@@ -59,7 +59,8 @@ public sealed partial class Il2CppWorkspace
         TextDisassembler = TextDisassemblerFactory.For(Binary.Architecture);
         if (TextDisassembler is not null && Binary.Architecture != Core.Binary.CpuArchitecture.Wasm32) TextDisassembler.SymbolResolver = va => AddressMap.SymbolAt(va)?.DisplayName;
         if (Binary.Architecture is not (Core.Binary.CpuArchitecture.X64 or Core.Binary.CpuArchitecture.X86
-            or Core.Binary.CpuArchitecture.Wasm32 or Core.Binary.CpuArchitecture.Arm64 or Core.Binary.CpuArchitecture.Arm))
+            or Core.Binary.CpuArchitecture.Wasm32 or Core.Binary.CpuArchitecture.AsmJs
+            or Core.Binary.CpuArchitecture.Arm64 or Core.Binary.CpuArchitecture.Arm))
         {
             LiftingUnavailableReason = $"{Binary.Architecture} machine code is shown as disassembly but not lifted to C# yet";
             Sink.Warn(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatUnsupported,
@@ -73,9 +74,12 @@ public sealed partial class Il2CppWorkspace
         else if (Abi == Lifting.NativeAbi.Win32)
             Sink.Info(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatDetected,
                 "Win32 cdecl x86 calling convention enabled (with stack argument & x87 float lifting).", new() { File = Binary.Path });
-        else if (Abi == Lifting.NativeAbi.Wasm32)
+        else if (Binary.Architecture == Core.Binary.CpuArchitecture.Wasm32)
             Sink.Info(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatDetected,
                 "WebAssembly Wasm32 symbolic stack lifter enabled.", new() { File = Binary.Path });
+        else if (Binary.Architecture == Core.Binary.CpuArchitecture.AsmJs)
+            Sink.Info(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatDetected,
+                "WebGL asm.js symbolic AST lifter enabled.", new() { File = Binary.Path });
         else if (Binary.Architecture == Core.Binary.CpuArchitecture.Arm64)
             Sink.Info(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatDetected,
                 "ARM64 AAPCS64 Unified IR lifter enabled (with HFA struct & ADRP+GOT resolution).", new() { File = Binary.Path });
@@ -113,6 +117,8 @@ public sealed partial class Il2CppWorkspace
         if (AddressMap is null) return null;
         var va = AddressMap.GetMethodVa(m.Index);
         if (va == 0) return null;
+        if (Binary is Core.Binary.AsmJsBinaryImage asmJs && asmJs.TryGetFunctionSource(va, out var fnName, out var src))
+            return $"// asm.js function {fnName}\n{src}";
         if (Disassembler is not null) return Disassembler.Format(Disassembler.Disassemble(va));
         if (TextDisassembler is null || Registration is null) return null;
         if (Binary is Core.Binary.WasmBinaryImage wasm)

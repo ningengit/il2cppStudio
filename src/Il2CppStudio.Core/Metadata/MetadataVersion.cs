@@ -78,6 +78,9 @@ public readonly record struct MetadataVersion(int Major, int Minor = 0) : ICompa
     /// <summary>windowsRuntimeStrings header pair was added in v27.</summary>
     public bool HasWindowsRuntimeStrings => Major >= 27;
 
+    /// <summary>Pre-v24 IL2CPP emits an unused dummy __this pointer argument for static methods.</summary>
+    public bool StaticMethodsTakeDummyThis => Major < 24;
+
     /// <summary>Approximate Unity editor range that writes this version (for display only).</summary>
     public string UnityRange => Major switch
     {

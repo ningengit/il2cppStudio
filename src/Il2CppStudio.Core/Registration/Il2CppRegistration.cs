@@ -33,6 +33,7 @@ public sealed partial class Il2CppRegistration
     public bool FieldOffsetsArePointers { get; private set; } = true;
     public IReadOnlyList<ulong> TypeSizeTableVas { get; private set; } = [];
     public bool TypeSizesArePointers { get; private set; } = true;
+    public int[] MethodReferences { get; private set; } = [];
 
     private int[] _flatFieldOffsets = [];
     private int[] _flatTypeInstanceSizes = [];
@@ -198,6 +199,22 @@ public sealed partial class Il2CppRegistration
         return table == 0 ? -1 : Reader.ReadI32(table + (ulong)fieldOrdinal * 4);
     }
 
+    /// <summary>Resolves a v16 encoded method reference index (<c>MetadataCache::GetMethodInfoFromIndex</c>).</summary>
+    public bool TryResolveV16EncodedMethodIndex(uint encodedIndex, out MetadataUsageKind kind, out int targetIndex)
+    {
+        var decoded = (int)(encodedIndex & 0x7FFFFFFFu);
+        if (decoded <= 0 || decoded >= MethodReferences.Length)
+        {
+            kind = MetadataUsageKind.Invalid;
+            targetIndex = -1;
+            return false;
+        }
+        targetIndex = MethodReferences[decoded];
+        var isGeneric = (encodedIndex & 0x80000000u) != 0;
+        kind = isGeneric ? MetadataUsageKind.MethodRef : MetadataUsageKind.MethodDef;
+        return isGeneric ? (uint)targetIndex < (uint)MethodSpecs.Count : (uint)targetIndex < (uint)_md.Methods.Length;
+    }
+
     // ------------------------------------------------------------------ locating
 
     private int MetadataFieldOffsetsWordIndex => _md.Version.HasMethodReferencesInMetadataReg ? 12 : 10;
@@ -283,6 +300,9 @@ public sealed partial class Il2CppRegistration
         TypeVas = ReadPointerArray(F(7), (int)Math.Min(F(6), 2_000_000));
         MethodSpecs = ReadArray(F(9), (int)Math.Min(F(8), 2_000_000), 12,
             s => new Il2CppMethodSpecRecord(BitConverter.ToInt32(s), BitConverter.ToInt32(s[4..]), BitConverter.ToInt32(s[8..])));
+        MethodReferences = _md.Version.HasMethodReferencesInMetadataReg
+            ? ReadInt32Array(F(11), (int)Math.Min(F(10), 2_000_000))
+            : [];
 
         var fieldOffCount = (int)Math.Min(F(fieldOffIdx), 2_000_000);
         var fieldOffVa = F(fieldOffIdx + 1);

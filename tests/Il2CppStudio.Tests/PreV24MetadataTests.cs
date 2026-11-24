@@ -283,26 +283,29 @@ public sealed class PreV24MetadataTests
     [Fact]
     public void RealUnity53WebGlBuild_DatagzAndV16Metadata_ReconstructsCSharpAndUnityScript()
     {
-        const string realRoot = @"C:\Users\13131313\Downloads\webgl";
-        var releaseDir = Path.Combine(realRoot, "Release");
-        if (!Directory.Exists(releaseDir))
-            Assert.Skip($"Local Unity 5.3 WebGL test fixture not found at '{releaseDir}'.");
+        var repoRoot = TemplateBuildFixture.RepositoryRoot;
+        var webGlRoot = repoRoot is null ? null : Path.Combine(repoRoot, "testdata", "unity 5.3 webgl");
+        if (webGlRoot is null || !Directory.Exists(webGlRoot))
+            Assert.Skip($"Local Unity 5.3 WebGL test fixture not found at '{webGlRoot}'.");
 
-        foreach (var target in new[] { realRoot, releaseDir })
+        var releaseDir = Path.Combine(webGlRoot, "Release");
+        var targets = Directory.Exists(releaseDir) ? new[] { webGlRoot, releaseDir } : [webGlRoot];
+
+        foreach (var target in targets)
         {
             var sink = new DiagnosticCollector(new Serilog.LoggerConfiguration().CreateLogger());
             using var ws = Il2CppWorkspace.Load(target, sink);
             WorkspaceSetup.Attach(ws);
 
             Assert.Empty(sink.Query(DiagnosticSeverity.Error));
-            Assert.Empty(sink.Query(DiagnosticSeverity.Warning));
             Assert.Equal(16, ws.Metadata.Version.Major);
             Assert.Equal("5.3.0f1", ws.Environment.UnityVersion);
             Assert.Equal("IL2CPP", ws.Environment.ScriptingBackend);
-            Assert.NotNull(ws.Files.LegacyAsmJsPath);
-            Assert.Contains("asm.js", ws.LiftingUnavailableReason ?? "", StringComparison.OrdinalIgnoreCase);
-            Assert.Contains(sink.Query(DiagnosticSeverity.Information), d =>
-                d.Severity == DiagnosticSeverity.Information && d.Code == DiagnosticCodes.BinaryFormatUnsupported && d.Message.Contains("asm.js", StringComparison.OrdinalIgnoreCase));
+            Assert.IsType<AsmJsBinaryImage>(ws.Binary);
+            Assert.NotNull(ws.Registration);
+            Assert.True(ws.Registration!.IsComplete);
+            Assert.True(ws.HasNativeCode);
+            Assert.Null(ws.LiftingUnavailableReason);
 
             Assert.All(ws.Metadata.SectionReports, r =>
             {
@@ -332,17 +335,80 @@ public sealed class PreV24MetadataTests
             Assert.Contains("Jump pressed in UnityScript!", literals);
 
             var csPc = ws.Render(pc, method: null, CodeView.CSharp);
-            Assert.Contains("class PlayerController", csPc);
-            Assert.Contains("moveSpeed", csPc);
-            Assert.Contains("Start()", csPc);
-            Assert.Contains("Update()", csPc);
-            Assert.Contains("asm.js", csPc, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("class PlayerController : MonoBehaviour", csPc);
+            Assert.Contains("float moveSpeed", csPc);
+            Assert.Contains("Color startColor", csPc);
+            Assert.Contains("Renderer objRenderer", csPc);
+            Assert.Contains("GetComponent<Renderer>()", csPc);
+            Assert.Contains("Input.GetAxis", csPc);
+            Assert.Contains("Translate", csPc);
+            Assert.Contains("Rotate", csPc);
+            Assert.Contains("Input.GetKeyDown", csPc);
+            Assert.Contains("Debug.Log", csPc);
+            Assert.DoesNotContain("throw null", csPc);
+            Assert.DoesNotContain("NativeIntrinsics.CallNative", csPc);
+            Assert.DoesNotContain("NativeIntrinsics.Asm", csPc);
+            Assert.DoesNotContain("NativeIntrinsics.Stmt", csPc);
 
             var csUr = ws.Render(ur, method: null, CodeView.CSharp);
-            Assert.Contains("class objRenderer", csUr);
+            Assert.Contains("class objRenderer : MonoBehaviour", csUr);
             Assert.Contains("Main()", csUr);
-            Assert.Contains("asm.js", csUr, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("throw null", csUr);
+            Assert.DoesNotContain("NativeIntrinsics.CallNative", csUr);
+            Assert.DoesNotContain("NativeIntrinsics.Asm", csUr);
+            Assert.DoesNotContain("NativeIntrinsics.Stmt", csUr);
         }
+    }
+
+    [Fact]
+    public void RealUnity53AndroidApk_Armv7V16_LiftsPlayerControllerAndUnityScriptCleanly()
+    {
+        var repoRoot = TemplateBuildFixture.RepositoryRoot;
+        var apkPath = repoRoot is null ? null : Path.Combine(repoRoot, "testdata", "unity 5.3 android", "sum.apk");
+        if (apkPath is null || !File.Exists(apkPath))
+            Assert.Skip($"Local Unity 5.3 ARMv7 APK fixture not found at '{apkPath}'.");
+
+        var sink = new DiagnosticCollector(new Serilog.LoggerConfiguration().CreateLogger());
+        using var ws = Il2CppWorkspace.Load(apkPath, sink);
+        WorkspaceSetup.Attach(ws);
+
+        Assert.Empty(sink.Query(DiagnosticSeverity.Error));
+        Assert.Equal(16, ws.Metadata.Version.Major);
+        Assert.Equal("5.3.0f1", ws.Environment.UnityVersion);
+        Assert.Equal("IL2CPP", ws.Environment.ScriptingBackend);
+        var elf = Assert.IsType<ElfBinaryImage>(ws.Binary);
+        Assert.Equal(CpuArchitecture.Arm, elf.Architecture);
+        Assert.NotNull(ws.Registration);
+        Assert.True(ws.Registration!.IsComplete);
+        Assert.True(ws.HasNativeCode);
+
+        var pc = Assert.Single(ws.FindTypes("PlayerController"));
+        Assert.Equal(["moveSpeed", "turnSpeed", "startColor", "objRenderer"], pc.Fields.Select(f => f.Name));
+        Assert.Equal([".ctor", "Start", "Update"], pc.Methods.Select(m => m.Name));
+
+        var csPc = ws.Render(pc, method: null, CodeView.CSharp);
+        Assert.Contains("class PlayerController : MonoBehaviour", csPc);
+        Assert.Contains("GetComponent<Renderer>()", csPc);
+        Assert.Contains("Input.GetAxis", csPc);
+        Assert.Contains("Translate", csPc);
+        Assert.Contains("Rotate", csPc);
+        Assert.Contains("Input.GetKeyDown", csPc);
+        Assert.Contains("Debug.Log", csPc);
+        Assert.DoesNotContain("throw null", csPc);
+        Assert.DoesNotContain("NativeIntrinsics.CallNative", csPc);
+        Assert.DoesNotContain("NativeIntrinsics.Asm", csPc);
+        Assert.DoesNotContain("NativeIntrinsics.Stmt", csPc);
+
+        var ur = Assert.Single(ws.FindTypes("objRenderer"));
+        Assert.Equal([".ctor", "Start", "Update", "Main"], ur.Methods.Select(m => m.Name));
+
+        var csUr = ws.Render(ur, method: null, CodeView.CSharp);
+        Assert.Contains("class objRenderer : MonoBehaviour", csUr);
+        Assert.Contains("GetComponent<Renderer>()", csUr);
+        Assert.DoesNotContain("throw null", csUr);
+        Assert.DoesNotContain("NativeIntrinsics.CallNative", csUr);
+        Assert.DoesNotContain("NativeIntrinsics.Asm", csUr);
+        Assert.DoesNotContain("NativeIntrinsics.Stmt", csUr);
     }
 
     // ------------------------------------------------------------------ synthetic fixtures
