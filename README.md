@@ -1,12 +1,14 @@
 # Il2CppStudio
 
-Il2CppStudio is a high-performance, 100% MIT-licensed C# decompiler and binary analysis tool built specifically for Unity IL2CPP games. Designed to eliminate the need for 4,000 different programs and Python scripts just to decompile something, its goal is to take you from a game binary or console archive straight to readable, compilable C# code. I'd be happy if you'd tell me any bugs or errors you come across so I can fix them.
+Il2CppStudio is a high-performance, 100% MIT-licensed, pure-C# decompiler and binary analysis tool built specifically for Unity IL2CPP games. Designed to eliminate the need for 4,000 different programs and Python scripts just to decompile something, its goal is to take you from a game binary or console archive straight to readable, compilable C# code. I'd be happy if you'd tell me any bugs or errors you come across so I can fix them.
 
 The tool itself is vibe-coded (and I admit it!), so it won't always output textbook-perfect C# on every edge case yet, but it already compiles massive commercial `Assembly-CSharp` projects with zero errors and operates at blazing speeds.
 
 ## Why Il2CppStudio?
 
-- **All-in-One Archive & Console Loading:** You do **not** need external tools like `nstool`, `pkgextract`, `WDU`, or `Il2CppDumper` separately. Just drag and drop a game file/folder onto the window, use **File → Load File**, or use the CLI to open `.apk`, `.xapk`, `.ipa`, PS4 `.pkg`/`.prx`, Nintendo Switch `.nsp`/`main`, or WebGL builds directly.
+- **100% Pure C# Core (Zero Native Dependencies):** All 6 lifters (`x86`, `x64`, `ARMv7/Thumb-2`, `ARM64`, `Wasm32`, and `asm.js`), archive extractors, and the mobile syntax highlighter are written in pure managed C#. No `capstone.dll`, no `libonigwrap.so`, and no platform-specific native headaches—compile once, run anywhere.
+- **All-in-One Archive & Console Loading:** You do **not** need external tools like `nstool`, `pkgextract`, `WDU`, or `Il2CppDumper` separately. Just drag and drop a game file/folder onto the window, use **File → Load File**, or use the CLI to open `.apk`, `.xapk`, `.ipa`, PS4 `.pkg`/`.prx`, Nintendo Switch `.nsp`/`main`, or WebGL (`.wasm` / `asm.js`) builds directly.
+- **On-Device Android Game Decompilation:** On Android, use **File → Open Installed App…** to scan installed Unity IL2CPP games and load both `global-metadata.dat` and `libil2cpp.so` directly from Split APKs (App Bundles) and `NativeLibraryDir`—no root and no external APK extractor required.
 - **Bring Your Own Keys (Nintendo Switch):** Il2CppStudio **never** bundles copyrighted console keys or bypasses DRM. When loading a Nintendo Switch `.nsp`, you must provide your own `prod.keys` file (dumped from your own console) via the GUI prompt or the CLI `--keyset` flag.
 - **Runs Natively Everywhere:** Built on .NET 11 and Avalonia UI, Il2CppStudio runs natively on **Windows (`x64`/`arm64`)**, **Linux (`x64`/`arm64`)**, **macOS (`x64`/`arm64`)**, and **Android (`arm64-v8a`, Android 7.0 / API 24+)**.
 - **First-Class CLI for AI Agents & Automation:** Alongside the GUI, Il2CppStudio ships with a dedicated CLI (`Il2CppStudio.Cli`). This makes it easy for **AI coding agents**, CI pipelines, and reverse-engineering scripts to load builds, inspect metadata/types, dump specific methods, and export full C# projects headlessly.
@@ -22,35 +24,34 @@ il2cppstudio load "path/to/game.pkg" --passcode "0000000000000000000000000000000
 
 | Area | Status | Details |
 | :--- | :--- | :--- |
-| **Windows (`x64` / `x86`) & Linux (`x64`)** | Working | Fast metadata loading, native-to-C# lifting, and 0-error `Assembly-CSharp` compilation. |
-| **Android (`.apk` / `.xapk`)** | Working | Direct archive extraction, automatic Unity version discovery, and 0-error `Assembly-CSharp` compilation on ARM64 builds. |
-| **WebGL (`.wasm` + `.data`)** | Working | Decompression (`Brotli`/`Gzip`), `unitywebdata` unpacking, Unity 2019.3+ (`v24.2`) support, and Wasm32-to-C# lifting. |
+| **Windows (`x64` / `x86` / `arm64`) & Linux (`x64`)** | Working | Fast metadata loading, native-to-C# lifting (including Windows ARM64 PE), and 0-error `Assembly-CSharp` compilation across Unity 5.3 through Unity 6000.6. |
+| **Android (`.apk` / `.xapk` / Installed Apps)** | Working | Zero-copy archive streaming, Split-APK bundle support, on-device installed-app picker, pure-C# ARMv7/Thumb-2 & ARM64 lifting on all 7 host platforms, and 0-error `Assembly-CSharp` compilation. |
+| **WebGL (`.wasm` & Legacy `asm.js`)** | Working | Supports modern `.wasm` + `unitywebdata` (`Brotli`/`Gzip`) **and** legacy Unity 5.3–5.5 `asm.js` (`*.jsgz`, `*.js.memgz`, `*.datagz`) with full type recovery and `AsmJsLifter` method-body decompilation. |
 | **PlayStation 4 (`.pkg` & `.prx`)** | Working | Native C# `.pkg`/PFS extraction, FSELF-to-ELF64 unpacking (`Il2CppUserAssemblies.prx`), Orbis relocations, SysV AMD64 lifting, and 0-error `Assembly-CSharp` compilation. |
 | **Nintendo Switch (`main` NSO & `.nsp`)** | Working | Commercial Switch `Assembly-CSharp` builds (67,000+ methods) compile with **0 errors**, with direct `.nsp` loading via user-supplied `prod.keys` (`title.keys` + embedded `.tik` fallback). |
-| **iOS (`.ipa`) & macOS (`.app` / Mach-O)** | Experimental | Mach-O64 (`arm64`/`x86_64`, Universal/Fat, chained fixups) and `.ipa` extraction work on test samples; needs further testing against custom-compiled Apple builds before full release. |
-| **Performance & UI** | Working / Polishing | Cold loads take ~1–3s via memory-mapped I/O; warm `--export-all` runs finish in ~19–27s via Brotli `.dcache` caching (3.4x–3.5x faster). Includes GUI drag-and-drop, fast debounced/virtualized search, conditional `using Il2CppStudio.Native;` emission, and an Android `.apk` UI (actively polishing mobile layout/insets). |
-| **Metadata Versions** | v24 – v31+ | Full support for metadata v24 through v31+; pre-v24 support is not yet implemented. |
+| **iOS (`.ipa`) & macOS (`.app` / Mach-O)** | Experimental | Mach-O64 (`arm64`/`x86_64`, Universal/Fat, chained fixups) and zero-copy `.ipa` loading work on test samples; needs further testing against custom-compiled Apple builds before full release. |
+| **Performance & UI** | Working / Polishing | Zero-copy memory-mapped archive slicing for `Stored` `.apk`/`.xapk`/`.ipa`/`.data` entries (with `*-resources.dat` parity). Cold `--export-all --substitute-bcl` runs finish in ~38s (~10.5s warm via Brotli `.dcache`). Includes GUI drag-and-drop, fast debounced/virtualized search, and a pure-C# VS Code Dark+ syntax highlighter for Android & IL views. |
+| **Metadata Versions** | v16 – v108 | Full support from **Unity 5.3 (`v16`)** through **Unity 6000.3 (`v39`)** and **Unity 6000.6 (`v108`)** (including `Il2CppSectionMetadata`, compact serialized indices, and metadata-embedded generic/RGCTX tables). |
 
 ## Supported Game Targets
 
-- **Supported:** Windows (`x64`/`x86`), Linux (`x64`), Android (`.apk`/`.xapk`), WebGL, PlayStation 4 (`.pkg`/`.prx`), and Nintendo Switch (`main` NSO / `.nsp`).
+- **Supported:** Windows (`x64`/`x86`/`arm64`), Linux (`x64`), Android (`arm64-v8a`/`armeabi-v7a`, `.apk`/`.xapk`/Split APKs), WebGL (`.wasm` & `asm.js`), PlayStation 4 (`.pkg`/`.prx`), and Nintendo Switch (`main` NSO / `.nsp`).
 - **Experimental (needs further testing):** iOS (`.ipa`) and macOS (`.app`).
 
 ## Repositories & Reference Material
 
-Everything in Il2CppStudio is kept **100% MIT-licensed** (zero GPL/AGPL dependencies). The following permissive open-source projects were used directly or studied as structural references:
+Everything in Il2CppStudio is kept **100% MIT-licensed** (zero GPL/AGPL dependencies). The following permissive open-source projects are used via NuGet or were studied as structural references:
 
 - **ICSharpCode.Decompiler (ILSpy)** — Powers the C# AST reconstruction and custom decompilation transform pipeline.
 - **AsmResolver** — PE/metadata token resolution and stub assembly generation.
-- **Il2CppDumper** — Foundational structural reference for binary formats (ELF, PE, Mach-O, NSO, WebAssembly), metadata pointers, and version-specific struct layouts across metadata v24–v31+.
-- **Cpp2IL / WasmDisassembler** — Structural reference for WebAssembly disassembly, Mach-O chained fixups, IR design, calling-convention profiles, and IL2CPP metadata inspection.
 - **Iced** — High-performance x86/x64 disassembly and instruction decoding engine.
-- **AsmArm64 & Capstone** — Multi-architecture disassembly engines for ARM64 and ARMv7 targets.
+- **AsmArm64** — Pure-C# ARM64 disassembly engine (consumed via NuGet).
+- **WasmDisassembler (Cpp2IL)** — Pure-C# WebAssembly disassembler and structural reference for Mach-O chained fixups, IR design, calling-convention profiles, and IL2CPP metadata inspection.
+- **Il2CppDumper** — Foundational structural reference for binary formats (ELF, PE, Mach-O, NSO, WebAssembly), metadata pointers, and version-specific struct layouts across metadata `v16–v31+`.
 - **orbis (`orbis-pkg` / `orbis-pfs`) & ps4-pkg-extractor** — MIT/Apache-2.0 and Unlicense references for native C# PlayStation 4 `.pkg` and PFS extraction.
 - **PS5-SELF-TO-ELF** — MIT reference for stripping PlayStation FSELF wrappers back into standard ELF64 binaries.
 - **nstool & Ghidra-Switch-Loader** — MIT/ISC references for Nintendo Switch `.nsp`/NCA/NSO container parsing.
 - **uwdtool, WDU & Web Global Metadata Parser** — Reference logic for unpacking Unity WebGL `unitywebdata` containers and `global-metadata.dat`.
-- **Brotli (`brotli-master`)** — Studied for WebGL compression layout alongside .NET's built-in `System.IO.Compression.BrotliStream`.
 - **Avalonia UI (`Avalonia` / `Avalonia.Android`)** — Cross-platform XAML-based .NET UI framework powering the desktop and Android interfaces.
 
 ## Getting Started & Prerequisites
@@ -93,7 +94,7 @@ dotnet run --project src/Il2CppStudio.Gui -c Release
 
 ## Testing & Validation
 
-Il2CppStudio includes an automated unit and cross-platform integration test suite (`tests/Il2CppStudio.Tests`) guarding against regressions across Windows, Linux, Android, WebGL, PS4, Switch, and iOS/Mach-O targets.
+Il2CppStudio includes an automated 152-test unit and cross-platform integration suite (`tests/Il2CppStudio.Tests`) guarding against regressions across Windows (`x64`/`x86`/`arm64`), Linux, Android (`arm64-v8a`/`armeabi-v7a`/Split APKs), WebGL (`.wasm`/`asm.js`), PS4, Switch, iOS/Mach-O, and Unity `5.3` through `6000.6`.
 
 ```bash
 dotnet test -c Release
