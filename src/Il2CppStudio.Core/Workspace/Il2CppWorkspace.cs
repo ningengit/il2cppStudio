@@ -151,7 +151,7 @@ public sealed partial class Il2CppWorkspace : IDisposable
         (uint)Metadata.Methods[method.Index].DeclaringType < (uint)Model.Types.Count ? Model.Types[Metadata.Methods[method.Index].DeclaringType] : null;
 
     public SerializationSummary ExportArtifacts(string outDir, bool includeRawSections = true) =>
-        WorkspaceSerializer.ExportAll(Metadata, Model, ResourcesFolder, outDir, Sink, includeRawSections);
+        WorkspaceSerializer.ExportAll(Metadata, Model, ResourcesFolder, outDir, Sink, includeRawSections, Files.Archive);
 
     public void Dispose()
     {

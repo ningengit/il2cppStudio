@@ -448,6 +448,7 @@ public static class SwitchNspExtractor
 
         var fullPrefix = Path.GetFullPath(cache).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
         var extracted = 0;
+        Span<byte> peek = stackalloc byte[80];
 
         foreach (var entry in entries)
         {
@@ -459,7 +460,6 @@ public static class SwitchNspExtractor
 
             var relPath = prefix.Length == 0 ? entry.Name : $"{prefix}/{entry.Name}";
 
-            Span<byte> peek = stackalloc byte[80];
             var peekLen = (int)Math.Min(entry.Size, 80L);
             stream.Position = entry.AbsOffset;
             stream.ReadExactly(peek[..peekLen]);

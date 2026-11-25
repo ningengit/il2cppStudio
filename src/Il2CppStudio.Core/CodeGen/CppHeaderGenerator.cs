@@ -19,7 +19,7 @@ namespace Il2CppStudio.Core.CodeGen;
 /// bodies are pseudo-C++ annotated disassembly.
 /// </summary>
 public sealed class CppHeaderGenerator(
-    GlobalMetadata md, MetadataModel model, Il2CppRegistration? reg, TypeNameService names, MethodAddressMap? map,
+    Il2CppRegistration? reg, TypeNameService names, MethodAddressMap? map,
     Func<int, string?>? disassemble, BackupSourceIndex? backupSources, BuildBackupInfo? backup)
 {
     private readonly Dictionary<string, CodeGenModule> _backupModules =

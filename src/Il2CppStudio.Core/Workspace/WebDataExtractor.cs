@@ -395,7 +395,8 @@ public static partial class WebDataExtractor
                 }
             }
             else if (fileName is "data.unity3d" or "globalgamemanagers" or "mainData" or "boot.config" or "app.info" or "ScriptingAssemblies.json"
-                     || fileName.Equals("globalgamemanagers.assets", StringComparison.OrdinalIgnoreCase))
+                     || fileName.Equals("globalgamemanagers.assets", StringComparison.OrdinalIgnoreCase)
+                     || fileName.EndsWith("-resources.dat", StringComparison.OrdinalIgnoreCase))
             {
                 if (!dataFiles.ContainsKey(fileName))
                 {
@@ -461,7 +462,8 @@ public static partial class WebDataExtractor
                     metadata ??= VirtualFileBuffer.FromArray(vPath, bytes.AsSpan(start, end - start).ToArray());
                     metadataVirtual ??= vPath;
                 }
-                else if (fileName is "data.unity3d" or "globalgamemanagers" or "mainData" or "boot.config" or "app.info" or "ScriptingAssemblies.json")
+                else if (fileName is "data.unity3d" or "globalgamemanagers" or "mainData" or "boot.config" or "app.info" or "ScriptingAssemblies.json"
+                         || fileName.EndsWith("-resources.dat", StringComparison.OrdinalIgnoreCase))
                 {
                     dataFiles.TryAdd(fileName, VirtualFileBuffer.FromArray(vPath, bytes.AsSpan(start, end - start).ToArray()));
                 }

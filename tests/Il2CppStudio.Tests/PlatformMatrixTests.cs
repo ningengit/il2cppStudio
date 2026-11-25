@@ -525,7 +525,8 @@ public sealed class PlatformMatrixTests
         WorkspaceSetup.Attach(ws);
         var wasm = Assert.IsType<WasmBinaryImage>(ws.Binary);
         Assert.True(wasm.IsSplitFunctionTable);
-        Assert.True(ws.Registration.GenericMethodPointers.Count > 10_000, $"Expected >10000 generic method pointers, got {ws.Registration.GenericMethodPointers.Count}");
+        Assert.NotNull(ws.Registration);
+        Assert.True(ws.Registration!.GenericMethodPointers.Count > 10_000, $"Expected >10000 generic method pointers, got {ws.Registration.GenericMethodPointers.Count}");
         Assert.True(ws.Registration.MetadataUsages.Count > 11_000, $"Expected >11000 metadata usages, got {ws.Registration.MetadataUsages.Count}");
 
         string RenderType(string name) => ws.Render(ws.Model.Types.Single(t => t.Name == name && t.DeclaringType is null), null, CodeView.CSharp);
@@ -564,7 +565,8 @@ public sealed class PlatformMatrixTests
         using var ws = Il2CppWorkspace.Load(wasmPath, Sink());
         WorkspaceSetup.Attach(ws);
         Assert.IsType<WasmBinaryImage>(ws.Binary);
-        Assert.True(ws.Registration.GenericMethodPointers.Count > 10_000);
+        Assert.NotNull(ws.Registration);
+        Assert.True(ws.Registration!.GenericMethodPointers.Count > 10_000);
         var click = ws.Render(ws.Model.Types.Single(t => t.Name == "ClickableTest" && t.DeclaringType is null), null, CodeView.CSharp);
         Assert.Contains("\"Player\"", click);
         Assert.DoesNotContain("throw null;", click);

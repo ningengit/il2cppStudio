@@ -454,12 +454,13 @@ public sealed class UnitTests
         var asm = new AssemblyModel(0, "Assembly-CSharp", "1.0.0.0", "", "", "Assembly-CSharp.dll", [], [new NamespaceModel("Game.Core", types)], types.Count);
         var index = WorkspaceSearchIndex.Build([asm], types.Count, types.Count * 4);
 
-        var capped = index.Search("updatestate", maxResults: 500);
+        var ct = TestContext.Current.CancellationToken;
+        var capped = index.Search("updatestate", maxResults: 500, ct: ct);
         Assert.Equal(500, capped.Matches.Count);
         Assert.Equal(5000, capped.TotalMatches);
         Assert.True(capped.IsTruncated);
 
-        var exact = index.Search("itemwidget42", maxResults: 500);
+        var exact = index.Search("itemwidget42", maxResults: 500, ct: ct);
         Assert.Contains(exact.Matches, m => m.Method is null && m.Type.Name == "ItemWidget42");
 
         using var cts = new CancellationTokenSource();
@@ -469,7 +470,7 @@ public sealed class UnitTests
         var baselineAlloc = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 20; i++)
         {
-            var res = index.Search("widget", 500);
+            var res = index.Search("widget", 500, ct: ct);
             Assert.Equal(500, res.Matches.Count);
         }
         var delta = GC.GetAllocatedBytesForCurrentThread() - baselineAlloc;

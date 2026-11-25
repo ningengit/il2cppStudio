@@ -703,6 +703,7 @@ public static class Ps4PkgExtractor
 
         void WalkDir(int dirIno, string relDir)
         {
+            Span<byte> magicBuf = stackalloc byte[4];
             foreach (var item in ReadDirEntries(dirIno))
             {
                 var relPath = relDir.Length == 0 ? item.Name : $"{relDir}/{item.Name}";
@@ -721,7 +722,6 @@ public static class Ps4PkgExtractor
                             var isCompressed = (inodes[item.Inode].Flags & 0x1) != 0;
                             if (!isCompressed && innerFileReader.Length >= 4)
                             {
-                                Span<byte> magicBuf = stackalloc byte[4];
                                 innerFileReader.ReadExactly(0, magicBuf);
                                 isCompressed = BinaryPrimitives.ReadUInt32LittleEndian(magicBuf) == PfscMagic;
                             }

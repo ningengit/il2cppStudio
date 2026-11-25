@@ -36,8 +36,16 @@ public sealed class ResourceDatFile
         Path = path;
         _data = data;
         Entries = entries;
-        var file = System.IO.Path.GetFileName(path);
+        var file = FileNameOf(path);
         AssemblyName = file.EndsWith("-resources.dat", StringComparison.OrdinalIgnoreCase) ? file[..^"-resources.dat".Length] : file;
+    }
+
+    private static string FileNameOf(string path)
+    {
+        var leaf = path.Contains("::", StringComparison.Ordinal)
+            ? path[(path.LastIndexOf("::", StringComparison.Ordinal) + 2)..]
+            : path;
+        return System.IO.Path.GetFileName(leaf.Replace('\\', '/'));
     }
 
     public static ResourceDatFile? Load(string path, IDiagnosticSink sink)
@@ -49,6 +57,11 @@ public sealed class ResourceDatFile
             sink.Error(DiagnosticCategory.FileSystem, DiagnosticCodes.FileAccessFailed, $"Cannot read resource file: {ex.Message}", new() { File = path }, ex);
             return null;
         }
+        return Load(path, data, sink);
+    }
+
+    public static ResourceDatFile? Load(string path, byte[] data, IDiagnosticSink sink)
+    {
 
         var loc = new DiagnosticLocation { File = path };
         if (data.Length < 8)
@@ -104,7 +117,7 @@ public sealed class ResourceDatFile
                 $"{data.Length - dataOffset} trailing byte(s) after the last resource.", loc);
 
         sink.Info(DiagnosticCategory.Resources, DiagnosticCodes.ResourceFileParsed,
-            $"{System.IO.Path.GetFileName(path)}: {entries.Count} resource(s), {data.Length:N0} bytes.", loc);
+            $"{FileNameOf(path)}: {entries.Count} resource(s), {data.Length:N0} bytes.", loc);
         return new ResourceDatFile(path, data, entries);
     }
 

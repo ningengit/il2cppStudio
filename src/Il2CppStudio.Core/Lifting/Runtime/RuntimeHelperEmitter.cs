@@ -14,7 +14,7 @@ public enum HelperOutcome { NotHandled, Handled, Terminated }
 /// <c>isinst</c>/<c>castclass</c>; raise → <c>throw</c>. Each handled call is counted for the lift statistics.
 /// </summary>
 public sealed class RuntimeHelperEmitter(RuntimeHelperMap map, StubAssemblyBuilder stubs, ModuleDefinition module,
-    Il2CppRegistration reg, RegisterTracker regs, StructBinder binder)
+    RegisterTracker regs, StructBinder binder)
 {
     public int Handled { get; private set; }
 

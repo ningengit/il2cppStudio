@@ -35,12 +35,9 @@
     <PackageReference Include="Avalonia.Android" />
   </ItemGroup>
 
+  <!-- Syntax highlighting uses the managed Il2CppSyntaxHighlighter; preserve AvaloniaEdit for reflection-based XAML/control instantiation. -->
   <ItemGroup>
     <TrimmerRootAssembly Include="AvaloniaEdit" />
-    <TrimmerRootAssembly Include="AvaloniaEdit.TextMate" />
-    <TrimmerRootAssembly Include="TextMateSharp" />
-    <TrimmerRootAssembly Include="TextMateSharp.Grammars" />
-    <TrimmerRootAssembly Include="Onigwrap" />
   </ItemGroup>
 
   <Target Name="CopyReleaseApkToDist"

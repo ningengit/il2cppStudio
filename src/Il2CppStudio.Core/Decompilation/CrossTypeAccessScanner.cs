@@ -90,7 +90,7 @@ public static class CrossTypeAccessScanner
                 if (owner is null || !isPrivate || (callerType is not null && Encloses(owner, callerType))) continue;
                 tokens.Add(token);
                 AddNestedOwners(owner);
-                if (owner.DeclaringType is { } outer && ParseCoroutineMethod(owner.Name) is { } factoryName
+                if (owner.DeclaringType is { } outer && owner.Name?.Value is { } ownerName && ParseCoroutineMethod(ownerName) is { } factoryName
                     && outer.Methods.FirstOrDefault(m => m.Name == factoryName) is { } factoryMethod
                     && (factoryMethod.Attributes & MethodAttributes.MemberAccessMask) is not (MethodAttributes.Public or MethodAttributes.Assembly or MethodAttributes.FamilyOrAssembly))
                     tokens.Add(factoryMethod.MetadataToken.ToUInt32());

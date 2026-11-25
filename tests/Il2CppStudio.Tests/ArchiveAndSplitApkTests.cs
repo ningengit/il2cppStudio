@@ -236,4 +236,56 @@ public sealed class ArchiveAndSplitApkTests
         Assert.True(ws.Registration!.IsComplete);
         Assert.Empty(sink.Query(DiagnosticSeverity.Error));
     }
+
+    [Fact]
+    public void ZeroCopyArchive_ExportsManagedResourcesDatWithFullParity()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), $"il2cppstudio-zc-res-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tmp);
+        try
+        {
+            const string entryName = "strings.txt";
+            var resNameBytes = Encoding.UTF8.GetBytes(entryName);
+            var resPayload = Encoding.UTF8.GetBytes("greeting=hello-zero-copy\n");
+            var headerSize = 4 + 8 + resNameBytes.Length;
+            var datBytes = new byte[4 + headerSize + resPayload.Length];
+            BinaryPrimitives.WriteInt32LittleEndian(datBytes.AsSpan(0, 4), headerSize);
+            BinaryPrimitives.WriteInt32LittleEndian(datBytes.AsSpan(4, 4), 1);
+            BinaryPrimitives.WriteInt32LittleEndian(datBytes.AsSpan(8, 4), resPayload.Length);
+            BinaryPrimitives.WriteInt32LittleEndian(datBytes.AsSpan(12, 4), resNameBytes.Length);
+            resNameBytes.CopyTo(datBytes.AsSpan(16));
+            resPayload.CopyTo(datBytes.AsSpan(4 + headerSize));
+
+            var apkPath = Path.Combine(tmp, "res-test.apk");
+            using (var zip = ZipFile.Open(apkPath, ZipArchiveMode.Create))
+            {
+                var re = zip.CreateEntry("assets/bin/Data/Managed/Resources/mscorlib.dll-resources.dat", CompressionLevel.NoCompression);
+                using var s = re.Open();
+                s.Write(datBytes);
+            }
+
+            var sink = Sink();
+            using var session = ApkExtractor.OpenZeroCopy(apkPath, null, null, sink);
+            Assert.NotNull(session);
+            Assert.True(session!.TryGetDataFile("mscorlib.dll-resources.dat", out var datBuf));
+            Assert.True(datBuf.IsZeroCopy);
+
+            var outDir = Path.Combine(tmp, "exported-resources");
+            var files = new List<string>();
+            var exported = WorkspaceSerializer.ExportResources(resourcesFolder: null, outDir, sink, files, session);
+            Assert.Single(exported);
+            Assert.Equal("mscorlib.dll", exported[0].Assembly);
+            Assert.Equal(entryName, exported[0].Name);
+
+            var extractedPath = Path.Combine(outDir, "mscorlib.dll", entryName);
+            Assert.True(File.Exists(extractedPath));
+            Assert.Equal(resPayload, File.ReadAllBytes(extractedPath));
+            Assert.True(File.Exists(Path.Combine(outDir, "resources.json")));
+            Assert.Empty(sink.Query(DiagnosticSeverity.Error));
+        }
+        finally
+        {
+            if (Directory.Exists(tmp)) Directory.Delete(tmp, recursive: true);
+        }
+    }
 }

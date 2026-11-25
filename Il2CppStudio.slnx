@@ -7,7 +7,6 @@
     <Project Path="src/Il2CppStudio.Android/Il2CppStudio.Android.csproj" />
   </Folder>
   <Folder Name="/src/vendor/">
-    <Project Path="src/vendor/AsmArm64/AsmArm64.csproj" />
     <Project Path="src/vendor/WasmDisassembler/WasmDisassembler.csproj" />
   </Folder>
   <Folder Name="/tests/">

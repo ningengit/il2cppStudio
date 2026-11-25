@@ -80,7 +80,7 @@ public static class ArrayIndexAndBoundsCleaner
 
     private static CastExpression? FindOuterCast(Expression expr)
     {
-        AstNode cur = expr.Parent;
+        AstNode? cur = expr.Parent;
         while (cur is ParenthesizedExpression) cur = cur.Parent;
         return cur as CastExpression;
     }

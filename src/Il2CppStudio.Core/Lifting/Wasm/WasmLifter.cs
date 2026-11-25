@@ -80,7 +80,7 @@ public sealed class WasmLifter(NativeSymbolizer sym, StubAssemblyBuilder stubs, 
             var mem = new MemoryResolver(md, sym.Model, sym.Registration, sym.Names, stubs, stub.Module, _typeIndex, pointerSize: 4);
             var shape = MethodShape.Create(md, sym.Registration, stubs, mem, stub.Module, methodIndex, -1);
             shape.EnsureAbiSupported(mem);
-            var emit = new WasmMethodEmit(this, ctx, body, method, shape, mem, notes);
+            var emit = new WasmMethodEmit(this, ctx, body, method, shape, mem);
             emit.Run(funcType, locals, insns);
             body.Instructions.OptimizeMacros();
             method.CilMethodBody = body;

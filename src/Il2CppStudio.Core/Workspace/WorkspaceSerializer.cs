@@ -5,6 +5,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Il2CppStudio.Core.Diagnostics;
+using Il2CppStudio.Core.IO;
 using Il2CppStudio.Core.Metadata;
 using Il2CppStudio.Core.Resources;
 
@@ -38,11 +39,11 @@ public static class WorkspaceSerializer
 
     /// <summary>Exports everything: resources, string literals and metadata sections.</summary>
     public static SerializationSummary ExportAll(GlobalMetadata md, MetadataModel? model, string? resourcesFolder, string outDir,
-        IDiagnosticSink sink, bool includeRawSections = true)
+        IDiagnosticSink sink, bool includeRawSections = true, VirtualArchiveSession? archive = null)
     {
         Directory.CreateDirectory(outDir);
         var files = new List<string>();
-        var resources = ExportResources(resourcesFolder, Path.Combine(outDir, "resources"), sink, files);
+        var resources = ExportResources(resourcesFolder, Path.Combine(outDir, "resources"), sink, files, archive);
         var literals = ExportStringLiterals(md, Path.Combine(outDir, "strings"), files);
         var sections = ExportMetadataReport(md, model, Path.Combine(outDir, "metadata"), includeRawSections, files);
 
@@ -53,49 +54,72 @@ public static class WorkspaceSerializer
         return summary with { Files = files };
     }
 
-    /// <summary>Extracts every resource from every *-resources.dat in <paramref name="resourcesFolder"/>.</summary>
-    public static IReadOnlyList<ExportedResource> ExportResources(string? resourcesFolder, string outDir, IDiagnosticSink sink, List<string>? files = null)
+    /// <summary>Extracts every resource from every *-resources.dat in <paramref name="resourcesFolder"/> or a mapped <paramref name="archive"/>.</summary>
+    public static IReadOnlyList<ExportedResource> ExportResources(string? resourcesFolder, string outDir, IDiagnosticSink sink, List<string>? files = null, VirtualArchiveSession? archive = null)
     {
         files ??= [];
         var result = new List<ExportedResource>();
-        if (resourcesFolder is null || !Directory.Exists(resourcesFolder)) return result;
-
-        foreach (var datPath in Directory.EnumerateFiles(resourcesFolder, "*-resources.dat").Order(StringComparer.OrdinalIgnoreCase))
+        if (resourcesFolder is not null && Directory.Exists(resourcesFolder))
         {
-            var dat = ResourceDatFile.Load(datPath, sink);
-            if (dat is null) continue;
-            var asmDir = Path.Combine(outDir, Sanitize(dat.AssemblyName));
-            Directory.CreateDirectory(asmDir);
-
-            foreach (var entry in dat.Entries)
+            foreach (var datPath in Directory.EnumerateFiles(resourcesFolder, "*-resources.dat").Order(StringComparer.OrdinalIgnoreCase))
             {
-                try
-                {
-                    var data = dat.GetData(entry);
-                    var fileName = Sanitize(entry.Name);
-                    var target = Path.Combine(asmDir, fileName);
-                    File.WriteAllBytes(target, data);
-                    files.Add(target);
+                var dat = ResourceDatFile.Load(datPath, sink);
+                if (dat is not null) ExportResourceDat(dat, datPath, outDir, sink, files, result);
+            }
+            WriteJson(Path.Combine(outDir, "resources.json"), result, files);
+            return result;
+        }
 
-                    var decoded = 0;
-                    if (entry.Kind == ManagedResourceKind.ResourcesContainer)
-                    {
-                        var pairs = ResourceDatFile.DecodeResourcesContainer(data, $"{dat.AssemblyName}/{entry.Name}", sink);
-                        decoded = pairs.Count;
-                        WriteJson(target + ".json", pairs.ToDictionary(p => p.Key, p => p.Value), files);
-                    }
-                    result.Add(new ExportedResource(dat.AssemblyName, entry.Name, entry.Kind.ToString(), entry.Size,
-                        Convert.ToHexStringLower(SHA256.HashData(data)), Path.GetRelativePath(outDir, target), decoded));
-                }
-                catch (Exception ex)
+        if (archive is not null)
+        {
+            var datEntries = archive.DataFiles
+                .Where(kv => Path.GetFileName(kv.Key.Replace('\\', '/')).EndsWith("-resources.dat", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (datEntries.Count == 0) return result;
+
+            foreach (var (_, buf) in datEntries)
+            {
+                var dat = ResourceDatFile.Load(buf.VirtualPath, buf.ToByteArray(), sink);
+                if (dat is not null) ExportResourceDat(dat, buf.VirtualPath, outDir, sink, files, result);
+            }
+            WriteJson(Path.Combine(outDir, "resources.json"), result, files);
+        }
+
+        return result;
+    }
+
+    private static void ExportResourceDat(ResourceDatFile dat, string sourcePath, string outDir, IDiagnosticSink sink, List<string> files, List<ExportedResource> result)
+    {
+        var asmDir = Path.Combine(outDir, Sanitize(dat.AssemblyName));
+        Directory.CreateDirectory(asmDir);
+
+        foreach (var entry in dat.Entries)
+        {
+            try
+            {
+                var data = dat.GetData(entry);
+                var fileName = Sanitize(entry.Name);
+                var target = Path.Combine(asmDir, fileName);
+                File.WriteAllBytes(target, data);
+                files.Add(target);
+
+                var decoded = 0;
+                if (entry.Kind == ManagedResourceKind.ResourcesContainer)
                 {
-                    sink.Warn(DiagnosticCategory.Extraction, DiagnosticCodes.ExtractionEntryFailed,
-                        $"Resource '{entry.Name}' of {dat.AssemblyName} could not be exported: {ex.Message}", new() { File = datPath }, ex);
+                    var pairs = ResourceDatFile.DecodeResourcesContainer(data, $"{dat.AssemblyName}/{entry.Name}", sink);
+                    decoded = pairs.Count;
+                    WriteJson(target + ".json", pairs.ToDictionary(p => p.Key, p => p.Value), files);
                 }
+                result.Add(new ExportedResource(dat.AssemblyName, entry.Name, entry.Kind.ToString(), entry.Size,
+                    Convert.ToHexStringLower(SHA256.HashData(data)), Path.GetRelativePath(outDir, target), decoded));
+            }
+            catch (Exception ex)
+            {
+                sink.Warn(DiagnosticCategory.Extraction, DiagnosticCodes.ExtractionEntryFailed,
+                    $"Resource '{entry.Name}' of {dat.AssemblyName} could not be exported: {ex.Message}", new() { File = sourcePath }, ex);
             }
         }
-        WriteJson(Path.Combine(outDir, "resources.json"), result, files);
-        return result;
     }
 
     /// <summary>Writes strings.json and strings.bin. Returns the number of literals.</summary>

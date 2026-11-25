@@ -47,7 +47,7 @@ public sealed partial class Il2CppWorkspace
         Registration is not null && Registration.TryGetType(t.Fields[ordinal].TypeIndex, out var ft) && (ft.Attrs & 0x10) != 0;
 
     public CppHeaderGenerator Cpp => _cpp ??= new CppHeaderGenerator(
-        Metadata, Model, Registration, Names, AddressMap,
+        Registration, Names, AddressMap,
         Disassembler is null && TextDisassembler is null ? null : idx => DisassembleMethod(Model.Types[Metadata.Methods[idx].DeclaringType].Methods.First(m => m.Index == idx)),
         BackupSources, IsEnhanced ? Backup : null);
 

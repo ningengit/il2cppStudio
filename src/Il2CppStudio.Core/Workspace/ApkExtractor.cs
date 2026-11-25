@@ -430,6 +430,10 @@ public static class ApkExtractor
             norm.EndsWith("/libil2cpp.so", StringComparison.OrdinalIgnoreCase))
             return true;
 
+        if (norm.StartsWith("assets/bin/Data/Managed/Resources/", StringComparison.OrdinalIgnoreCase) &&
+            norm.EndsWith("-resources.dat", StringComparison.OrdinalIgnoreCase))
+            return true;
+
         var fileName = Path.GetFileName(norm);
         if (!WantedExactNames.Contains(fileName, StringComparer.OrdinalIgnoreCase))
             return false;

@@ -17,7 +17,7 @@ namespace Il2CppStudio.Core.Lifting.Wasm;
 /// </summary>
 internal sealed partial class WasmMethodEmit(
     WasmLifter owner, EmitContext ctx, CilMethodBody body, MethodDefinition method, MethodShape shape,
-    MemoryResolver mem, List<string> notes)
+    MemoryResolver mem)
 {
     private const byte TI32 = 0x7F, TI64 = 0x7E, TF32 = 0x7D, TF64 = 0x7C, TVoid = 0x40;
 

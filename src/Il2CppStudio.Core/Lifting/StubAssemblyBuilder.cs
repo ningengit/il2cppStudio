@@ -752,7 +752,7 @@ public sealed class StubAssemblyBuilder
             IFieldDescriptor result = def.DeclaringModule == ctx
                 ? def
                 : new MemberReference((IMemberRefParent)TypeRefFor(ctx, declaringTypeDef)!, def.Name,
-                    def.IsStatic ? FieldSignature.CreateStatic(ToSig(ctx, _md.Fields[fieldIndex].TypeIndex)) : FieldSignature.CreateInstance(ToSig(ctx, _md.Fields[fieldIndex].TypeIndex)));
+                    new FieldSignature(ToSig(ctx, _md.Fields[fieldIndex].TypeIndex)));
             _fieldRefCache[(ctx, fieldIndex)] = result;
             return result;
         }
