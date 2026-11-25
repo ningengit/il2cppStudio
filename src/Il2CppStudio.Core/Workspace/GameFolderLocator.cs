@@ -16,7 +16,7 @@ public sealed record GameFiles(
 
 /// <summary>
 /// Locates the IL2CPP binary, global-metadata.dat and (optionally) the build backup folder from a game
-/// root, a *_Data folder, an APK/XAPK archive, or a direct file path.
+/// root, a *_Data folder, an APK/XAPK/APKS/APKM archive, an extracted split-APK folder, or a direct file path.
 /// </summary>
 public static class GameFolderLocator
 {
@@ -170,6 +170,27 @@ public static class GameFolderLocator
                 sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.MultipleCandidates,
                     $"{metadataCandidates.Count} global-metadata.dat files found; using '{metadataCandidates[0]}'.", new() { File = path });
             metadata = metadataCandidates.FirstOrDefault();
+        }
+
+        if (binary is null && metadata is null && webArchive is null
+            && ApkExtractor.TryFindSplitApkBundle(path, out var splitBaseApk, out var splitConfigApks))
+        {
+            var archive = ApkExtractor.OpenZeroCopy(splitBaseApk, splitConfigApks, options?.NativeLibraryDir, sink);
+            if (archive?.Metadata is not null)
+            {
+                if (archive.Binary is null && archive.BinaryFilePathOnDisk is null)
+                    sink.Warn(DiagnosticCategory.Workspace, DiagnosticCodes.BinaryNotFound,
+                        "No libil2cpp.so found inside split-APK bundle.", new() { File = path });
+                return new GameFiles(
+                    path,
+                    archive.BinaryFilePathOnDisk ?? archive.BinaryVirtualPath,
+                    archive.MetadataVirtualPath,
+                    DataFolder: null,
+                    BackupFolder: null,
+                    LegacyAsmJsPath: null,
+                    Archive: archive);
+            }
+            archive?.Dispose();
         }
 
         var dataFolder = FindDataFolder(path, searchRoot, metadata);

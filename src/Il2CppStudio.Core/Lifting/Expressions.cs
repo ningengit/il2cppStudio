@@ -305,6 +305,7 @@ public sealed class StaticFieldExpr(IFieldDescriptor fieldRef, TypeSignature typ
 
 public sealed class StringExpr(string value, TypeSignature stringType) : Expr
 {
+    public string Value => value;
     public override TypeSignature Type => stringType;
     public override ValueKind Kind => ValueKind.Ref;
     public override void Emit(EmitContext ctx) => ctx.IL.Add(CilOpCodes.Ldstr, value);

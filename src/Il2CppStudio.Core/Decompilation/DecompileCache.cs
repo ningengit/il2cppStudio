@@ -46,6 +46,10 @@ internal static class DecompileCache
         hdr[7] = 0;
         hasher.AppendData(hdr);
 
+        Span<byte> mvid = stackalloc byte[16];
+        typeof(DecompileCache).Assembly.ManifestModule.ModuleVersionId.TryWriteBytes(mvid);
+        hasher.AppendData(mvid);
+
         AppendLengthPrefixedUtf8(hasher, fingerprint);
         AppendLengthPrefixedUtf8(hasher, imageName);
         AppendLengthPrefixedUtf8(hasher, bclRefDir ?? "");

@@ -30,6 +30,8 @@ public enum RuntimeHelperKind
     InterfaceLookup,
     /// <summary>Compiler/runtime scope guard cleanup helper (e.g. finally-block IDisposable guard) — implicit in foreach.</summary>
     ScopeCleanup,
+    /// <summary>Bounds-checked array element address helper (arr, index) → <c>ref arr[index]</c>.</summary>
+    ArrayElementAddress,
 }
 
 /// <summary>Classification of one helper address with the evidence used (logged for verification).</summary>

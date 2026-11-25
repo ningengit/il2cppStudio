@@ -279,7 +279,7 @@ public sealed partial class MainView : UserControl, IUiServices
                 {
                     Patterns =
                     [
-                        "*.apk", "*.xapk", "*.ipa", "*.pkg", "*.prx", "*.nsp", "*.dylib",
+                        "*.apk", "*.xapk", "*.apks", "*.apkm", "*.ipa", "*.pkg", "*.prx", "*.nsp", "*.dylib",
                         "GameAssembly.dll", "GameAssembly.so", "libil2cpp.so", "Il2CppUserAssemblies.prx", "UnityFramework",
                         "*.wasm", "*.wasm.br", "*.wasm.gz", "*.wasm.unityweb", "*.wasm.code", "*.wasm.code.br", "*.wasm.code.gz", "*.wasm.code.unityweb",
                         "*.data", "*.data.br", "*.data.gz", "*.data.unityweb", "*.datagz", "*.jsgz", "main", "global-metadata.dat"

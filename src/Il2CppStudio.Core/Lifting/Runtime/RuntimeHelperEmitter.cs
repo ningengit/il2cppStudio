@@ -32,6 +32,13 @@ public sealed class RuntimeHelperEmitter(RuntimeHelperMap map, StubAssemblyBuild
                 // Some init helpers return the initialized metadata (lea rcx,[usage]; call; mov rcx,rax): RAX = that value.
                 if (kind == RuntimeHelperKind.MetadataInit && rcx is MarkerExpr or StringExpr) regs.Set(Register.RAX, rcx);
                 return HelperOutcome.Handled;
+            case RuntimeHelperKind.ArrayElementAddress when rcx.Type is SzArrayTypeSignature elemArr && rdx.Kind is ValueKind.I4 or ValueKind.I8:
+            {
+                var elemExpr = new ArrayElementExpr(rcx, rdx, elemArr.BaseType);
+                regs.ClobberVolatiles(CallEmitter.Volatile);
+                regs.Set(Register.RAX, Expr.KindOf(elemArr.BaseType) == ValueKind.Struct ? new AddressExpr(elemExpr) : elemExpr);
+                return HelperOutcome.Handled;
+            }
             case RuntimeHelperKind.ObjectNew when TypeOf(rcx) is { } t:
                 regs.ClobberVolatiles(CallEmitter.Volatile);
                 regs.Set(Register.RAX, new NewObjExpr(t, TypeDefOf(rcx), regs));

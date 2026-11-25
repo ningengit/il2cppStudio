@@ -47,7 +47,9 @@ public sealed class CallDispatcher(NativeSymbolizer sym, CallEmitter emitter, Re
                 var disp = ArgumentLocations.PointerSize == 4 && ins.MemoryDisplacement64 > int.MaxValue
                     ? unchecked((int)ins.MemoryDisplacement32)
                     : (long)ins.MemoryDisplacement64;
-                var vtOff = sym.Registration.Ptr == 8 ? MemoryResolver.VTableOffset64 : 0xB8;
+                var vtOff = sym.Registration.Ptr == 8
+                    ? (sym.Metadata.Version.Major >= 108 ? MemoryResolver.VTableOffset64V108 : MemoryResolver.VTableOffset64)
+                    : 0xB8;
                 var vtSize = sym.Registration.Ptr * 2;
                 if (disp >= vtOff && (disp - vtOff) % vtSize == 0)
                 {
@@ -92,6 +94,14 @@ public sealed class CallDispatcher(NativeSymbolizer sym, CallEmitter emitter, Re
         {
             Elided++;
             regs.ClobberVolatiles(CallEmitter.Volatile);
+            return false;
+        }
+        if (ArgumentLocations.TryReadHelperArg(regs, 1, out var a1) && a1 is MarkerExpr { Marker: MarkerKind.ElementClass })
+        {
+            Elided++;
+            var a0Keep = regs.Get(ArgumentLocations.IntArg(0));
+            regs.ClobberVolatiles(CallEmitter.Volatile);
+            regs.Set(Register.RAX, a0Keep);
             return false;
         }
         var name = helperMap?.ExportNames.GetValueOrDefault(target) ?? $"sub_{target - sym.Registration.Reader.ImageBase:X}";

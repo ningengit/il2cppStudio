@@ -99,4 +99,43 @@ public sealed class Unity6000Tests
         Assert.Contains("CurrentMode", gcCode, StringComparison.Ordinal);
         Assert.Contains("endless", gcCode, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Unity6000_6_NoBackup_ResolvesV108VTableAndArm64Helpers()
+    {
+        var win64Dir = Target("template il2cpp 6000.6 win64");
+        var root = TemplateBuildFixture.RepositoryRoot!;
+        var apkPath = Path.Combine(root, "testdata", "template il2cpp 6000.6 android", "android baldi build.apk");
+        if (!File.Exists(apkPath))
+            Assert.Skip($"Test APK not found at '{apkPath}'.");
+        var winArm64Dir = Target("template il2cpp 6000.6 win arm64");
+
+        foreach (var path in new[] { win64Dir, apkPath })
+        {
+            var sink = Sink();
+            using var ws = Il2CppWorkspace.Load(path, sink, new WorkspaceOptions { UseBuildBackup = false, SubstituteBcl = true });
+            WorkspaceSetup.Attach(ws);
+
+            var mathType = Assert.Single(ws.FindTypes("MathGameScript"));
+            var mathCode = ws.Render(mathType, null, CodeView.CSharp);
+            Assert.Contains("questionText.text = text;", mathCode, StringComparison.Ordinal);
+            Assert.Contains("questionText2.text = string.Empty;", mathCode, StringComparison.Ordinal);
+            Assert.DoesNotContain("indirect@", mathCode, StringComparison.Ordinal);
+            Assert.DoesNotContain("arm64_indirect@", mathCode, StringComparison.Ordinal);
+            Assert.DoesNotContain("sub_137860", mathCode, StringComparison.Ordinal);
+            Assert.DoesNotContain("sub_E88A58", mathCode, StringComparison.Ordinal);
+
+            var agentType = Assert.Single(ws.FindTypes("AgentTest"));
+            var startMethod = agentType.Methods.First(m => m.Name == "Start");
+            var startCode = ws.Render(agentType, startMethod, CodeView.CSharp);
+            Assert.Contains("agent = GetComponent<NavMeshAgent>();", startCode, StringComparison.Ordinal);
+            Assert.DoesNotContain("CallNative", startCode, StringComparison.Ordinal);
+        }
+
+        var arm64Sink = Sink();
+        using var arm64Ws = Il2CppWorkspace.Load(winArm64Dir, arm64Sink, new WorkspaceOptions { UseBuildBackup = false, SubstituteBcl = true });
+        WorkspaceSetup.Attach(arm64Ws);
+        var arm64Math = arm64Ws.Render(Assert.Single(arm64Ws.FindTypes("MathGameScript")), null, CodeView.CSharp);
+        Assert.DoesNotContain("sub_3120", arm64Math, StringComparison.Ordinal);
+    }
 }

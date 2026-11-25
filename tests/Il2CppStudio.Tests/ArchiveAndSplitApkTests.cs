@@ -288,4 +288,108 @@ public sealed class ArchiveAndSplitApkTests
             if (Directory.Exists(tmp)) Directory.Delete(tmp, recursive: true);
         }
     }
+
+    [Theory]
+    [InlineData(".apks")]
+    [InlineData(".apkm")]
+    public void SplitContainerArchive_ZeroCopyLocatesMetadataAndSplitNativeSo(string extension)
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), $"il2cppstudio-split-{extension.TrimStart('.')}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tmp);
+        try
+        {
+            var metaPayload = BuildSyntheticV29Metadata();
+            var soPayload = new byte[64];
+            soPayload[0] = 0x7F; soPayload[1] = (byte)'E'; soPayload[2] = (byte)'L'; soPayload[3] = (byte)'F';
+            soPayload[4] = 2; soPayload[5] = 1; soPayload[18] = 0xB7;
+
+            var baseApk = Path.Combine(tmp, "base.apk");
+            using (var zip = System.IO.Compression.ZipFile.Open(baseApk, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                var e = zip.CreateEntry("assets/bin/Data/Managed/Metadata/global-metadata.dat", System.IO.Compression.CompressionLevel.NoCompression);
+                using var s = e.Open();
+                s.Write(metaPayload);
+            }
+
+            var splitApk = Path.Combine(tmp, "split_config.arm64_v8a.apk");
+            using (var zip = System.IO.Compression.ZipFile.Open(splitApk, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                var e = zip.CreateEntry("lib/arm64-v8a/libil2cpp.so", System.IO.Compression.CompressionLevel.NoCompression);
+                using var s = e.Open();
+                s.Write(soPayload);
+            }
+
+            var bundlePath = Path.Combine(tmp, $"game{extension}");
+            using (var zip = System.IO.Compression.ZipFile.Open(bundlePath, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                zip.CreateEntryFromFile(baseApk, "base.apk", System.IO.Compression.CompressionLevel.NoCompression);
+                zip.CreateEntryFromFile(splitApk, "split_config.arm64_v8a.apk", System.IO.Compression.CompressionLevel.NoCompression);
+            }
+
+            var sink = Sink();
+            var files = GameFolderLocator.Locate(bundlePath, sink);
+            using var archive = files.Archive;
+
+            Assert.NotNull(files.MetadataPath);
+            Assert.NotNull(archive);
+            Assert.NotNull(archive!.Metadata);
+            Assert.NotNull(archive.Binary);
+            Assert.Equal(metaPayload, archive.Metadata!.ToByteArray());
+            Assert.Equal(soPayload, archive.Binary!.ToByteArray());
+            Assert.Empty(sink.Query(DiagnosticSeverity.Error));
+        }
+        finally
+        {
+            if (Directory.Exists(tmp)) Directory.Delete(tmp, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ExtractedSplitApkFolder_LocatesBaseMetadataAndSplitNativeSo()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), $"il2cppstudio-splitdir-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tmp);
+        try
+        {
+            var metaPayload = BuildSyntheticV29Metadata();
+            var soPayload = new byte[64];
+            soPayload[0] = 0x7F; soPayload[1] = (byte)'E'; soPayload[2] = (byte)'L'; soPayload[3] = (byte)'F';
+            soPayload[4] = 2; soPayload[5] = 1; soPayload[18] = 0xB7;
+
+            var baseApk = Path.Combine(tmp, "base.apk");
+            using (var zip = System.IO.Compression.ZipFile.Open(baseApk, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                var e = zip.CreateEntry("assets/bin/Data/Managed/Metadata/global-metadata.dat", System.IO.Compression.CompressionLevel.NoCompression);
+                using var s = e.Open();
+                s.Write(metaPayload);
+            }
+
+            var splitApk = Path.Combine(tmp, "split_config.arm64_v8a.apk");
+            using (var zip = System.IO.Compression.ZipFile.Open(splitApk, System.IO.Compression.ZipArchiveMode.Create))
+            {
+                var e = zip.CreateEntry("lib/arm64-v8a/libil2cpp.so", System.IO.Compression.CompressionLevel.NoCompression);
+                using var s = e.Open();
+                s.Write(soPayload);
+            }
+
+            var sink = Sink();
+            var files = GameFolderLocator.Locate(tmp, sink);
+            using var archive = files.Archive;
+
+            Assert.NotNull(files.MetadataPath);
+            Assert.NotNull(files.BinaryPath);
+            Assert.Contains("base.apk", files.MetadataPath, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("split_config.arm64_v8a.apk", files.BinaryPath, StringComparison.OrdinalIgnoreCase);
+            Assert.NotNull(archive);
+            Assert.NotNull(archive!.Metadata);
+            Assert.NotNull(archive.Binary);
+            Assert.Equal(metaPayload, archive.Metadata!.ToByteArray());
+            Assert.Equal(soPayload, archive.Binary!.ToByteArray());
+            Assert.Empty(sink.Query(DiagnosticSeverity.Error));
+        }
+        finally
+        {
+            if (Directory.Exists(tmp)) Directory.Delete(tmp, recursive: true);
+        }
+    }
 }

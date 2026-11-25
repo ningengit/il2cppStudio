@@ -104,7 +104,7 @@ public static class LifterWorkspaceExtensions
         {
             Binary.WasmBinaryImage wasm => new Wasm.WasmLifter(ws.Symbolizer, ws.Stubs, wasm, ws.Sink),
             Binary.AsmJsBinaryImage asmJs => new AsmJs.AsmJsLifter(ws.Symbolizer, ws.Stubs, asmJs, ws.Sink),
-            _ when ws.Binary?.Architecture == Binary.CpuArchitecture.Arm64 => new Arm64.Arm64Lifter(ws.Symbolizer, ws.Stubs, ws.Sink, ws.RuntimeHelpers),
+            _ when ws.Binary?.Architecture == Binary.CpuArchitecture.Arm64 => new Arm64.Arm64Lifter(ws.Symbolizer, ws.Stubs, ws.Sink, ws.RuntimeHelpers, BuildSymbolNames(ws)),
             _ when ws.Binary?.Architecture == Binary.CpuArchitecture.Arm && ws.TextDisassembler is Disassembly.Arm32Disassembler arm32
                 => new Arm32.Arm32Lifter(ws.Symbolizer, ws.Stubs, arm32, ws.Sink, ws.RuntimeHelpers),
             _ when ws.Disassembler is not null => new LifterDriver(ws.Symbolizer, ws.Stubs, ws.Disassembler, ws.Sink, ws.RuntimeHelpers, ws.Abi),
@@ -130,6 +130,18 @@ public static class LifterWorkspaceExtensions
         if (ws.BodyProvider is not LiftingBodyProvider p) return null;
         p.EnsureLifted([methodIndex]);
         return p.Results.GetValueOrDefault(methodIndex);
+    }
+
+    private static IReadOnlyDictionary<ulong, string>? BuildSymbolNames(Il2CppWorkspace ws)
+    {
+        if (ws.Binary is null) return null;
+        var dict = new Dictionary<ulong, string>();
+        foreach (var (name, rva) in ws.Binary.GetSymbols())
+            dict.TryAdd(ws.Binary.ImageBase + rva, name);
+        if (ws.RuntimeHelpers is { } h)
+            foreach (var kv in h.ExportNames)
+                dict.TryAdd(kv.Key, kv.Value);
+        return dict.Count > 0 ? dict : null;
     }
 }
 

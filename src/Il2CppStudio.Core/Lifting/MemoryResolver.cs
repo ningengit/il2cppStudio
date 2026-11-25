@@ -61,7 +61,9 @@ public readonly record struct ResolvedField(int FieldIndex, int DeclaringTypeDef
 public sealed class MemoryResolver
 {
     public const int StaticFieldsOffset64 = 0xB8;
+    public const int StaticFieldsOffset64V108 = 0x98;
     public const int VTableOffset64 = 0x138;
+    public const int VTableOffset64V108 = 0x130;
 
     /// <summary>Il2CppClass::element_class (after image, gc_desc, name, namespaze, byval_arg, this_arg) on 64-bit v24+.</summary>
     public const int ElementClassOffset64 = 0x40;
@@ -74,10 +76,13 @@ public sealed class MemoryResolver
     /// <summary>Pointer width of the image being lifted (8 for x64/ARM64, 4 for wasm32/ARMv7/x86).</summary>
     public int PointerSize => _ptr;
 
-    // Il2CppClass/Il2CppObject/Il2CppArray/Il2CppString layouts differ with pointer width. The 32-bit offsets are the
-    // same field sequence with four-byte pointers (Il2CppType is 8 bytes, the class vtable starts at 0xB8).
-    public int StaticFieldsOffset => _ptr == 8 ? StaticFieldsOffset64 : 0x5C;
-    public int VTableOffset => _ptr == 8 ? VTableOffset64 : 0xB8;
+    // Il2CppClass/Il2CppObject/Il2CppArray/Il2CppString layouts differ with pointer width (and v108 reordered Il2CppClass).
+    public int StaticFieldsOffset => _ptr == 8
+        ? (_md.Version.Major >= 108 ? StaticFieldsOffset64V108 : StaticFieldsOffset64)
+        : (_md.Version.Major >= 108 ? 0x4C : 0x5C);
+    public int VTableOffset => _ptr == 8
+        ? (_md.Version.Major >= 108 ? VTableOffset64V108 : VTableOffset64)
+        : 0xB8;
     public int VTableEntrySize => _ptr * 2;
     public int ElementClassOffset => _ptr == 8 ? ElementClassOffset64 : 0x20;
     public int ArrayLengthOffset => _ptr == 8 ? ArrayLengthOffset64 : 0x0C;
@@ -240,6 +245,11 @@ public sealed class MemoryResolver
     /// <summary>Address of an instance field at <c>baseExpr + disp</c> when <paramref name="baseExpr"/> is an object reference.</summary>
     public AddressExpr? ResolveFieldAddress(Expr baseExpr, long disp)
     {
+        if (TryRebaseFieldAddress(baseExpr, disp, out var rb, out var rd))
+        {
+            baseExpr = rb;
+            disp = rd;
+        }
         if (baseExpr.Kind != ValueKind.Ref || baseExpr.Type is null) return null;
         var td = TypeDefOf(baseExpr.Type);
         if (td < 0) return null;
@@ -255,6 +265,43 @@ public sealed class MemoryResolver
         return null;
     }
 
+    private bool TryRebaseFieldAddress(Expr baseExpr, long disp, out Expr rebasedBase, out long rebasedDisp)
+    {
+        if (disp != 0 && baseExpr is AddressExpr { Target: FieldExpr fe } && fe.Instance.Type is not null)
+        {
+            var td = TypeDefOf(fe.Instance.Type);
+            if (td >= 0)
+            {
+                foreach (var f in FieldsOf(td))
+                {
+                    if (!f.IsStatic && FieldRef(f) is { } fr && string.Equals(fr.Name, fe.Field.Name, StringComparison.Ordinal)
+                        && SignatureComparer.Default.Equals(fr.DeclaringType, fe.Field.DeclaringType))
+                    {
+                        var feSize = fe.Type is not null ? ValueSize(fe.Type) : ValueSize(FieldType(f, fe.Instance.Type));
+                        if (disp > 0 && (feSize <= 0 || disp < feSize))
+                        {
+                            rebasedBase = baseExpr;
+                            rebasedDisp = disp;
+                            return false;
+                        }
+                        rebasedBase = Expr.KindOf(fe.Instance.Type) == ValueKind.Ref ? fe.Instance : new AddressExpr(fe.Instance);
+                        rebasedDisp = f.Offset + disp;
+                        return true;
+                    }
+                }
+            }
+        }
+        if (baseExpr is BinaryExpr { Op.Code: CilCode.Add, Left: var inner, Right: ConstExpr c } && inner.Kind == ValueKind.Ref)
+        {
+            rebasedBase = inner;
+            rebasedDisp = disp + c.Value;
+            return true;
+        }
+        rebasedBase = baseExpr;
+        rebasedDisp = disp;
+        return false;
+    }
+
     // ------------------------------------------------------------------ loads
 
     /// <summary>
@@ -262,6 +309,9 @@ public sealed class MemoryResolver
     /// </summary>
     public Expr? Load(Expr baseExpr, Expr? index, int scale, long disp, int size)
     {
+        if (index is null && disp != 0 && TryRebaseFieldAddress(baseExpr, disp, out var rb, out var rd)
+            && (!ReferenceEquals(rb, baseExpr) || rd != disp))
+            return Load(rb, null, scale, rd, size);
         // Address of a struct lvalue → its field (or a chunk for wide copies).
         if (baseExpr is AddressExpr addr && index is null && disp == 0 && addr.Target.Type is { } att)
         {
@@ -428,6 +478,9 @@ public sealed class MemoryResolver
     /// </summary>
     public bool Store(EmitContext ctx, Expr baseExpr, Expr? index, int scale, long disp, int size, Expr value)
     {
+        if (index is null && disp != 0 && TryRebaseFieldAddress(baseExpr, disp, out var rb, out var rd)
+            && (!ReferenceEquals(rb, baseExpr) || rd != disp))
+            return Store(ctx, rb, null, scale, rd, size, value);
         var il = ctx.IL;
         if (value is StructChunkExpr chunk && baseExpr is AddressExpr dst && TypeDefOf(dst.Target.Type) is var dtd and >= 0)
             return CopyChunk(ctx, chunk, dst.Target, dtd, (int)disp, size);

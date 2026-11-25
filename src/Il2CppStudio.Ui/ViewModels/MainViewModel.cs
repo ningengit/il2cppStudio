@@ -112,7 +112,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private async Task LoadFile()
     {
         if (Ui is null) return;
-        var file = await Ui.PickFileAsync("Select an APK, XAPK, iOS IPA/Mach-O, PS4 PKG/PRX, Switch NSP/main, IL2CPP binary, WebGL wasm, or global-metadata.dat");
+        var file = await Ui.PickFileAsync("Select an APK, XAPK, APKS, APKM, iOS IPA/Mach-O, PS4 PKG/PRX, Switch NSP/main, IL2CPP binary, WebGL wasm, or global-metadata.dat");
         if (file is null) return;
         await LoadPathAsync(file);
     }

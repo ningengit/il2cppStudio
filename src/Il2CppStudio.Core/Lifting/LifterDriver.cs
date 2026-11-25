@@ -155,7 +155,8 @@ public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs
                     or Runtime.RuntimeHelperKind.ScopeCleanup:
                     return [ArgumentLocations.IntArg(0)];
                 case Runtime.RuntimeHelperKind.WriteBarrier or Runtime.RuntimeHelperKind.ArrayNew
-                    or Runtime.RuntimeHelperKind.Box or Runtime.RuntimeHelperKind.Cast:
+                    or Runtime.RuntimeHelperKind.Box or Runtime.RuntimeHelperKind.Cast
+                    or Runtime.RuntimeHelperKind.ArrayElementAddress:
                     return [ArgumentLocations.IntArg(0), ArgumentLocations.IntArg(1)];
                 case Runtime.RuntimeHelperKind.Unbox or Runtime.RuntimeHelperKind.InterfaceLookup:
                     return [ArgumentLocations.IntArg(0), ArgumentLocations.IntArg(1), ArgumentLocations.IntArg(2)];

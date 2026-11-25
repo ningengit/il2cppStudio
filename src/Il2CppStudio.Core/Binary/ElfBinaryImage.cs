@@ -41,6 +41,10 @@ public sealed class ElfBinaryImage : IBinaryImage
         var reloc = new ElfRelocator(this, _data);
         AppliedRelocations = reloc.Apply(sink);
         _symbols.AddRange(reloc.DynamicFunctionSymbols());
+        var seenRvas = new HashSet<ulong>(_symbols.Select(s => s.Rva));
+        foreach (var sym in reloc.PltImportSymbols())
+            if (seenRvas.Add(sym.Rva))
+                _symbols.Add(sym);
     }
 
     public static ElfBinaryImage Load(string path, IDiagnosticSink sink) =>

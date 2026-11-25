@@ -29,7 +29,83 @@ public static class ApkExtractor
     {
         var ext = Path.GetExtension(path);
         return ext.Equals(".apk", StringComparison.OrdinalIgnoreCase)
-            || ext.Equals(".xapk", StringComparison.OrdinalIgnoreCase);
+            || ext.Equals(".xapk", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".apks", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".apkm", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSplitContainerPath(string path)
+    {
+        var ext = Path.GetExtension(path);
+        return ext.Equals(".xapk", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".apks", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".apkm", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Detects an extracted Android split-APK bundle directory (<c>base.apk</c> + <c>split_config.*.apk</c> or
+    /// <c>splits/base-*.apk</c>). Requires at least 2 APKs and a split-bundle naming indicator so folders of
+    /// unrelated standalone APKs are not merged.
+    /// </summary>
+    public static bool TryFindSplitApkBundle(string dir, out string baseApk, out string[] splitApks)
+    {
+        baseApk = string.Empty;
+        splitApks = [];
+        if (!Directory.Exists(dir)) return false;
+
+        var apks = Directory.GetFiles(dir, "*.apk", SearchOption.TopDirectoryOnly);
+        if (apks.Length < 2)
+        {
+            var splitsSubdir = Path.Combine(dir, "splits");
+            if (Directory.Exists(splitsSubdir))
+                apks = Directory.GetFiles(splitsSubdir, "*.apk", SearchOption.TopDirectoryOnly);
+        }
+        if (apks.Length < 2) return false;
+
+        static bool IsBaseLike(string fileName) =>
+            fileName.Equals("base.apk", StringComparison.OrdinalIgnoreCase)
+            || fileName.StartsWith("base-", StringComparison.OrdinalIgnoreCase)
+            || fileName.StartsWith("base.", StringComparison.OrdinalIgnoreCase);
+
+        static bool IsSplitLike(string fileName) =>
+            fileName.StartsWith("split_", StringComparison.OrdinalIgnoreCase)
+            || fileName.StartsWith("split.", StringComparison.OrdinalIgnoreCase)
+            || fileName.StartsWith("config.", StringComparison.OrdinalIgnoreCase);
+
+        static bool IsAbiOrDensitySplit(string fileName) =>
+            IsSplitLike(fileName)
+            || fileName.Contains("arm64", StringComparison.OrdinalIgnoreCase)
+            || fileName.Contains("armeabi", StringComparison.OrdinalIgnoreCase)
+            || fileName.Contains("x86", StringComparison.OrdinalIgnoreCase)
+            || fileName.Contains("dpi", StringComparison.OrdinalIgnoreCase);
+
+        var hasIndicator = apks.Any(p =>
+        {
+            var fn = Path.GetFileName(p);
+            return IsBaseLike(fn) || IsSplitLike(fn);
+        });
+        if (!hasIndicator) return false;
+
+        var ordered = apks
+            .OrderByDescending(p => Path.GetFileName(p).Equals("base.apk", StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(p =>
+            {
+                var fn = Path.GetFileName(p);
+                return fn.Equals("base-master.apk", StringComparison.OrdinalIgnoreCase)
+                    || fn.Equals("base.master.apk", StringComparison.OrdinalIgnoreCase);
+            })
+            .ThenByDescending(p =>
+            {
+                var fn = Path.GetFileName(p);
+                return IsBaseLike(fn) && !IsAbiOrDensitySplit(fn);
+            })
+            .ThenByDescending(p => new FileInfo(p).Length)
+            .ThenBy(p => Path.GetFileName(p), StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        baseApk = ordered[0];
+        splitApks = [.. ordered.Skip(1).OrderBy(p => Path.GetFileName(p), StringComparer.OrdinalIgnoreCase)];
+        return true;
     }
 
     public static string? Extract(string apkPath, IDiagnosticSink sink) =>
@@ -99,7 +175,7 @@ public static class ApkExtractor
             {
                 count += ExtractFromArchive(outer, cache, fullCachePrefix, ref hasBinary);
 
-                if (Path.GetExtension(baseApkPath).Equals(".xapk", StringComparison.OrdinalIgnoreCase))
+                if (IsSplitContainerPath(baseApkPath))
                 {
                     foreach (var entry in outer.Entries)
                     {
@@ -334,7 +410,7 @@ public static class ApkExtractor
             owners.Add(outer);
             CollectFromReader(outer, baseApkPath);
 
-            if (Path.GetExtension(baseApkPath).Equals(".xapk", StringComparison.OrdinalIgnoreCase))
+            if (IsSplitContainerPath(baseApkPath))
             {
                 foreach (var entry in outer.Entries)
                 {

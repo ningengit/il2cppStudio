@@ -145,6 +145,7 @@ public static class CompileFixups
         FixRemainingCompilePatterns(tree, in flags);
         FixLeakedTypeParameters(tree);
         PurgeDiscardsAndDeadStatements(tree);
+        EmptyIfRemover.Apply(tree);
         CompileHygiene.RefreshUnsafe(tree);
     }
 
@@ -656,10 +657,82 @@ public static class CompileFixups
         {
             var bin = bins[i];
             if (bin.Parent is null or BinaryOperatorExpression or ParenthesizedExpression or CastExpression or UncheckedExpression) continue;
+            if (!HasIdentMemberOrCall(bin) && TryEvalDefaultComparison(bin, out var constBool))
+            {
+                bin.ReplaceWith(new PrimitiveExpression(constBool));
+                continue;
+            }
             if (HasUncheckedAncestor(bin)) continue;
             if (!AstWalk.HasAny<DefaultValueExpression>(bin)) continue;
             if (HasIdentMemberOrCall(bin)) continue;
             bin.ReplaceWith(new UncheckedExpression(bin.Clone()));
+        }
+
+        foreach (var ifs in AstWalk.Collect<IfElseStatement>(tree, static s => s.Condition is PrimitiveExpression { Value: bool } && s.Parent is BlockStatement))
+        {
+            if (ifs.Parent is not BlockStatement block || ifs.Condition is not PrimitiveExpression { Value: bool condVal }) continue;
+            if (!condVal)
+            {
+                if (ifs.FalseStatement.IsNull)
+                    ifs.Remove();
+                else if (ifs.FalseStatement is BlockStatement fb && !fb.Statements.OfType<VariableDeclarationStatement>().Any())
+                {
+                    foreach (var st in fb.Statements.ToList())
+                        block.InsertChildBefore(ifs, st.Detach(), BlockStatement.StatementRole);
+                    ifs.Remove();
+                }
+                else
+                {
+                    var rep = ifs.FalseStatement.Detach();
+                    if (rep is BlockStatement || !rep.Descendants.OfType<VariableDeclarationStatement>().Any())
+                        ifs.ReplaceWith(rep);
+                }
+            }
+            else if (ifs.TrueStatement is BlockStatement tb && !tb.Statements.OfType<VariableDeclarationStatement>().Any())
+            {
+                foreach (var st in tb.Statements.ToList())
+                    block.InsertChildBefore(ifs, st.Detach(), BlockStatement.StatementRole);
+                ifs.Remove();
+            }
+        }
+
+        static bool TryEvalDefaultComparison(BinaryOperatorExpression b, out bool result)
+        {
+            result = false;
+            if (b.Operator is not (BinaryOperatorType.Equality or BinaryOperatorType.InEquality
+                or BinaryOperatorType.LessThan or BinaryOperatorType.LessThanOrEqual
+                or BinaryOperatorType.GreaterThan or BinaryOperatorType.GreaterThanOrEqual))
+                return false;
+            if (!TryZeroConst(b.Left, out var lIsDef, out var lv) || !TryZeroConst(b.Right, out var rIsDef, out var rv))
+                return false;
+            if (!lIsDef && !rIsDef) return false;
+            result = b.Operator switch
+            {
+                BinaryOperatorType.Equality => lv == rv,
+                BinaryOperatorType.InEquality => lv != rv,
+                BinaryOperatorType.LessThan => lv < rv,
+                BinaryOperatorType.LessThanOrEqual => lv <= rv,
+                BinaryOperatorType.GreaterThan => lv > rv,
+                BinaryOperatorType.GreaterThanOrEqual => lv >= rv,
+                _ => false,
+            };
+            return true;
+        }
+
+        static bool TryZeroConst(Expression e, out bool isDefault, out long val)
+        {
+            e = UnwrapParens(e);
+            if (e is DefaultValueExpression dve && dve.Type is PrimitiveType
+                {
+                    Keyword: "int" or "uint" or "long" or "ulong" or "byte" or "sbyte" or "short" or "ushort" or "bool" or "char"
+                })
+            {
+                isDefault = true;
+                val = 0;
+                return true;
+            }
+            isDefault = false;
+            return TryEvalConstInt(e, out val);
         }
 
         static bool HasUncheckedAncestor(AstNode n)

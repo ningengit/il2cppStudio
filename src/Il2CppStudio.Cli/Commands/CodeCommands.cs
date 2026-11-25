@@ -20,11 +20,12 @@ internal static class CodeCommands
         var withRefs = new Option<bool>("--with-references") { Description = "With --assembly: also export every assembly they reference (transitively), like the GUI's 'Export Assembly + References'." };
         var keyset = new Option<string?>("--keyset") { Description = "Path to Switch prod.keys / dev.keys for encrypted .nsp packages." };
         var passcode = new Option<string?>("--passcode") { Description = "64-hex EKPFS key or 32-char passcode for encrypted PS4 .pkg files." };
+        var noBackup = new Option<bool>("--no-backup") { Description = "Ignore any detected build backup folder (force pure native lifting)." };
 
-        var cmd = new Command("load", "Load a game folder, report the workspace and optionally export everything.") { path, exportAll, bcl, bclDir, noIl, only, withRefs, keyset, passcode };
+        var cmd = new Command("load", "Load a game folder, report the workspace and optionally export everything.") { path, exportAll, bcl, bclDir, noIl, only, withRefs, keyset, passcode, noBackup };
         cmd.SetAction(pr => CliHost.Run(pr.GetValue(verbose), sink =>
         {
-            using var ws = CliHost.Load(pr.GetValue(path)!, sink, pr.GetValue(bcl), pr.GetValue(bclDir), pr.GetValue(keyset), pr.GetValue(passcode));
+            using var ws = CliHost.Load(pr.GetValue(path)!, sink, pr.GetValue(bcl), pr.GetValue(bclDir), pr.GetValue(keyset), pr.GetValue(passcode), !pr.GetValue(noBackup));
             WorkspaceSetup.Attach(ws);
             var s = ws.Model.Statistics;
             if (!pr.GetValue(json))
@@ -63,11 +64,12 @@ internal static class CodeCommands
         var bcl = new Option<bool>("--substitute-bcl") { Description = "Substitute BCL (Clean/Fast)." };
         var keyset = new Option<string?>("--keyset") { Description = "Path to Switch prod.keys / dev.keys for encrypted .nsp packages." };
         var passcode = new Option<string?>("--passcode") { Description = "64-hex EKPFS key or 32-char passcode for encrypted PS4 .pkg files." };
+        var noBackup = new Option<bool>("--no-backup") { Description = "Ignore any detected build backup folder (force pure native lifting)." };
 
-        var cmd = new Command("inspect", "Show the C/C++, IL and/or C# view of a class or method.") { path, type, method, view, bcl, keyset, passcode };
+        var cmd = new Command("inspect", "Show the C/C++, IL and/or C# view of a class or method.") { path, type, method, view, bcl, keyset, passcode, noBackup };
         cmd.SetAction(pr => CliHost.Run(pr.GetValue(verbose), sink =>
         {
-            using var ws = CliHost.Load(pr.GetValue(path)!, sink, pr.GetValue(bcl), switchKeysetPath: pr.GetValue(keyset), ps4Passcode: pr.GetValue(passcode));
+            using var ws = CliHost.Load(pr.GetValue(path)!, sink, pr.GetValue(bcl), switchKeysetPath: pr.GetValue(keyset), ps4Passcode: pr.GetValue(passcode), useBuildBackup: !pr.GetValue(noBackup));
             WorkspaceSetup.Attach(ws);
             if (!CliHost.TryResolve(ws, pr.GetValue(type)!, pr.GetValue(method), out var t, out var methods)) return 2;
 

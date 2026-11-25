@@ -20,11 +20,10 @@ public static class VTableResolver
         if (encoded == 0) return null;
         var usage = (encoded >> 29) & 7;
         var index = md.Version.Major >= 27 ? (int)((encoded & 0x1FFFFFFE) >> 1) : (int)(encoded & 0x1FFFFFFF);
-        return usage switch
-        {
-            3 when (uint)index < (uint)md.Methods.Length => new SlotTarget(index, -1),
-            6 => new SlotTarget(-1, index),
-            _ => null,
-        };
+        var methodDefUsage = md.Version.Major >= 108 ? 2u : 3u;
+        var methodSpecUsage = md.Version.Major >= 108 ? 5u : 6u;
+        if (usage == methodDefUsage && (uint)index < (uint)md.Methods.Length) return new SlotTarget(index, -1);
+        if (usage == methodSpecUsage) return new SlotTarget(-1, index);
+        return null;
     }
 }

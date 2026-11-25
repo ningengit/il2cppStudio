@@ -26,22 +26,62 @@ public static class UnityInlineRecognizer
         RemoveRepeatedDefault(tree);
         if (flags.HasVectorOps)
         {
-            foreach (var inv in AstWalk.Collect<InvocationExpression>(tree, static i => i.Arguments.Count == 1 && i.Target is MemberReferenceExpression { MemberName: "Internal_FromEulerRad" }))
-                TryEuler(inv);
+            foreach (var inv in AstWalk.Collect<InvocationExpression>(tree, static i =>
+                i.Arguments.Count == 1 && i.Target is MemberReferenceExpression { MemberName: "Internal_FromEulerRad" or "Internal_ToEulerRad" or "Internal_MakePositive" }))
+                TryQuaternionInternal(inv);
         }
+    }
+
+    private static void TryQuaternionInternal(InvocationExpression inv)
+    {
+        if (inv.Parent is null || inv.Arguments.Count != 1
+            || inv.Target is not MemberReferenceExpression { Target: TypeReferenceExpression or IdentifierExpression { Identifier: "Quaternion" } } t)
+            return;
+        if (t.MemberName == "Internal_MakePositive")
+        {
+            inv.ReplaceWith(inv.Arguments.Single().Detach());
+            return;
+        }
+        if (t.MemberName == "Internal_ToEulerRad")
+        {
+            var q = inv.Arguments.Single().Detach();
+            var deg2Rad = new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Mathf")), "Deg2Rad");
+            inv.ReplaceWith(new BinaryOperatorExpression(
+                new MemberReferenceExpression(q, "eulerAngles"),
+                BinaryOperatorType.Multiply,
+                deg2Rad));
+            return;
+        }
+        TryEuler(inv);
     }
 
     private static void TryEuler(InvocationExpression inv)
     {
         if (inv.Target is not MemberReferenceExpression { MemberName: "Internal_FromEulerRad", Target: TypeReferenceExpression or IdentifierExpression { Identifier: "Quaternion" } } t
             || inv.Arguments.Count != 1) return;
-        var arg = inv.Arguments.Single();
+        var origArg = inv.Arguments.Single();
+        var arg = origArg;
         VariableDeclarationStatement? tempDecl = null;
         if (arg is IdentifierExpression id && FindSingleUseTemp(inv, id.Identifier) is { } d) { tempDecl = d; arg = d.Variables.Single().Initializer; }
-        if (arg is not ObjectCreateExpression { Type: SimpleType { Identifier: "Vector3" } } create || create.Arguments.Count != 3) return;
-        var stripped = create.Arguments.Select(StripDeg2Rad).ToList();
-        if (stripped.Any(s => s is null)) return;
-        var euler = new InvocationExpression(new MemberReferenceExpression(t.Target.Clone(), "Euler"), stripped.Select(s => s!.Clone()));
+        Expression? euler = null;
+        if (arg is ObjectCreateExpression { Type: SimpleType { Identifier: "Vector3" } } create && create.Arguments.Count == 3)
+        {
+            var stripped = create.Arguments.Select(StripDeg2Rad).ToList();
+            if (!stripped.Any(s => s is null))
+                euler = new InvocationExpression(new MemberReferenceExpression(t.Target.Clone(), "Euler"), stripped.Select(s => s!.Clone()));
+        }
+        else if (StripDeg2Rad(arg) is { } directDeg)
+        {
+            euler = new InvocationExpression(new MemberReferenceExpression(t.Target.Clone(), "Euler"), directDeg.Clone());
+        }
+        if (euler is null)
+        {
+            var rad2Deg = new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Mathf")), "Rad2Deg");
+            euler = new InvocationExpression(
+                new MemberReferenceExpression(t.Target.Clone(), "Euler"),
+                new BinaryOperatorExpression(origArg.Detach(), BinaryOperatorType.Multiply, rad2Deg));
+            tempDecl = null;
+        }
         if (inv.Parent is ExpressionStatement es
             && es.NextSibling is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: MemberReferenceExpression { MemberName: "rotation" } rotLhs, Right: DefaultValueExpression } } nextRot)
         {

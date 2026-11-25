@@ -32,12 +32,13 @@ internal static class CliHost
         }
     }
 
-    public static Il2CppWorkspace Load(string path, DiagnosticCollector sink, bool substituteBcl, string? bclDir = null, string? switchKeysetPath = null, string? ps4Passcode = null)
+    public static Il2CppWorkspace Load(string path, DiagnosticCollector sink, bool substituteBcl, string? bclDir = null, string? switchKeysetPath = null, string? ps4Passcode = null, bool useBuildBackup = true)
     {
         var ws = Il2CppWorkspace.Load(path, sink, new WorkspaceOptions
         {
             SubstituteBcl = substituteBcl,
             BclReferenceDirectory = bclDir,
+            UseBuildBackup = useBuildBackup,
             SwitchKeysetPath = switchKeysetPath,
             Ps4PkgPasscode = ps4Passcode,
         });

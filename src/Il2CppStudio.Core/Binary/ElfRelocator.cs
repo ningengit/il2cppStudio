@@ -172,4 +172,63 @@ internal sealed class ElfRelocator(ElfBinaryImage image, byte[] data)
             if (e > s) yield return (Encoding.ASCII.GetString(data, (int)s, e - (int)s), value & ~1UL);   // clear ARM Thumb bit
         }
     }
+
+    /// <summary>
+    /// Maps <c>.plt</c> import stubs (e.g. <c>atan2f</c>, <c>modff</c>, <c>il2cpp_raise_exception</c>,
+    /// <c>__cxa_throw</c>) to their VA by matching <c>DtJmpRel</c> JUMP_SLOT relocations to PLT sequences.
+    /// </summary>
+    public IEnumerable<(string Name, ulong Rva)> PltImportSymbols()
+    {
+        if (image.Architecture != CpuArchitecture.Arm64) yield break;
+        if (!_dyn.TryGetValue(DtJmpRel, out var jmp) || !_dyn.TryGetValue(DtPltRelSz, out var jmpSz)) yield break;
+        if (!ToOffset(jmp, out var jmpOff) || !TryGetSymTabOffset(out var symOff, out var symEnd)) yield break;
+        if (!_dyn.TryGetValue(DtStrTab, out var strtab) || !ToOffset(strtab, out var strOff)) yield break;
+        var dynstr = image.Sections.FirstOrDefault(s => s.Name == ".dynstr");
+        var strEnd = dynstr is not null ? strOff + dynstr.RawSize : data.Length;
+
+        var withAddend = _dyn.TryGetValue(DtPltRel, out var kind) ? kind == DtRela : W64;
+        var relEnt = withAddend ? 3 * Ptr : 2 * Ptr;
+        var symEnt = W64 ? 24 : 16;
+        var gotToName = new Dictionary<ulong, string>();
+        for (var p = jmpOff; p + relEnt <= jmpOff + (long)jmpSz && p + relEnt <= data.Length; p += relEnt)
+        {
+            var where = image.Word(p);
+            var info = image.Word(p + Ptr);
+            var sym = W64 ? (int)(info >> 32) : (int)(info >> 8);
+            if (sym <= 0) continue;
+            var sp = symOff + (long)sym * symEnt;
+            if (sp < symOff || sp + symEnt > symEnd || sp + symEnt > data.Length) continue;
+            var nameOff = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan((int)sp));
+            var s = strOff + nameOff;
+            if (s < 0 || s >= strEnd || s >= data.Length) continue;
+            var e = Array.IndexOf(data, (byte)0, (int)s);
+            if (e > s) gotToName[where] = Encoding.ASCII.GetString(data, (int)s, e - (int)s);
+        }
+        if (gotToName.Count == 0) yield break;
+
+        var plt = image.Sections.FirstOrDefault(s => s.Name == ".plt");
+        if (plt is null || plt.RawSize < 8) yield break;
+        var start = (int)plt.FileOffset;
+        var end = (int)Math.Min(data.Length - 8, plt.FileOffset + plt.RawSize - 8);
+        for (var pos = start; pos <= end; pos += 4)
+        {
+            var w0 = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(pos, 4));
+            var w1 = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(pos + 4, 4));
+            if ((w0 & 0x9F00001Fu) != 0x90000010u || (w1 & 0xFFC003FFu) != 0xF9400211u) continue;
+            var pc = plt.Rva + (ulong)(pos - start);
+            var immlo = (long)((w0 >> 29) & 3u);
+            var immhi = (long)((w0 >> 5) & 0x7FFFFu);
+            var imm21 = (immhi << 2) | immlo;
+            if ((imm21 & 0x100000L) != 0) imm21 |= ~0x1FFFFFL;
+            var imm12 = (ulong)((w1 >> 10) & 0xFFFu);
+            var gotVa = unchecked((pc & ~0xFFFUL) + (ulong)(imm21 << 12) + (imm12 << 3));
+            if (!gotToName.TryGetValue(gotVa, out var name)) continue;
+            var stubRva = pc;
+            if (pos - 4 >= start && BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(pos - 4, 4)) == 0xD503245Fu)
+            {
+                yield return (name, pc - 4);   // BTI c landing pad
+            }
+            yield return (name, stubRva);
+        }
+    }
 }

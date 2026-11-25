@@ -31,6 +31,7 @@ public sealed class RuntimeHelperMap
         var anchors = RuntimeHelperAnchors.Build(reader, exportNames.Select(e => (e.Value, e.Key)));
         var stats = CallSiteScanner.Scan(sym, disasm, abi);
         var map = new RuntimeHelperMap { Stats = stats };
+        var arrayLenOff = sym.Registration.Ptr == 8 ? MemoryResolver.ArrayLengthOffset64 : 0x0C;
 
         foreach (var (va, s) in stats)
         {
@@ -56,6 +57,8 @@ public sealed class RuntimeHelperMap
             else if (s.Sites >= 10 && Ratio(s.RaxUsedAfter, s) < 0.1 && NeverReturns(disasm, va))
                 map.Add(va, Ratio(s.RcxSetJustBefore, s) >= 0.5 ? RuntimeHelperKind.Raise : RuntimeHelperKind.ThrowHelper,
                     $"body has no return path (no ret / indirect tail jump); result unused at {s.Sites - s.RaxUsedAfter}/{s.Sites} sites", s.Sites);
+            else if (s.Sites >= 2 && s.FollowedByInt3 == 0 && Ratio(s.RaxUsedAfter, s) >= 0.5 && IsArrayElementAddress(disasm, va, arrayLenOff))
+                map.Add(va, RuntimeHelperKind.ArrayElementAddress, $"bounds-checked [reg+0x{arrayLenOff:X}] array element address", s.Sites);
             if (exportNames.TryGetValue(va, out var api)) map.ExportNames[va] = api;
         }
 
@@ -125,5 +128,40 @@ public sealed class RuntimeHelperMap
     {
         var ins = disasm.Disassemble(va, 0x200).Instructions;
         return ins.Any(i => i.Mnemonic == Iced.Intel.Mnemonic.Movzx && i.Op1Kind == Iced.Intel.OpKind.Memory && (long)i.MemoryDisplacement64 == 0x12E);
+    }
+
+    private static bool IsArrayElementAddress(X64Disassembler disasm, ulong va, int arrayLenOffset)
+    {
+        for (var hop = 0; hop < 3; hop++)
+        {
+            var fn = disasm.Disassemble(va, 0x100).Instructions;
+            if (fn.Count == 0) return false;
+            if (fn.Count <= 2 && fn[0].Mnemonic == Iced.Intel.Mnemonic.Jmp && fn[0].Op0Kind is Iced.Intel.OpKind.NearBranch64 or Iced.Intel.OpKind.NearBranch32)
+            { va = fn[0].NearBranchTarget; continue; }
+
+            var retIdx = -1;
+            for (var k = 0; k < Math.Min(fn.Count, 24); k++)
+            {
+                if (fn[k].Mnemonic is Iced.Intel.Mnemonic.Ret or Iced.Intel.Mnemonic.Retf) { retIdx = k; break; }
+                if (fn[k].Mnemonic == Iced.Intel.Mnemonic.Call) return false;
+            }
+            if (retIdx < 2) return false;
+            var retIp = fn[retIdx].IP;
+            for (var k = 0; k < retIdx - 1; k++)
+            {
+                var cmp = fn[k];
+                if (cmp.Mnemonic != Iced.Intel.Mnemonic.Cmp) continue;
+                var memOp = cmp.Op0Kind == Iced.Intel.OpKind.Memory ? 0 : cmp.Op1Kind == Iced.Intel.OpKind.Memory ? 1 : -1;
+                if (memOp < 0 || cmp.IsIPRelativeMemoryOperand || cmp.MemoryIndex != Iced.Intel.Register.None || (long)cmp.MemoryDisplacement64 != arrayLenOffset)
+                    continue;
+                var j = fn[k + 1];
+                if (j.Mnemonic is Iced.Intel.Mnemonic.Jae or Iced.Intel.Mnemonic.Ja or Iced.Intel.Mnemonic.Jb or Iced.Intel.Mnemonic.Jbe
+                    && j.Op0Kind is Iced.Intel.OpKind.NearBranch64 or Iced.Intel.OpKind.NearBranch32
+                    && j.NearBranchTarget > retIp)
+                    return true;
+            }
+            return false;
+        }
+        return false;
     }
 }

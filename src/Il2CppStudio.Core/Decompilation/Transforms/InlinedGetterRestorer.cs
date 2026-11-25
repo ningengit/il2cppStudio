@@ -97,10 +97,47 @@ public static class InlinedGetterRestorer
         }
         foreach (var inv in invocations)
         {
-            if (inv.Target is not MemberReferenceExpression mref) continue;
+            if (inv.Parent is null || inv.Target is not MemberReferenceExpression mref) continue;
             if ((inv.Annotation<InvocationResolveResult>()?.Member ?? mref.Annotation<MemberResolveResult>()?.Member) is not IMethod { Accessibility: not Accessibility.Public } method) continue;
-            if (!method.Name.EndsWith("Int", StringComparison.Ordinal) || SameType(inv, method.DeclaringTypeDefinition)) continue;
-            var pubName = method.Name[..^3];
+            if (SameType(inv, method.DeclaringTypeDefinition)) continue;
+
+            if (method.Name == "AddWithResize"
+                && method.DeclaringTypeDefinition?.FullName.StartsWith("System.Collections.Generic.List", StringComparison.Ordinal) == true)
+            {
+                var add = method.DeclaringTypeDefinition.Methods.FirstOrDefault(m =>
+                    m.Accessibility == Accessibility.Public && !m.IsStatic && m.Name == "Add"
+                    && m.Parameters.Count == method.Parameters.Count && m.ReturnType.Equals(method.ReturnType));
+                if (add is not null)
+                {
+                    mref.MemberName = add.Name;
+                    inv.RemoveAnnotations<InvocationResolveResult>();
+                    mref.RemoveAnnotations<MemberResolveResult>();
+                    continue;
+                }
+            }
+
+            if (method.Name.StartsWith("Set", StringComparison.Ordinal) && method.Name.Length > 3
+                && !method.IsStatic && method.Parameters.Count == 1 && method.ReturnType.IsKnownType(KnownTypeCode.Void)
+                && inv.Parent is ExpressionStatement && inv.Arguments.Count == 1)
+            {
+                var propKey = Normalize(method.Name[3..]);
+                var setProp = method.DeclaringTypeDefinition?.Properties.FirstOrDefault(p =>
+                    !p.IsStatic && !p.IsIndexer && p.CanSet && p.Setter!.Accessibility == Accessibility.Public
+                    && Normalize(p.Name) == propKey && p.ReturnType.Equals(method.Parameters[0].Type));
+                if (setProp is not null)
+                {
+                    inv.ReplaceWith(new AssignmentExpression(
+                        new MemberReferenceExpression(mref.Target.Detach(), setProp.Name),
+                        AssignmentOperatorType.Assign,
+                        inv.Arguments.Single().Detach()));
+                    continue;
+                }
+            }
+
+            string? pubName = method.Name.EndsWith("Int", StringComparison.Ordinal) ? method.Name[..^3]
+                : method.Name.EndsWith("String", StringComparison.Ordinal) ? method.Name[..^6]
+                : null;
+            if (pubName is null) continue;
             var pub = method.DeclaringTypeDefinition?.Methods.FirstOrDefault(m =>
                 m.Accessibility == Accessibility.Public && m.IsStatic == method.IsStatic && m.Name == pubName
                 && m.Parameters.Count == method.Parameters.Count && m.ReturnType.Equals(method.ReturnType));

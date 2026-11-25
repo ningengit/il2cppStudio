@@ -32,7 +32,7 @@ internal sealed class Arm64Block(int start, ulong va)
 /// shared Unified IR expressions and CIL method bodies for Android arm64-v8a (and Switch NSO).
 /// </summary>
 public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs, IDiagnosticSink sink,
-    Runtime.RuntimeHelperMap? helpers = null) : IMethodLifter
+    Runtime.RuntimeHelperMap? helpers = null, IReadOnlyDictionary<ulong, string>? symbolNames = null) : IMethodLifter
 {
     private readonly Dictionary<string, int> _typeIndex = MemoryResolver.BuildTypeIndex(sym.Model);
     private readonly ConcurrentDictionary<ulong, Arm64HelperKind> _helperCache = new();
@@ -65,7 +65,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             }
             if (insns.Count == 0) return new(methodIndex, false, 0, 0, 0, 0, 0, "empty function");
 
-            var blocks = BuildBlocks(insns, start, sym, _helperCache);
+            var blocks = BuildBlocks(insns, start, sym, _helperCache, symbolNames);
             ComputeLiveness(insns, blocks, start, end);
 
             var body = new CilMethodBody { InitializeLocals = true };
@@ -73,7 +73,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             var ctx = new EmitContext(body.Instructions, stub.Module, stub.Intrinsics) { Log = notes.Add };
             var mem = new MemoryResolver(md, sym.Model, sym.Registration, sym.Names, stubs, stub.Module, _typeIndex, pointerSize: 8);
             var shape = MethodShape.Create(md, sym.Registration, stubs, mem, stub.Module, methodIndex, -1);
-            var tr = new Arm64BlockTranslator(sym, stubs, stub.Module, method, shape, mem, body, helpers, loc, sink, notes, start, end, _helperCache);
+            var tr = new Arm64BlockTranslator(sym, stubs, stub.Module, method, shape, mem, body, helpers, loc, sink, notes, start, end, _helperCache, symbolNames);
 
             var order = TopologicalOrder(blocks);
             var emitted = order.ToHashSet();
@@ -170,7 +170,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         || ins.Mnemonic.ToString() is "RETAA" or "RETAB" or "BRAA" or "BRAB" or "BRAAZ" or "BRABZ" or "HLT";
 
     private static List<Arm64Block> BuildBlocks(List<Arm64Insn> insns, ulong funcStart, NativeSymbolizer sym,
-        ConcurrentDictionary<ulong, Arm64HelperKind> helperCache)
+        ConcurrentDictionary<ulong, Arm64HelperKind> helperCache, IReadOnlyDictionary<ulong, string>? symbolNames)
     {
         var indexAtVa = new Dictionary<ulong, int>(insns.Count);
         for (var i = 0; i < insns.Count; i++) indexAtVa[insns[i].Address] = i;
@@ -199,7 +199,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                 {
                     var target = BranchTarget(insns[k].Address, ins, 0);
                     if (sym.Map.SymbolAt(target) is not null) return false;
-                    if (Arm64BlockTranslator.ClassifyNativeHelper(reader, helperCache, target) == Arm64HelperKind.NoReturn)
+                    if (Arm64BlockTranslator.ClassifyNativeHelper(reader, helperCache, target, symbolNames) == Arm64HelperKind.NoReturn)
                         return true;
                     hasCall = true;
                     continue;
@@ -208,7 +208,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                 {
                     var target = BranchTarget(insns[k].Address, ins, 0);
                     if ((target < funcStart || target >= funcEnd)
-                        && Arm64BlockTranslator.ClassifyNativeHelper(reader, helperCache, target) == Arm64HelperKind.NoReturn)
+                        && Arm64BlockTranslator.ClassifyNativeHelper(reader, helperCache, target, symbolNames) == Arm64HelperKind.NoReturn)
                         return true;
                     return false;
                 }
