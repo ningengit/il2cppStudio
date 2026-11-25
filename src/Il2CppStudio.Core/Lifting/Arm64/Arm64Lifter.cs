@@ -118,6 +118,10 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         failedBytesHex = null;
         var list = new List<Arm64Insn>(code.Length / 4);
         var aligned = code.Length & ~3;
+        var endVa = startVa + (ulong)aligned;
+        var maxBranchTarget = startVa;
+        var hasIndirectBranch = false;
+
         for (var off = 0; off < aligned; off += 4)
         {
             var raw = BinaryPrimitives.ReadUInt32LittleEndian(code.Slice(off, 4));
@@ -132,10 +136,34 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                 }
                 break;
             }
-            list.Add(new Arm64Insn(startVa + (ulong)off, ins));
+            var va = startVa + (ulong)off;
+            list.Add(new Arm64Insn(va, ins));
+
+            if (ins.Mnemonic == Arm64Mnemonic.BR)
+            {
+                hasIndirectBranch = true;
+            }
+            else if (ins.Mnemonic is Arm64Mnemonic.B or Arm64Mnemonic.CBZ or Arm64Mnemonic.CBNZ or Arm64Mnemonic.TBZ or Arm64Mnemonic.TBNZ)
+            {
+                for (var oi = 0; oi < ins.OperandCount; oi++)
+                {
+                    if (ins.GetOperand(oi).Kind == Arm64OperandKind.Label)
+                    {
+                        var target = BranchTarget(va, ins, oi);
+                        if (target >= startVa && target < endVa && target > maxBranchTarget)
+                            maxBranchTarget = target;
+                    }
+                }
+            }
+
+            if (!hasIndirectBranch && va + 4 > maxBranchTarget && IsUnconditionalArm64Terminator(ins))
+                break;
         }
         return list;
     }
+
+    private static bool IsUnconditionalArm64Terminator(Arm64Instruction ins) =>
+        (ins.Mnemonic != Arm64Mnemonic.B || ins.OperandCount == 1) && IsArm64Terminator(ins);
 
     private static bool IsArm64Terminator(Arm64Instruction ins) =>
         ins.Mnemonic is Arm64Mnemonic.RET or Arm64Mnemonic.B or Arm64Mnemonic.BR or Arm64Mnemonic.BRK or Arm64Mnemonic.UDF

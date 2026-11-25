@@ -18,8 +18,11 @@ internal static class InfoCommands
         cmd.SetAction(pr => CliHost.Run(pr.GetValue(verbose), sink =>
         {
             var files = GameFolderLocator.Locate(pr.GetValue(path)!, sink);
-            if (files.MetadataPath is null) return 2;
-            using var md = GlobalMetadata.Load(files.MetadataPath, sink);
+            if (files.MetadataPath is null) { files.Archive?.Dispose(); return 2; }
+            using var archiveOwner = files.Archive;
+            using var md = files.Archive?.Metadata is { } metaBuf
+                ? GlobalMetadata.Load(metaBuf, sink)
+                : GlobalMetadata.Load(files.MetadataPath, sink);
             var model = MetadataModel.Build(md, sink);
             if (pr.GetValue(json))
             {

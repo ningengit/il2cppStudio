@@ -2,8 +2,8 @@ using Il2CppStudio.Core.IO;
 
 namespace Il2CppStudio.Core.Metadata;
 
-/// <summary>One (offset, size) pair from the metadata header. Size is in bytes.</summary>
-public sealed record MetadataSection(string Name, int Offset, int Size, string Description)
+/// <summary>One section entry from the metadata header. Size is in bytes; Count is set in v39+.</summary>
+public sealed record MetadataSection(string Name, int Offset, int Size, string Description, int Count = -1)
 {
     public long End => (long)Offset + Size;
 }
@@ -67,6 +67,19 @@ public sealed class MetadataHeader
         ("exportedTypeDefinitions", "TypeDefinitionIndex"),
     ];
 
+    private static readonly (string Name, string Description)[] V108Tail =
+    [
+        ("methodSpecsOnGenericType", "Il2CppMethodSpecOnGenericType"),
+        ("genericMethodSpecsOnType", "Il2CppGenericMethodSpecOnType"),
+        ("methodSpecs", "Il2CppMethodSpec"),
+        ("genericMethodFunctionsDefinitions", "Il2CppGenericMethodFunctionsDefinitions"),
+        ("genericMethodFunctionsDefinitionsWithAdjustor", "Il2CppGenericMethodFunctionsDefinitionsWithAdjustor"),
+        ("invokerIndices", "InvokerTableIndex per method"),
+        ("rgctxRanges", "Il2CppTokenRangePair"),
+        ("rgctxValues", "Il2CppRGCTXDefinition"),
+        ("staticConstructorTypeIndices", "TypeDefinitionIndex per eager-init type"),
+    ];
+
     public uint Sanity { get; }
     public int RawVersion { get; }
     public MetadataVersion Version { get; }
@@ -91,25 +104,22 @@ public sealed class MetadataHeader
 
     public static int SectionCount => CommonPrefix.Length + 2 + CommonSuffix.Length;
 
-    public static int SizeFor(MetadataVersion v) => 8 + SectionNames(v).Count * 8;
+    public static int SizeFor(MetadataVersion v) => 8 + SectionNames(v).Count * (v.HasSectionCounts ? 12 : 8);
 
     /// <summary>
-    /// Section order for a version (v16 through v31):
-    /// common 20-section prefix (adding rgctxEntries after typeDefinitions through v24.1),
-    /// images, assemblies, optional metadataUsageLists/Pairs (v19-v24), optional fieldRefs (v19+),
-    /// optional referencedAssemblies (v20+), attribute tables (v21-v27 or v29+),
-    /// optional unresolvedIndirectCall* (v22+), windowsRuntimeTypeNames (v23+),
-    /// windowsRuntimeStrings (v27+), and exportedTypeDefinitions (v24+).
+    /// Section order for a version (v16 through v108).
     /// </summary>
     public static List<(string Name, string Description)> SectionNames(MetadataVersion v)
     {
-        var names = new List<(string, string)>(36);
+        var names = new List<(string, string)>(44);
         foreach (var entry in CommonPrefix)
         {
             if (entry.Name == "images")
             {
                 if (v.HasCodegenIndices)
                     names.Add(("rgctxEntries", "Il2CppRGCTXDefinition"));
+                if (v.HasV108EmbeddedGenerics)
+                    names.Add(("typeInlineArrays", "Il2CppInlineArrayLength"));
                 names.Add(entry);
                 continue;
             }
@@ -150,6 +160,10 @@ public sealed class MetadataHeader
             };
             if (include) names.Add(s);
         }
+
+        if (v.HasV108EmbeddedGenerics)
+            names.AddRange(V108Tail);
+
         return names;
     }
 
@@ -164,7 +178,12 @@ public sealed class MetadataHeader
 
         var sections = new List<MetadataSection>(names.Count);
         foreach (var (name, desc) in names)
-            sections.Add(new MetadataSection(name, r.ReadInt32(), r.ReadInt32(), desc));
+        {
+            var off = r.ReadInt32();
+            var sz = r.ReadInt32();
+            var cnt = version.HasSectionCounts ? r.ReadInt32() : -1;
+            sections.Add(new MetadataSection(name, off, sz, desc, cnt));
+        }
 
         return new MetadataHeader(sanity, raw, version, r.Position, sections);
     }

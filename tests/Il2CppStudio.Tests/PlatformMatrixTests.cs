@@ -44,8 +44,11 @@ public sealed class PlatformMatrixTests
     {
         var sink = Sink();
         var files = GameFolderLocator.Locate(Build(build)!, sink);
+        using var archiveOwner = files.Archive;
         Assert.NotNull(files.MetadataPath);
-        using var md = GlobalMetadata.Load(files.MetadataPath!, sink);
+        using var md = files.Archive?.Metadata is { } metaBuf
+            ? GlobalMetadata.Load(metaBuf, sink)
+            : GlobalMetadata.Load(files.MetadataPath!, sink);
         Assert.Equal(major, md.Version.Major);
         var model = MetadataModel.Build(md, sink);
         Assert.Contains(model.Types, t => t.FullName == "BaldiScript" || t.FullName == "AmbienceScript");

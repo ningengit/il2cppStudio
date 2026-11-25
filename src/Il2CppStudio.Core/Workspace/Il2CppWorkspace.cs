@@ -23,6 +23,12 @@ public sealed record WorkspaceOptions
 
     /// <summary>Optional PS4 .pkg 64-hex EKPFS key or 32-character passcode.</summary>
     public string? Ps4PkgPasscode { get; init; }
+
+    /// <summary>Additional split APK paths (e.g. Android App Bundle config splits) to search alongside the base APK.</summary>
+    public IReadOnlyList<string>? AdditionalApkPaths { get; init; }
+
+    /// <summary>Optional native library directory on Android (containing <c>libil2cpp.so</c>) when extracted outside the APKs.</summary>
+    public string? NativeLibraryDir { get; init; }
 }
 
 /// <summary>
@@ -47,7 +53,7 @@ public sealed partial class Il2CppWorkspace : IDisposable
 
     public string ModeLabel => IsEnhanced ? Backup!.ModeLabel : BuildBackupDetector.BareModeLabel;
 
-    public string? ResourcesFolder => Metadata.Path is { } p
+    public string? ResourcesFolder => Files.Archive is null && Metadata.Path is { } p
         ? Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(p)!)!, "Resources")
         : null;
 
@@ -64,14 +70,31 @@ public sealed partial class Il2CppWorkspace : IDisposable
         sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.WorkspaceLoadStarted, $"Loading '{path}'.", new() { File = path });
 
         var files = GameFolderLocator.Locate(path, sink, options);
-        if (files.MetadataPath is null) throw new MetadataLoadException($"global-metadata.dat not found under '{path}'.");
+        if (files.MetadataPath is null)
+        {
+            files.Archive?.Dispose();
+            throw new MetadataLoadException($"global-metadata.dat not found under '{path}'.");
+        }
 
-        var md = GlobalMetadata.Load(files.MetadataPath, sink);
+        GlobalMetadata? md = null;
         IBinaryImage? pe = null;
         try
         {
+            md = files.Archive?.Metadata is { } metaBuf
+                ? GlobalMetadata.Load(metaBuf, sink)
+                : GlobalMetadata.Load(files.MetadataPath, sink);
             var model = MetadataModel.Build(md, sink);
-            if (files.BinaryPath is { } bin && bin.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+            if (files.Archive?.Binary is { } binBuf)
+            {
+                if (ElfBinaryImage.IsElf(binBuf.Span))
+                    pe = ElfBinaryImage.Load(binBuf.VirtualPath, binBuf.ToByteArray(), sink);
+                else if (MachOBinaryImage.IsMachO(binBuf.Span))
+                    pe = MachOBinaryImage.Load(binBuf.VirtualPath, binBuf.ToByteArray(), sink);
+                else
+                    sink.Warn(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatUnsupported,
+                        "Unrecognized archived native binary format; metadata-only features remain available.", new() { File = binBuf.VirtualPath });
+            }
+            else if (files.BinaryPath is { } bin && bin.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
                 pe = PeBinaryImage.Load(bin, sink);
             else if (files.BinaryPath is { } wasmPath && WasmFiles.IsWasmPath(wasmPath))
                 pe = WasmBinaryImage.Load(wasmPath, sink);
@@ -95,7 +118,7 @@ public sealed partial class Il2CppWorkspace : IDisposable
                 backup = BuildBackupDetector.Detect(files.Root, cv is null ? null : new PdbIdentity(cv.Guid, cv.Age), sink);
             }
 
-            var env = EnvironmentDetector.Detect(files.Root, files.DataFolder, files.BinaryPath, model, sink);
+            var env = EnvironmentDetector.Detect(files.Root, files.DataFolder, files.BinaryPath, model, sink, files.Archive);
             var ws = new Il2CppWorkspace(files, options, sink, md, model, pe, backup, env);
             ws.InitializeNativePipeline();
             sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.WorkspaceLoadCompleted,
@@ -105,7 +128,8 @@ public sealed partial class Il2CppWorkspace : IDisposable
         catch
         {
             pe?.Dispose();
-            md.Dispose();
+            md?.Dispose();
+            files.Archive?.Dispose();
             throw;
         }
     }
@@ -134,5 +158,6 @@ public sealed partial class Il2CppWorkspace : IDisposable
         DisposeNativePipeline();
         Binary?.Dispose();
         Metadata.Dispose();
+        Files.Archive?.Dispose();
     }
 }

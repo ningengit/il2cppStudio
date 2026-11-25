@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Il2CppStudio.Core.Diagnostics;
+using Il2CppStudio.Core.IO;
 using Il2CppStudio.Core.Metadata;
 
 namespace Il2CppStudio.Core.Fingerprinting;
@@ -32,27 +33,46 @@ public static partial class EnvironmentDetector
     [GeneratedRegex(@"(?<v>(?:[2-9]\d{3}|[56])\.\d{1,2}\.\d{1,3}[abfpxc]\d{1,3})")]
     private static partial Regex UnityVersionRegex();
 
-    public static GameEnvironment Detect(string gameRoot, string? dataFolder, string? binaryPath, MetadataModel? model, IDiagnosticSink sink)
+    public static GameEnvironment Detect(string gameRoot, string? dataFolder, string? binaryPath, MetadataModel? model, IDiagnosticSink sink) =>
+        Detect(gameRoot, dataFolder, binaryPath, model, sink, archive: null);
+
+    public static GameEnvironment Detect(string gameRoot, string? dataFolder, string? binaryPath, MetadataModel? model, IDiagnosticSink sink, VirtualArchiveSession? archive)
     {
         string? version = null, source = null;
 
-        var candidateFolders = new List<string>();
-        if (dataFolder is not null) candidateFolders.Add(dataFolder);
-        candidateFolders.Add(gameRoot);
-        candidateFolders.Add(Path.Combine(gameRoot, "assets", "bin", "Data"));
-        candidateFolders.Add(Path.Combine(gameRoot, "romfs", "Data"));
-        candidateFolders.Add(Path.Combine(gameRoot, "1", "Data"));
-        candidateFolders.Add(Path.Combine(gameRoot, "Media"));
-
-        foreach (var folder in candidateFolders.Distinct(StringComparer.OrdinalIgnoreCase))
+        if (archive is not null)
         {
-            if (!Directory.Exists(folder)) continue;
             foreach (var name in new[] { "globalgamemanagers", "data.unity3d", "mainData" })
             {
-                var p = Path.Combine(folder, name);
-                if (File.Exists(p) && ReadVersionFromSerializedFile(p) is { } v) { version = v; source = name; break; }
+                if (archive.TryGetDataFile(name, out var buf) && ReadVersionFromSerializedBytes(buf.Span) is { } v)
+                {
+                    version = v;
+                    source = name;
+                    break;
+                }
             }
-            if (version is not null) break;
+        }
+
+        if (version is null)
+        {
+            var candidateFolders = new List<string>();
+            if (dataFolder is not null) candidateFolders.Add(dataFolder);
+            candidateFolders.Add(gameRoot);
+            candidateFolders.Add(Path.Combine(gameRoot, "assets", "bin", "Data"));
+            candidateFolders.Add(Path.Combine(gameRoot, "romfs", "Data"));
+            candidateFolders.Add(Path.Combine(gameRoot, "1", "Data"));
+            candidateFolders.Add(Path.Combine(gameRoot, "Media"));
+
+            foreach (var folder in candidateFolders.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (!Directory.Exists(folder)) continue;
+                foreach (var name in new[] { "globalgamemanagers", "data.unity3d", "mainData" })
+                {
+                    var p = Path.Combine(folder, name);
+                    if (File.Exists(p) && ReadVersionFromSerializedFile(p) is { } v) { version = v; source = name; break; }
+                }
+                if (version is not null) break;
+            }
         }
 
         if (version is null && OperatingSystem.IsWindows())
@@ -71,7 +91,13 @@ public static partial class EnvironmentDetector
             sink.Warn(DiagnosticCategory.Fingerprint, DiagnosticCodes.UnityVersionUnknown, "Unity version could not be determined.", new() { File = gameRoot });
 
         string? company = null, product = null;
-        if (dataFolder is not null && File.Exists(Path.Combine(dataFolder, "app.info")))
+        if (archive is not null && archive.TryGetDataFile("app.info", out var appInfoBuf))
+        {
+            var lines = Encoding.UTF8.GetString(appInfoBuf.Span).Split('\n');
+            company = lines.ElementAtOrDefault(0)?.Trim();
+            product = lines.ElementAtOrDefault(1)?.Trim();
+        }
+        else if (dataFolder is not null && File.Exists(Path.Combine(dataFolder, "app.info")))
         {
             var lines = File.ReadAllLines(Path.Combine(dataFolder, "app.info"));
             company = lines.ElementAtOrDefault(0)?.Trim();
@@ -91,7 +117,7 @@ public static partial class EnvironmentDetector
             : "Unknown";
         sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.ScriptingBackendDetected, $"Scripting backend: {backend}.", new() { File = gameRoot });
 
-        var scripting = ReadScriptingAssemblies(dataFolder, sink);
+        var scripting = ReadScriptingAssemblies(dataFolder, archive, sink);
 
         return new GameEnvironment
         {
@@ -120,12 +146,20 @@ public static partial class EnvironmentDetector
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             var buf = new byte[Math.Min(4096, fs.Length)];
             fs.ReadExactly(buf);
-            if (TryReadUnityFsRevision(buf) is { } bundleVersion) return bundleVersion;
-            var text = Encoding.ASCII.GetString(buf.Select(b => b is >= 0x20 and < 0x7F ? b : (byte)' ').ToArray());
-            var m = UnityVersionRegex().Match(text);
-            return m.Success ? m.Groups["v"].Value : null;
+            return ReadVersionFromSerializedBytes(buf);
         }
         catch { return null; }
+    }
+
+    public static string? ReadVersionFromSerializedBytes(ReadOnlySpan<byte> data)
+    {
+        var slice = data.Length > 4096 ? data[..4096] : data;
+        if (TryReadUnityFsRevision(slice) is { } bundleVersion) return bundleVersion;
+        Span<byte> ascii = slice.Length <= 4096 ? stackalloc byte[slice.Length] : new byte[slice.Length];
+        for (var i = 0; i < slice.Length; i++)
+            ascii[i] = slice[i] is >= 0x20 and < 0x7F ? slice[i] : (byte)' ';
+        var m = UnityVersionRegex().Match(Encoding.ASCII.GetString(ascii));
+        return m.Success ? m.Groups["v"].Value : null;
     }
 
     private static string? TryReadUnityFsRevision(ReadOnlySpan<byte> buf)
@@ -147,8 +181,24 @@ public static partial class EnvironmentDetector
         return m.Success ? m.Groups["v"].Value : null;
     }
 
-    private static IReadOnlyList<string> ReadScriptingAssemblies(string? dataFolder, IDiagnosticSink sink)
+    private static IReadOnlyList<string> ReadScriptingAssemblies(string? dataFolder, VirtualArchiveSession? archive, IDiagnosticSink sink)
     {
+        if (archive is not null && archive.TryGetDataFile("ScriptingAssemblies.json", out var saBuf))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(saBuf.Memory);
+                return doc.RootElement.TryGetProperty("names", out var names)
+                    ? [.. names.EnumerateArray().Select(e => e.GetString()).OfType<string>()]
+                    : [];
+            }
+            catch (Exception ex)
+            {
+                sink.Warn(DiagnosticCategory.Fingerprint, DiagnosticCodes.FileAccessFailed, $"ScriptingAssemblies.json unreadable: {ex.Message}", new() { File = saBuf.VirtualPath }, ex);
+                return [];
+            }
+        }
+
         var p = dataFolder is null ? null : Path.Combine(dataFolder, "ScriptingAssemblies.json");
         if (p is null || !File.Exists(p)) return [];
         try

@@ -71,6 +71,10 @@ public static class InlinedGetterRestorer
 
             if (!IsWrite(access))
             {
+                if (access.Annotation<MemberResolveResult>() is { IsError: false }) continue;
+                if (access.Parent is InvocationExpression parentInv && parentInv.Target == access
+                    && parentInv.Annotation<InvocationResolveResult>() is { IsError: false }) continue;
+
                 var targetType = access.Target.Annotation<ResolveResult>()?.Type
                     ?? (access.Target is ParenthesizedExpression pe ? pe.Expression.Annotation<ResolveResult>()?.Type : null);
                 if (targetType?.GetDefinition() is { Kind: not TypeKind.Unknown } targetDef

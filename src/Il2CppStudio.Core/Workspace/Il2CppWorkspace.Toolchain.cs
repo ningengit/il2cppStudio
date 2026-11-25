@@ -20,12 +20,14 @@ public sealed partial class Il2CppWorkspace
         if (Files.BinaryPath is not { } path) return new(NativeCompiler.Unknown, "unknown", "none", null, ["No native binary in the game folder."]);
         try
         {
-            var bytes = File.ReadAllBytes(path);
             IEnumerable<int>? starts = null;
             if (Binary is { } pe)
                 starts = pe.GetFunctionTable()
                     .Select(f => pe.TryRvaToFileOffset(f.Begin, out var off) ? (int)off : -1)
                     .Where(o => o >= 0).ToList();
+            ReadOnlySpan<byte> bytes = Files.Archive?.Binary is { } archBin
+                ? archBin.Span
+                : File.ReadAllBytes(path);
             info = ToolchainDetector.Detect(bytes, starts);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

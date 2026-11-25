@@ -466,20 +466,14 @@ public sealed class UnitTests
         cts.Cancel();
         Assert.Throws<OperationCanceledException>(() => index.Search("item", 500, cts.Token));
 
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
-        var baselineMem = GC.GetTotalMemory(forceFullCollection: true);
+        var baselineAlloc = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 20; i++)
         {
             var res = index.Search("widget", 500);
             Assert.Equal(500, res.Matches.Count);
         }
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
-        var afterMem = GC.GetTotalMemory(forceFullCollection: true);
-        Assert.True(afterMem - baselineMem < 10 * 1024 * 1024, $"Expected flat search to stay low memory, delta={afterMem - baselineMem} bytes");
+        var delta = GC.GetAllocatedBytesForCurrentThread() - baselineAlloc;
+        Assert.True(delta < 10 * 1024 * 1024, $"Expected flat search to stay low memory, delta={delta} bytes");
     }
 
     [Fact]

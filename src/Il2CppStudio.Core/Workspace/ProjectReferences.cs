@@ -11,6 +11,49 @@ namespace Il2CppStudio.Core.Workspace;
 /// </summary>
 public static class ProjectReferences
 {
+    /// <summary>Materializes every unique reference across all target assemblies once in a flat parallel pass.</summary>
+    public static void WarmAll(
+        Il2CppWorkspace ws,
+        IEnumerable<AssemblyModel> assemblies,
+        string referencesDir,
+        BclReferenceProvider sharedBcl,
+        ConcurrentDictionary<string, Lazy<string?>> materialized)
+    {
+        var fullRefDir = Path.GetFullPath(referencesDir);
+        var uniqueDeps = new Dictionary<string, AssemblyModel>(StringComparer.OrdinalIgnoreCase);
+        foreach (var asm in assemblies)
+        {
+            foreach (var dep in AssemblyClosure.Of(ws.Model, asm))
+                if (dep.Name != asm.Name)
+                    uniqueDeps.TryAdd(dep.Name, dep);
+        }
+
+        var tasks = new List<Lazy<string?>>();
+        foreach (var name in new[] { "mscorlib", "System", "System.Core" })
+        {
+            if (sharedBcl.Find(name) is { } p)
+                tasks.Add(GetOrCreateBclLazy(p, fullRefDir, materialized));
+        }
+
+        foreach (var dep in uniqueDeps.Values)
+        {
+            if (BclReferenceProvider.IsBclAssembly(dep.Name) && sharedBcl.Find(dep.Name) is { } pristine)
+            {
+                tasks.Add(GetOrCreateBclLazy(pristine, fullRefDir, materialized));
+                continue;
+            }
+            var target = Path.GetFullPath(Path.Combine(fullRefDir, dep.ImageName));
+            tasks.Add(materialized.GetOrAdd(target, _ => new Lazy<string?>(
+                () => WriteStubReference(ws, dep, fullRefDir, target),
+                LazyThreadSafetyMode.ExecutionAndPublication)));
+        }
+
+        if (tasks.Count > 1)
+            Parallel.ForEach(tasks, static lazy => _ = lazy.Value);
+        else if (tasks.Count == 1)
+            _ = tasks[0].Value;
+    }
+
     public static IReadOnlyList<string> Materialize(
         Il2CppWorkspace ws,
         AssemblyModel asm,

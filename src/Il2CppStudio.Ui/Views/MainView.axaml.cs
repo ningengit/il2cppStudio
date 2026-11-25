@@ -26,6 +26,8 @@ public sealed partial class MainView : UserControl, IUiServices
     private MainViewModel? _attachedVm;
     private IInsetsManager? _insetsManager;
     private TaskCompletionSource<string?>? _promptTcs;
+    private TaskCompletionSource<InstalledAndroidApp?>? _appPickerTcs;
+    private IReadOnlyList<InstalledAndroidApp> _scannedApps = [];
     private TextMate.Installation? _cppTextMate;
     private TextMate.Installation? _csTextMate;
     private bool _managedHighlightingFallbackActive;
@@ -54,6 +56,17 @@ public sealed partial class MainView : UserControl, IUiServices
             if (e.Key == Key.Enter) { e.Handled = true; ResolvePrompt(PromptBox.Text?.Trim()); }
             else if (e.Key == Key.Escape) { e.Handled = true; ResolvePrompt(null); }
         };
+
+        InstalledAppsFilterBox.TextChanged += (_, _) => ApplyInstalledAppsFilter();
+        InstalledAppsList.SelectionChanged += (_, _) => InstalledAppsOpenButton.IsEnabled = InstalledAppsList.SelectedItem is InstalledAndroidApp;
+        InstalledAppsList.DoubleTapped += (_, _) =>
+        {
+            if (InstalledAppsList.SelectedItem is InstalledAndroidApp selected)
+                ResolveInstalledAppPicker(selected);
+        };
+        InstalledAppsOpenButton.Click += (_, _) => ResolveInstalledAppPicker(InstalledAppsList.SelectedItem as InstalledAndroidApp);
+        InstalledAppsCancelButton.Click += (_, _) => ResolveInstalledAppPicker(null);
+        InstalledAppsRefreshButton.Click += (_, _) => _ = RefreshInstalledAppsAsync();
     }
 
     private TopLevel? HostTopLevel => TopLevel.GetTopLevel(this);
@@ -61,6 +74,11 @@ public sealed partial class MainView : UserControl, IUiServices
     private void InitializeSyntaxHighlighting()
     {
         InstallManagedHighlighter(IlEditor, SyntaxLanguage.Il);
+        if (OperatingSystem.IsAndroid())
+        {
+            ActivateManagedFallback();
+            return;
+        }
 
         lock (s_tmHookLock)
         {
@@ -409,4 +427,79 @@ public sealed partial class MainView : UserControl, IUiServices
     }
 
     public void Post(Action action) => Dispatcher.UIThread.Post(action);
+
+    public async Task<InstalledAndroidApp?> PickInstalledAppAsync()
+    {
+        _appPickerTcs?.TrySetResult(null);
+        var tcs = new TaskCompletionSource<InstalledAndroidApp?>();
+        _appPickerTcs = tcs;
+
+        _scannedApps = [];
+        InstalledAppsFilterBox.Text = "";
+        InstalledAppsList.ItemsSource = null;
+        InstalledAppsOpenButton.IsEnabled = false;
+        InstalledAppsOverlay.IsVisible = true;
+        _ = RefreshInstalledAppsAsync();
+
+        try
+        {
+            return await tcs.Task;
+        }
+        finally
+        {
+            InstalledAppsOverlay.IsVisible = false;
+            if (ReferenceEquals(_appPickerTcs, tcs)) _appPickerTcs = null;
+        }
+    }
+
+    private async Task RefreshInstalledAppsAsync()
+    {
+        if (App.InstalledAppScanner is null)
+        {
+            InstalledAppsStatus.Text = "Installed app scanning is only available on Android.";
+            return;
+        }
+
+        InstalledAppsRefreshButton.IsEnabled = false;
+        InstalledAppsStatus.Text = "Scanning installed apps for Unity IL2CPP packages…";
+        try
+        {
+            var scanned = await App.InstalledAppScanner();
+            _scannedApps = scanned;
+            ApplyInstalledAppsFilter();
+            InstalledAppsStatus.Text = scanned.Count == 0
+                ? "No Unity IL2CPP apps found (grant 'Query all packages' permission if restricted)."
+                : $"Found {scanned.Count} Unity IL2CPP app(s).";
+        }
+        catch (Exception ex)
+        {
+            InstalledAppsStatus.Text = $"Scan failed: {ex.Message}";
+        }
+        finally
+        {
+            InstalledAppsRefreshButton.IsEnabled = true;
+        }
+    }
+
+    private void ApplyInstalledAppsFilter()
+    {
+        var query = InstalledAppsFilterBox.Text?.Trim() ?? "";
+        var filtered = string.IsNullOrEmpty(query)
+            ? _scannedApps
+            : [.. _scannedApps.Where(a =>
+                a.Label.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || a.PackageName.Contains(query, StringComparison.OrdinalIgnoreCase))];
+        InstalledAppsList.ItemsSource = filtered;
+        if (filtered.Count > 0 && InstalledAppsList.SelectedItem is null)
+            InstalledAppsList.SelectedIndex = 0;
+        InstalledAppsOpenButton.IsEnabled = InstalledAppsList.SelectedItem is InstalledAndroidApp;
+    }
+
+    private void ResolveInstalledAppPicker(InstalledAndroidApp? app)
+    {
+        var tcs = _appPickerTcs;
+        _appPickerTcs = null;
+        InstalledAppsOverlay.IsVisible = false;
+        tcs?.TrySetResult(app);
+    }
 }

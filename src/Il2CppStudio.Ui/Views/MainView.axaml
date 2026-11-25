@@ -38,6 +38,7 @@
             <Button Content="File" Padding="14,8" MinHeight="40">
               <Button.Flyout>
                 <MenuFlyout Placement="BottomEdgeAlignedLeft">
+                  <MenuItem Header="Open Installed App…" Command="{Binding LoadInstalledAppCommand}" />
                   <MenuItem Header="Load File…" Command="{Binding LoadFileCommand}" />
                   <MenuItem Header="Load Folder…" Command="{Binding LoadFolderCommand}" />
                   <MenuItem Header="Export All…" Command="{Binding ExportAllCommand}" />
@@ -286,6 +287,41 @@
               </ItemsControl.ItemTemplate>
             </ItemsControl>
           </ScrollViewer>
+        </DockPanel>
+      </Border>
+    </Border>
+    <!-- In-view modal overlay for installed Android Unity IL2CPP apps -->
+    <Border x:Name="InstalledAppsOverlay"
+            IsVisible="False"
+            Background="#B0000000">
+      <Border Background="#252526"
+              BorderBrush="#3F3F46"
+              BorderThickness="1"
+              CornerRadius="6"
+              Padding="16"
+              MaxWidth="620"
+              HorizontalAlignment="Stretch"
+              VerticalAlignment="Center"
+              Margin="16">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Text="Open Installed Unity App" FontWeight="SemiBold" FontSize="15" Margin="0,0,0,8" />
+          <TextBox x:Name="InstalledAppsFilterBox" DockPanel.Dock="Top" Watermark="Filter by app name or package…" Margin="0,0,0,8" />
+          <TextBlock x:Name="InstalledAppsStatus" DockPanel.Dock="Top" Foreground="#9CDCFE" FontSize="12" Margin="0,0,0,8" TextWrapping="Wrap" />
+          <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,12,0,0">
+            <Button x:Name="InstalledAppsRefreshButton" Content="Refresh" MinWidth="80" />
+            <Button x:Name="InstalledAppsCancelButton" Content="Cancel" MinWidth="80" />
+            <Button x:Name="InstalledAppsOpenButton" Content="Open" Classes="accent" MinWidth="80" IsEnabled="False" />
+          </StackPanel>
+          <ListBox x:Name="InstalledAppsList" MaxHeight="340" MinHeight="160">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:InstalledAndroidApp">
+                <StackPanel Spacing="2" Margin="2,4">
+                  <TextBlock Text="{Binding DisplayTitle}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Text="{Binding DisplaySubtitle}" FontSize="11" Foreground="Gray" TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
         </DockPanel>
       </Border>
     </Border>

@@ -99,8 +99,9 @@ public sealed partial class Il2CppRegistration
         if ((fieldOffCount != typeDefCount && fieldOffCount != (ulong)_md.Fields.Length)
             || At(cached.MetadataRegistrationVa, typeSizeIdx) != typeDefCount)
             return false;
-        var typesCount = At(cached.MetadataRegistrationVa, 6);
-        if (typesCount == 0 || typesCount > 2_000_000 || !Reader.IsMapped(At(cached.MetadataRegistrationVa, 7)))
+        var typesWord = _md.Version.HasV108EmbeddedGenerics ? 4 : 6;
+        var typesCount = At(cached.MetadataRegistrationVa, typesWord);
+        if (typesCount == 0 || typesCount > 2_000_000 || !Reader.IsMapped(At(cached.MetadataRegistrationVa, typesWord + 1)))
             return false;
 
         if (_md.Version.HasCodegenIndices)
@@ -217,7 +218,10 @@ public sealed partial class Il2CppRegistration
 
     // ------------------------------------------------------------------ locating
 
-    private int MetadataFieldOffsetsWordIndex => _md.Version.HasMethodReferencesInMetadataReg ? 12 : 10;
+    private int MetadataFieldOffsetsWordIndex =>
+        _md.Version.HasV108EmbeddedGenerics ? 6
+        : _md.Version.HasMethodReferencesInMetadataReg ? 12
+        : 10;
 
     private void LocateMetadataRegistration()
     {
@@ -270,14 +274,19 @@ public sealed partial class Il2CppRegistration
             if (fieldOffCount > 0 && !Reader.IsMapped(fieldOffPtr)) continue;
 
             var baseIdx = i - typeSizeIdx;
-            var typesCount = WordToU64(words[baseIdx + 6]);
-            var typesPtr = WordToU64(words[baseIdx + 7]);
+            var typesWord = _md.Version.HasV108EmbeddedGenerics ? 4 : 6;
+            var typesCount = WordToU64(words[baseIdx + typesWord]);
+            var typesPtr = WordToU64(words[baseIdx + typesWord + 1]);
             if (typesCount == 0 || typesCount > 2_000_000 || !Reader.IsMapped(typesPtr)) continue;
 
             var gInstCount = WordToU64(words[baseIdx + 2]);
-            var gmCount = WordToU64(words[baseIdx + 4]);
-            var mSpecCount = WordToU64(words[baseIdx + 8]);
-            if (gInstCount > 1_000_000 || gmCount > 2_000_000 || mSpecCount > 2_000_000) continue;
+            if (gInstCount > 1_000_000) continue;
+            if (!_md.Version.HasV108EmbeddedGenerics)
+            {
+                var gmCount = WordToU64(words[baseIdx + 4]);
+                var mSpecCount = WordToU64(words[baseIdx + 8]);
+                if (gmCount > 2_000_000 || mSpecCount > 2_000_000) continue;
+            }
             if (!Reader.IsMapped(P(typesPtr))) continue;
 
             candidates.Add(start + (ulong)(baseIdx * Ptr));
@@ -293,16 +302,26 @@ public sealed partial class Il2CppRegistration
         var typeSizeIdx = fieldOffIdx + 2;
 
         GenericInstVas = ReadPointerArray(F(3), (int)Math.Min(F(2), 1_000_000));
-        // Il2CppGenericMethodIndices: {methodIndex, invokerIndex} in pre-v27 (v16-v24.4), + adjustorThunkIndex from 24.5/27.1.
-        var gmStride = _md.Version.IsPreV27 ? 12 : 16;
-        GenericMethodTable = ReadArray(F(5), (int)Math.Min(F(4), 2_000_000), gmStride,
-            s => new Il2CppGenericMethodFunction(BitConverter.ToInt32(s), BitConverter.ToInt32(s[4..]), BitConverter.ToInt32(s[8..]), s.Length >= 16 ? BitConverter.ToInt32(s[12..]) : -1));
-        TypeVas = ReadPointerArray(F(7), (int)Math.Min(F(6), 2_000_000));
-        MethodSpecs = ReadArray(F(9), (int)Math.Min(F(8), 2_000_000), 12,
-            s => new Il2CppMethodSpecRecord(BitConverter.ToInt32(s), BitConverter.ToInt32(s[4..]), BitConverter.ToInt32(s[8..])));
-        MethodReferences = _md.Version.HasMethodReferencesInMetadataReg
-            ? ReadInt32Array(F(11), (int)Math.Min(F(10), 2_000_000))
-            : [];
+        if (_md.Version.HasV108EmbeddedGenerics)
+        {
+            GenericMethodTable = _md.EmbeddedGenericMethodTable;
+            TypeVas = ReadPointerArray(F(5), (int)Math.Min(F(4), 2_000_000));
+            MethodSpecs = _md.EmbeddedMethodSpecs;
+            MethodReferences = [];
+        }
+        else
+        {
+            // Il2CppGenericMethodIndices: {methodIndex, invokerIndex} in pre-v27 (v16-v24.4), + adjustorThunkIndex from 24.5/27.1.
+            var gmStride = _md.Version.IsPreV27 ? 12 : 16;
+            GenericMethodTable = ReadArray(F(5), (int)Math.Min(F(4), 2_000_000), gmStride,
+                s => new Il2CppGenericMethodFunction(BitConverter.ToInt32(s), BitConverter.ToInt32(s[4..]), BitConverter.ToInt32(s[8..]), s.Length >= 16 ? BitConverter.ToInt32(s[12..]) : -1));
+            TypeVas = ReadPointerArray(F(7), (int)Math.Min(F(6), 2_000_000));
+            MethodSpecs = ReadArray(F(9), (int)Math.Min(F(8), 2_000_000), 12,
+                s => new Il2CppMethodSpecRecord(BitConverter.ToInt32(s), BitConverter.ToInt32(s[4..]), BitConverter.ToInt32(s[8..])));
+            MethodReferences = _md.Version.HasMethodReferencesInMetadataReg
+                ? ReadInt32Array(F(11), (int)Math.Min(F(10), 2_000_000))
+                : [];
+        }
 
         var fieldOffCount = (int)Math.Min(F(fieldOffIdx), 2_000_000);
         var fieldOffVa = F(fieldOffIdx + 1);
@@ -532,16 +551,30 @@ public sealed partial class Il2CppRegistration
     private void ScanUsageWords<TWord>(ReadOnlySpan<TWord> words, ulong start, int[] limits, Dictionary<ulong, MetadataUsage> map)
         where TWord : unmanaged
     {
+        var v108 = _md.Version.HasV108EmbeddedGenerics;
         for (var i = 0; i < words.Length; i++)
         {
             var v = WordToU64(words[i]);
             if ((v & 1) == 0 || v > uint.MaxValue) continue;
-            var kind = (int)((v >> 29) & 7);
-            if (kind == 0) continue;
+            var rawKind = (int)((v >> 29) & 7);
+            if (rawKind == 0) continue;
+            var kind = v108
+                ? rawKind switch
+                {
+                    1 => MetadataUsageKind.TypeInfo,
+                    2 => MetadataUsageKind.MethodDef,
+                    3 => MetadataUsageKind.FieldInfo,
+                    4 => MetadataUsageKind.StringLiteral,
+                    5 => MetadataUsageKind.MethodRef,
+                    6 => MetadataUsageKind.FieldRva,
+                    _ => MetadataUsageKind.Invalid,
+                }
+                : (MetadataUsageKind)rawKind;
+            if (kind == MetadataUsageKind.Invalid) continue;
             var index = (int)((v & 0x1FFFFFFE) >> 1);
-            if (index >= limits[kind]) continue;
+            if (index >= limits[(int)kind]) continue;
             var va = start + (ulong)(i * Ptr);
-            map[va] = new MetadataUsage(va, (MetadataUsageKind)kind, index);
+            map[va] = new MetadataUsage(va, kind, index);
         }
     }
 

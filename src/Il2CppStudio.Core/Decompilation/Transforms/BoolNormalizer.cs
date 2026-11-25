@@ -54,6 +54,12 @@ public static class BoolNormalizer
             case ConditionalExpression c when IsZero(c.FalseExpression) && TryBool(c.TrueExpression) is { } t:
                 return new BinaryOperatorExpression(c.Condition.Clone(), BinaryOperatorType.ConditionalAnd, t);
             case BinaryOperatorExpression { Operator: BinaryOperatorType.ExclusiveOr } x when IsOne(x.Right) && TryBool(x.Left) is { } l: return Not(l);
+            case BinaryOperatorExpression { Operator: BinaryOperatorType.BitwiseAnd } maskAnd
+                when TryBool(maskAnd.Left) is { } bLeft && IsMaskWithLowBitSet(maskAnd.Right):
+                return bLeft;
+            case BinaryOperatorExpression { Operator: BinaryOperatorType.BitwiseAnd } maskAnd
+                when TryBool(maskAnd.Right) is { } bRight && IsMaskWithLowBitSet(maskAnd.Left):
+                return bRight;
             case BinaryOperatorExpression { Operator: BinaryOperatorType.BitwiseAnd or BinaryOperatorType.BitwiseOr } a
                 when TryBool(a.Left) is { } l && TryBool(a.Right) is { } r:
                 var pure = EmptyIfRemover.IsPure(a.Right);
@@ -115,4 +121,16 @@ public static class BoolNormalizer
 
     public static bool IsZero(Expression e) => e is PrimitiveExpression { Value: 0 or 0u or 0L or (byte)0 or false };
     public static bool IsOne(Expression e) => e is PrimitiveExpression { Value: 1 or 1u or 1L or (byte)1 or true };
+
+    private static bool IsMaskWithLowBitSet(Expression e) => e switch
+    {
+        ParenthesizedExpression p => IsMaskWithLowBitSet(p.Expression),
+        CastExpression c => IsMaskWithLowBitSet(c.Expression),
+        PrimitiveExpression { Value: int i } => (i & 1) == 1 && i > 0,
+        PrimitiveExpression { Value: uint u } => (u & 1u) == 1u && u > 0u,
+        PrimitiveExpression { Value: long l } => (l & 1L) == 1L && l > 0L,
+        PrimitiveExpression { Value: ulong ul } => (ul & 1UL) == 1UL && ul > 0UL,
+        PrimitiveExpression { Value: byte b } => (b & 1) == 1,
+        _ => false,
+    };
 }

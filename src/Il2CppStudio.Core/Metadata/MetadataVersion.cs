@@ -8,7 +8,7 @@ namespace Il2CppStudio.Core.Metadata;
 public readonly record struct MetadataVersion(int Major, int Minor = 0) : IComparable<MetadataVersion>
 {
     public static readonly MetadataVersion MinSupported = new(16);
-    public static readonly MetadataVersion MaxSupported = new(31);
+    public static readonly MetadataVersion MaxSupported = new(108);
 
     public int CompareTo(MetadataVersion other) =>
         Major != other.Major ? Major.CompareTo(other.Major) : Minor.CompareTo(other.Minor);
@@ -81,6 +81,16 @@ public readonly record struct MetadataVersion(int Major, int Minor = 0) : ICompa
     /// <summary>Pre-v24 IL2CPP emits an unused dummy __this pointer argument for static methods.</summary>
     public bool StaticMethodsTakeDummyThis => Major < 24;
 
+    /// <summary>v39+ stores (offset, size, count) triples in the metadata header and variable-width serialized indices.</summary>
+    public bool HasSectionCounts => Major >= 39;
+    public bool HasCompactIndices => Major >= 39;
+    public bool HasV39StringLiterals => Major >= 39;
+    public bool HasElementTypeIndex => Major < 39;
+    public bool HasAssemblyModuleToken => Major >= 39;
+
+    /// <summary>v108+ embeds methodSpecs, genericMethodFunctionsDefinitions, invokerIndices, and RGCTX tables in metadata.</summary>
+    public bool HasV108EmbeddedGenerics => Major >= 108;
+
     /// <summary>Approximate Unity editor range that writes this version (for display only).</summary>
     public string UnityRange => Major switch
     {
@@ -93,7 +103,9 @@ public readonly record struct MetadataVersion(int Major, int Minor = 0) : ICompa
         24 => Minor switch { 0 => "Unity 2018.1 - 2018.2", 1 => "Unity 2018.3 - 2018.4", _ => "Unity 2019.1 - 2020.1" },
         27 => "Unity 2020.2 - 2021.1",
         29 => "Unity 2021.2 - 2022.1",
-        31 => "Unity 2022.2 - 6000.x",
+        31 => "Unity 2022.2 - 6000.2",
+        39 => "Unity 6000.3 - 6000.5",
+        108 => "Unity 6000.6+",
         _ => "unknown",
     };
 

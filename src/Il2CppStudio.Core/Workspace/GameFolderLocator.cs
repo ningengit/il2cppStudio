@@ -1,10 +1,18 @@
 using Il2CppStudio.Core.Binary;
 using Il2CppStudio.Core.Diagnostics;
+using Il2CppStudio.Core.IO;
 using Il2CppStudio.Core.Plugins;
 
 namespace Il2CppStudio.Core.Workspace;
 
-public sealed record GameFiles(string Root, string? BinaryPath, string? MetadataPath, string? DataFolder, string? BackupFolder, string? LegacyAsmJsPath = null);
+public sealed record GameFiles(
+    string Root,
+    string? BinaryPath,
+    string? MetadataPath,
+    string? DataFolder,
+    string? BackupFolder,
+    string? LegacyAsmJsPath = null,
+    VirtualArchiveSession? Archive = null);
 
 /// <summary>
 /// Locates the IL2CPP binary, global-metadata.dat and (optionally) the build backup folder from a game
@@ -27,16 +35,48 @@ public static class GameFolderLocator
         {
             if (ApkExtractor.IsApkPath(path))
             {
-                return ApkExtractor.Extract(path, sink) is { } extractedApk
-                    ? LocateCore(extractedApk, sink, explicitBinary: null)
-                    : new GameFiles(path, null, null, null, null);
+                var archive = ApkExtractor.OpenZeroCopy(path, options?.AdditionalApkPaths, options?.NativeLibraryDir, sink);
+                if (archive is null) return new GameFiles(path, null, null, null, null);
+                if (archive.Metadata is null)
+                {
+                    sink.Error(DiagnosticCategory.Workspace, DiagnosticCodes.MetadataNotFound, "global-metadata.dat not found.", new() { File = path });
+                    archive.Dispose();
+                    return new GameFiles(path, null, null, null, null);
+                }
+                if (archive.Binary is null && archive.BinaryFilePathOnDisk is null)
+                    sink.Warn(DiagnosticCategory.Workspace, DiagnosticCodes.BinaryNotFound,
+                        "No libil2cpp.so found inside APK.", new() { File = path });
+                return new GameFiles(
+                    path,
+                    archive.BinaryFilePathOnDisk ?? archive.BinaryVirtualPath,
+                    archive.MetadataVirtualPath,
+                    DataFolder: null,
+                    BackupFolder: null,
+                    LegacyAsmJsPath: null,
+                    Archive: archive);
             }
 
             if (IpaExtractor.IsIpaPath(path))
             {
-                return IpaExtractor.Extract(path, sink) is { } extractedIpa
-                    ? LocateCore(extractedIpa, sink, explicitBinary: null)
-                    : new GameFiles(path, null, null, null, null);
+                var archive = IpaExtractor.OpenZeroCopy(path, sink);
+                if (archive is null) return new GameFiles(path, null, null, null, null);
+                if (archive.Metadata is null)
+                {
+                    sink.Error(DiagnosticCategory.Workspace, DiagnosticCodes.MetadataNotFound, "global-metadata.dat not found.", new() { File = path });
+                    archive.Dispose();
+                    return new GameFiles(path, null, null, null, null);
+                }
+                if (archive.Binary is null)
+                    sink.Warn(DiagnosticCategory.Workspace, DiagnosticCodes.BinaryNotFound,
+                        "No UnityFramework / Mach-O executable found inside IPA.", new() { File = path });
+                return new GameFiles(
+                    path,
+                    archive.BinaryVirtualPath,
+                    archive.MetadataVirtualPath,
+                    DataFolder: null,
+                    BackupFolder: null,
+                    LegacyAsmJsPath: null,
+                    Archive: archive);
             }
 
             if (Ps4PkgExtractor.IsPkgPath(path))
@@ -96,14 +136,14 @@ public static class GameFolderLocator
         // WebGL: no native binary; metadata lives inside the (optionally brotli/gzip-compressed) UnityWebData / Emscripten data container.
         string? wasm = null;
         string? legacyAsmJs = null;
+        VirtualArchiveSession? webArchive = null;
         var searchRoot = path;
         if ((binary is null || WasmFiles.IsWasmPath(binary)) && WebDataExtractor.FindDataFile(path) is { } webData)
         {
             if (binary is null) wasm = WasmFiles.Find(path);
             if (binary is null && wasm is null) legacyAsmJs = WebDataExtractor.FindLegacyAsmJs(path);
-            if (!Directory.EnumerateFiles(path, "global-metadata.dat", SearchOption.AllDirectories).Any()
-                && WebDataExtractor.Extract(webData, sink) is { } extracted)
-                searchRoot = extracted;
+            if (!Directory.EnumerateFiles(path, "global-metadata.dat", SearchOption.AllDirectories).Any())
+                webArchive = WebDataExtractor.OpenZeroCopy(webData, sink);
         }
         else if (binary is null)
         {
@@ -111,16 +151,26 @@ public static class GameFolderLocator
             if (wasm is null) legacyAsmJs = WebDataExtractor.FindLegacyAsmJs(path);
         }
 
-        var metadataCandidates = Directory.EnumerateFiles(searchRoot, "global-metadata.dat", SearchOption.AllDirectories)
-            .Where(p => !p.Contains("BackUpThisFolder", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        // Android ships one tree per ABI: take the metadata from the same tree as the chosen binary.
-        if (binary is not null && metadataCandidates.Count > 1)
-            metadataCandidates = [.. metadataCandidates.OrderByDescending(m => CommonPrefix(m, binary))];
-        if (metadataCandidates.Count > 1)
-            sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.MultipleCandidates,
-                $"{metadataCandidates.Count} global-metadata.dat files found; using '{metadataCandidates[0]}'.", new() { File = path });
-        var metadata = metadataCandidates.FirstOrDefault();
+        string? metadata;
+        if (webArchive?.Metadata is not null)
+        {
+            metadata = webArchive.MetadataVirtualPath;
+        }
+        else
+        {
+            webArchive?.Dispose();
+            webArchive = null;
+            var metadataCandidates = Directory.EnumerateFiles(searchRoot, "global-metadata.dat", SearchOption.AllDirectories)
+                .Where(p => !p.Contains("BackUpThisFolder", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            // Android ships one tree per ABI: take the metadata from the same tree as the chosen binary.
+            if (binary is not null && metadataCandidates.Count > 1)
+                metadataCandidates = [.. metadataCandidates.OrderByDescending(m => CommonPrefix(m, binary))];
+            if (metadataCandidates.Count > 1)
+                sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.MultipleCandidates,
+                    $"{metadataCandidates.Count} global-metadata.dat files found; using '{metadataCandidates[0]}'.", new() { File = path });
+            metadata = metadataCandidates.FirstOrDefault();
+        }
 
         var dataFolder = FindDataFolder(path, searchRoot, metadata);
         var backup = Directory.EnumerateDirectories(path, "*BackUpThisFolder_ButDontShipItWithYourGame").FirstOrDefault();
@@ -153,7 +203,7 @@ public static class GameFolderLocator
         if (metadata is null)
             sink.Error(DiagnosticCategory.Workspace, DiagnosticCodes.MetadataNotFound, "global-metadata.dat not found.", new() { File = path });
 
-        return new GameFiles(path, binary, metadata, dataFolder, backup, legacyAsmJs);
+        return new GameFiles(path, binary, metadata, dataFolder, backup, legacyAsmJs, webArchive);
     }
 
     private static string? FindDataFolder(string path, string searchRoot, string? metadata)

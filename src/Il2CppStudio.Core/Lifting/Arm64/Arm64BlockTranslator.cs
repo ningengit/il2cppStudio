@@ -1202,13 +1202,14 @@ internal sealed class Arm64BlockTranslator
         }
         if (depth > 0) return Arm64HelperKind.Unknown;
 
-        var body = reader.Slice(impl, 96);
+        var body = reader.Slice(impl, 112);
         if (body.Length < 8) return Arm64HelperKind.Unknown;
 
         var hasAtomicLoad = false;
         var hasAtomicStore = false;
         var hasCall = false;
         var hasBitMask = false;
+        var ubfxFromArgCount = 0;
         var checksCctorFlag = false;
         var storesKlassPtr = false;
 
@@ -1222,7 +1223,13 @@ internal sealed class Arm64BlockTranslator
             {
                 case Arm64Mnemonic.LDXR or Arm64Mnemonic.LDAXR: hasAtomicLoad = true; break;
                 case Arm64Mnemonic.STXR or Arm64Mnemonic.STLXR: hasAtomicStore = true; break;
-                case Arm64Mnemonic.UBFX or Arm64Mnemonic.LSR or Arm64Mnemonic.ORR: hasBitMask = true; break;
+                case Arm64Mnemonic.UBFX:
+                    hasBitMask = true;
+                    if (ins.OperandCount >= 2 && ins.GetOperand(1).Kind == Arm64OperandKind.Register
+                        && Arm64Lifter.RegKey((Arm64RegisterOperand)ins.GetOperand(1)) == 0)
+                        ubfxFromArgCount++;
+                    break;
+                case Arm64Mnemonic.LSR or Arm64Mnemonic.ORR: hasBitMask = true; break;
                 case Arm64Mnemonic.BL or Arm64Mnemonic.BLR: hasCall = true; break;
                 case Arm64Mnemonic.LDRB when ins.OperandCount >= 2 && ins.GetOperand(1).Kind == Arm64OperandKind.Memory
                     && ((Arm64MemoryOperand)ins.GetOperand(1)).Accessor.Immediate == 303:
@@ -1238,6 +1245,9 @@ internal sealed class Arm64BlockTranslator
         }
 
         if (hasAtomicLoad && hasAtomicStore && hasBitMask && !hasCall)
+            return Arm64HelperKind.WriteBarrier;
+        // MSVC Windows ARM64 card-table mark (il2cpp_gc_wbarrier_generic_internal): two ubfx slices on x0 + CAS loop.
+        if (ubfxFromArgCount >= 2 && hasBitMask && !checksCctorFlag && !storesKlassPtr)
             return Arm64HelperKind.WriteBarrier;
         if (checksCctorFlag && hasAtomicLoad)
             return Arm64HelperKind.ClassInit;

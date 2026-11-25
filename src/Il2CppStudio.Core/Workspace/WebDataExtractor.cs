@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Text;
 using System.Text.RegularExpressions;
 using Il2CppStudio.Core.Diagnostics;
+using Il2CppStudio.Core.IO;
 using Il2CppStudio.Core.Metadata;
 
 namespace Il2CppStudio.Core.Workspace;
@@ -304,6 +305,293 @@ public static partial class WebDataExtractor
         File.WriteAllText(Path.Combine(cache, ".complete"), dataFile);
         sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.WorkspaceLoadStarted,
             $"WebGL: extracted {count} files ({kind}) from '{Path.GetFileName(dataFile)}' to '{cache}'.", new() { File = dataFile });
+    }
+
+    /// <summary>
+    /// Opens a WebGL data container in memory: uncompressed <c>UnityWebData1.0</c> files slice directly into a
+    /// memory-mapped view with zero copies; compressed containers (<c>.gz</c>, <c>.br</c>, <c>.datagz</c>) decompress
+    /// in memory without touching <c>%TEMP%</c>.
+    /// </summary>
+    public static VirtualArchiveSession? OpenZeroCopy(string dataFile, IDiagnosticSink sink)
+    {
+        SharedMappedFile? shared = null;
+        try
+        {
+            var mapped = MappedFile.Open(dataFile);
+            shared = new SharedMappedFile(mapped);
+
+            ReadOnlySpan<byte> raw = shared.Span;
+            if (raw.Length >= Magic.Length && raw[..Magic.Length].SequenceEqual(Magic))
+            {
+                if (TryBuildSessionFromUnityWebData(raw, shared, decompressedBytes: null, dataFile, sink, out var session))
+                {
+                    shared.Dispose();
+                    return session;
+                }
+            }
+
+            byte[] bytes = DecompressSpan(raw, dataFile);
+            shared.Dispose();
+            shared = null;
+
+            if (TryBuildSessionFromUnityWebData(bytes, owner: null, decompressedBytes: bytes, dataFile, sink, out var webSession))
+                return webSession;
+            if (TryBuildSessionFromEmscriptenManifest(bytes, dataFile, sink, out var emSession))
+                return emSession;
+            if (TryBuildSessionFromRawFallback(bytes, dataFile, sink, out var rawSession))
+                return rawSession;
+
+            sink.Warn(DiagnosticCategory.Workspace, DiagnosticCodes.MetadataNotFound,
+                "File is neither a UnityWebData1.0 container nor a recognized legacy WebGL data package.", new() { File = dataFile });
+            return null;
+        }
+        catch (Exception ex)
+        {
+            shared?.Dispose();
+            sink.Error(DiagnosticCategory.Workspace, DiagnosticCodes.MetadataNotFound,
+                $"WebGL data could not be opened: {ex.Message}", new() { File = dataFile });
+            return null;
+        }
+    }
+
+    private static bool TryBuildSessionFromUnityWebData(
+        ReadOnlySpan<byte> bytes,
+        SharedMappedFile? owner,
+        byte[]? decompressedBytes,
+        string dataFile,
+        IDiagnosticSink sink,
+        out VirtualArchiveSession? session)
+    {
+        session = null;
+        if (bytes.Length < 20 || !bytes[..Magic.Length].SequenceEqual(Magic))
+            return false;
+
+        var headerSize = BinaryPrimitives.ReadInt32LittleEndian(bytes.Slice(Magic.Length, 4));
+        var pos = Magic.Length + 4;
+        VirtualFileBuffer? metadata = null;
+        string? metadataVirtual = null;
+        var dataFiles = new Dictionary<string, VirtualFileBuffer>(StringComparer.OrdinalIgnoreCase);
+
+        while (pos + 12 <= headerSize && pos + 12 <= bytes.Length)
+        {
+            var offset = BinaryPrimitives.ReadInt32LittleEndian(bytes.Slice(pos, 4));
+            var size = BinaryPrimitives.ReadInt32LittleEndian(bytes.Slice(pos + 4, 4));
+            var nameLen = BinaryPrimitives.ReadInt32LittleEndian(bytes.Slice(pos + 8, 4));
+            if (nameLen < 0 || pos + 12 + nameLen > bytes.Length) break;
+            var name = Encoding.UTF8.GetString(bytes.Slice(pos + 12, nameLen));
+            pos += 12 + nameLen;
+            if ((uint)offset > (uint)bytes.Length || (uint)size > (uint)(bytes.Length - offset)) break;
+
+            var fileName = Path.GetFileName(name.Replace('\\', '/'));
+            var vPath = $"{dataFile}::{name}";
+            if (fileName.Equals("global-metadata.dat", StringComparison.OrdinalIgnoreCase))
+            {
+                if (metadata is null)
+                {
+                    metadata = owner is not null
+                        ? VirtualFileBuffer.FromMappedSlice(vPath, owner, offset, size)
+                        : VirtualFileBuffer.FromArray(vPath, bytes.Slice(offset, size).ToArray());
+                    metadataVirtual = vPath;
+                }
+            }
+            else if (fileName is "data.unity3d" or "globalgamemanagers" or "mainData" or "boot.config" or "app.info" or "ScriptingAssemblies.json"
+                     || fileName.Equals("globalgamemanagers.assets", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!dataFiles.ContainsKey(fileName))
+                {
+                    dataFiles[fileName] = owner is not null
+                        ? VirtualFileBuffer.FromMappedSlice(vPath, owner, offset, size)
+                        : VirtualFileBuffer.FromArray(vPath, bytes.Slice(offset, size).ToArray());
+                }
+            }
+        }
+
+        if (metadata is null)
+        {
+            foreach (var d in dataFiles.Values) d.Dispose();
+            return false;
+        }
+
+        session = new VirtualArchiveSession
+        {
+            PrimaryArchivePath = dataFile,
+            Metadata = metadata,
+            MetadataVirtualPath = metadataVirtual,
+            DataFiles = dataFiles,
+        };
+        sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.WorkspaceLoadStarted,
+            $"WebGL: mapped UnityWebData1.0 from '{Path.GetFileName(dataFile)}' in-memory (zero-copy={metadata.IsZeroCopy}).", new() { File = dataFile });
+        return true;
+    }
+
+    private static bool TryBuildSessionFromEmscriptenManifest(byte[] bytes, string dataFile, IDiagnosticSink sink, out VirtualArchiveSession? session)
+    {
+        session = null;
+        var dir = Path.GetDirectoryName(dataFile);
+        if (dir is null || !Directory.Exists(dir)) return false;
+
+        var candidates = Directory.EnumerateFiles(dir, "*.js")
+            .Where(f => !Path.GetFileName(f).Equals("UnityProgress.js", StringComparison.OrdinalIgnoreCase)
+                     && !Path.GetFileName(f).Contains(".framework", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(f => Path.GetFileName(f).Equals("UnityLoader.js", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        foreach (var jsFile in candidates)
+        {
+            var fi = new FileInfo(jsFile);
+            if (fi.Length > 16 * 1024 * 1024) continue;
+            string text;
+            try { text = File.ReadAllText(jsFile); }
+            catch { continue; }
+
+            var entries = ParseEmscriptenManifestEntries(text);
+            if (entries.Count == 0) continue;
+
+            VirtualFileBuffer? metadata = null;
+            string? metadataVirtual = null;
+            var dataFiles = new Dictionary<string, VirtualFileBuffer>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var (name, (start, end)) in entries)
+            {
+                if (start < 0 || end < start || end > bytes.Length) continue;
+                var fileName = Path.GetFileName(name.Replace('\\', '/'));
+                var vPath = $"{dataFile}::{name}";
+                if (fileName.Equals("global-metadata.dat", StringComparison.OrdinalIgnoreCase))
+                {
+                    metadata ??= VirtualFileBuffer.FromArray(vPath, bytes.AsSpan(start, end - start).ToArray());
+                    metadataVirtual ??= vPath;
+                }
+                else if (fileName is "data.unity3d" or "globalgamemanagers" or "mainData" or "boot.config" or "app.info" or "ScriptingAssemblies.json")
+                {
+                    dataFiles.TryAdd(fileName, VirtualFileBuffer.FromArray(vPath, bytes.AsSpan(start, end - start).ToArray()));
+                }
+            }
+
+            if (metadata is not null)
+            {
+                session = new VirtualArchiveSession
+                {
+                    PrimaryArchivePath = dataFile,
+                    Metadata = metadata,
+                    MetadataVirtualPath = metadataVirtual,
+                    DataFiles = dataFiles,
+                };
+                sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.WorkspaceLoadStarted,
+                    $"WebGL: mapped Emscripten manifest ({Path.GetFileName(jsFile)}) from '{Path.GetFileName(dataFile)}' in-memory.", new() { File = dataFile });
+                return true;
+            }
+            foreach (var d in dataFiles.Values) d.Dispose();
+        }
+        return false;
+    }
+
+    private static bool TryBuildSessionFromRawFallback(byte[] bytes, string dataFile, IDiagnosticSink sink, out VirtualArchiveSession? session)
+    {
+        session = null;
+        var span = bytes.AsSpan();
+        ReadOnlySpan<byte> metaMagic = [0xAF, 0x1B, 0xB1, 0xFA];
+
+        var searchFrom = 0;
+        while (searchFrom <= span.Length - 8)
+        {
+            var rel = span[searchFrom..].IndexOf(metaMagic);
+            if (rel < 0) break;
+            var offset = searchFrom + rel;
+            searchFrom = offset + 4;
+
+            var slice = span[offset..];
+            if (TryResolveRawVersion(slice) is not { } version) continue;
+
+            MetadataHeader hdr;
+            try { hdr = MetadataHeader.Read(slice, version); }
+            catch { continue; }
+
+            var validSections = 0;
+            long maxEnd = hdr.HeaderSize;
+            var invalid = false;
+            foreach (var s in hdr.Sections)
+            {
+                if (s.Offset < 0 || s.Size < 0 || s.End > slice.Length) { invalid = true; break; }
+                if (s.Size > 0)
+                {
+                    if (s.Offset < hdr.HeaderSize) { invalid = true; break; }
+                    validSections++;
+                    if (s.End > maxEnd) maxEnd = s.End;
+                }
+            }
+            if (invalid || validSections < 4 || maxEnd > slice.Length) continue;
+
+            var metaBuf = VirtualFileBuffer.FromArray($"{dataFile}::Il2CppData/Metadata/global-metadata.dat", slice[..(int)maxEnd].ToArray());
+            var dataFiles = new Dictionary<string, VirtualFileBuffer>(StringComparer.OrdinalIgnoreCase);
+            if (offset > 0 && (span.StartsWith("UnityFS\0"u8) || span.StartsWith("UnityWeb\0"u8) || span.StartsWith("UnityRaw\0"u8)))
+                dataFiles["data.unity3d"] = VirtualFileBuffer.FromArray($"{dataFile}::data.unity3d", span[..offset].ToArray());
+
+            session = new VirtualArchiveSession
+            {
+                PrimaryArchivePath = dataFile,
+                Metadata = metaBuf,
+                MetadataVirtualPath = metaBuf.VirtualPath,
+                DataFiles = dataFiles,
+            };
+            sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.WorkspaceLoadStarted,
+                $"WebGL: mapped raw WebGL blob from '{Path.GetFileName(dataFile)}' in-memory.", new() { File = dataFile });
+            return true;
+        }
+        return false;
+    }
+
+    private static Dictionary<string, (int Start, int End)> ParseEmscriptenManifestEntries(string text)
+    {
+        var entries = new Dictionary<string, (int Start, int End)>(StringComparer.Ordinal);
+        foreach (Match m in DataRequestRegex().Matches(text))
+        {
+            if (int.TryParse(m.Groups[1].Value, out var start)
+                && int.TryParse(m.Groups[2].Value, out var end))
+            {
+                entries.TryAdd(m.Groups[3].Value, (start, end));
+            }
+        }
+
+        if (entries.Count == 0 && text.Contains("global-metadata.dat", StringComparison.Ordinal))
+        {
+            foreach (Match block in LoadPackageEntryRegex().Matches(text))
+            {
+                var fnMatch = JsonFilenameRegex().Match(block.Value);
+                var startMatch = JsonStartRegex().Match(block.Value);
+                var endMatch = JsonEndRegex().Match(block.Value);
+                if (fnMatch.Success && startMatch.Success && endMatch.Success
+                    && int.TryParse(startMatch.Groups[1].Value, out var start)
+                    && int.TryParse(endMatch.Groups[1].Value, out var end))
+                {
+                    entries.TryAdd(fnMatch.Groups[1].Value, (start, end));
+                }
+            }
+        }
+        return entries;
+    }
+
+    private static unsafe byte[] DecompressSpan(ReadOnlySpan<byte> data, string dataFile)
+    {
+        if (data.StartsWith(Magic)) return data.ToArray();
+        fixed (byte* ptr = data)
+        {
+            if (data.Length > 2 && data[0] == 0x1F && data[1] == 0x8B)
+            {
+                using var ums = new UnmanagedMemoryStream(ptr, data.Length);
+                using var gz = new GZipStream(ums, CompressionMode.Decompress);
+                using var gzOutput = new MemoryStream();
+                gz.CopyTo(gzOutput);
+                return gzOutput.ToArray();
+            }
+            if (dataFile.EndsWith(".data", StringComparison.OrdinalIgnoreCase))
+                return data.ToArray();
+
+            using var brUms = new UnmanagedMemoryStream(ptr, data.Length);
+            using var dec = new BrotliStream(brUms, CompressionMode.Decompress);
+            using var output = new MemoryStream();
+            dec.CopyTo(output);
+            return output.ToArray();
+        }
     }
 
     /// <summary>

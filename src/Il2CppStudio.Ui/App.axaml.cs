@@ -12,6 +12,9 @@ public sealed class App : Application
     /// <summary>Optional desktop window factory (set by <c>Il2CppStudio.Gui</c> so desktop keeps drag-and-drop &amp; window sizing).</summary>
     public static Func<MainViewModel, Window>? DesktopMainWindowFactory { get; set; }
 
+    /// <summary>Optional installed-app scanner (set by <c>Il2CppStudio.Android</c> to enumerate Unity IL2CPP packages).</summary>
+    public static Func<Task<IReadOnlyList<InstalledAndroidApp>>>? InstalledAppScanner { get; set; }
+
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
 
     public override void OnFrameworkInitializationCompleted()

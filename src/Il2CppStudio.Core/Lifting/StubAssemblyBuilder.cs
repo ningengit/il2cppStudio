@@ -763,7 +763,7 @@ public sealed class StubAssemblyBuilder
     /// <summary>Serializes a stub module to a PE image in memory. Errors are reported, never thrown.</summary>
     public byte[]? Write(StubModule stub)
     {
-        lock (_gate)
+        lock (stub)
         {
             var bag = new DiagnosticBag();
             try

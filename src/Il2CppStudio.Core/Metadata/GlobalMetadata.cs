@@ -17,7 +17,34 @@ public sealed record MetadataSectionReport(
 /// </summary>
 public sealed class GlobalMetadata : IDisposable
 {
-    private readonly MappedFile _file;
+    private readonly struct BackingStore : IDisposable
+    {
+        private readonly IDisposable? _owner;
+        public string Path { get; }
+        public int Length { get; }
+        public ReadOnlyMemory<byte> Memory { get; }
+        public ReadOnlySpan<byte> Span => Memory.Span;
+
+        public BackingStore(MappedFile mapped)
+        {
+            Path = mapped.Path;
+            Length = mapped.Length;
+            Memory = mapped.Memory;
+            _owner = mapped;
+        }
+
+        public BackingStore(VirtualFileBuffer buffer)
+        {
+            Path = buffer.VirtualPath;
+            Length = buffer.Length;
+            Memory = buffer.Memory;
+            _owner = null; // Owned by the enclosing VirtualArchiveSession.
+        }
+
+        public void Dispose() => _owner?.Dispose();
+    }
+
+    private readonly BackingStore _file;
     private readonly IDiagnosticSink _sink;
     private readonly ConcurrentDictionary<int, string> _stringCache = new();
     private readonly List<MetadataSectionReport> _sectionReports = [];
@@ -61,7 +88,12 @@ public sealed class GlobalMetadata : IDisposable
     public Il2CppMetadataUsageList[] MetadataUsageLists { get; } = [];
     public Il2CppMetadataUsagePair[] MetadataUsagePairs { get; } = [];
 
-    private GlobalMetadata(MappedFile file, IDiagnosticSink sink)
+    /// <summary>v108+: methodSpecs and genericMethodTable live directly inside global-metadata.dat.</summary>
+    public Registration.Il2CppMethodSpecRecord[] EmbeddedMethodSpecs { get; } = [];
+    public Registration.Il2CppGenericMethodFunction[] EmbeddedGenericMethodTable { get; } = [];
+    public SerializedIndexSizes IndexSizes { get; }
+
+    private GlobalMetadata(BackingStore file, IDiagnosticSink sink)
     {
         _file = file;
         _sink = sink;
@@ -90,52 +122,125 @@ public sealed class GlobalMetadata : IDisposable
 
         ValidateHeaderLayout(data.Length);
         CrossCheckMethodLayout();
+        IndexSizes = version.HasCompactIndices ? DeriveIndexSizes(version) : SerializedIndexSizes.Fixed4;
+        var sz = IndexSizes;
 
-        StringLiterals = ReadTable<Il2CppStringLiteral>("stringLiteral");
-        Events = ReadTable<Il2CppEventDefinition>("events");
-        Properties = ReadTable<Il2CppPropertyDefinition>("properties");
-        Methods = ReadTable<Il2CppMethodDefinition>("methods");
-        ParameterDefaultValues = ReadTable<Il2CppDefaultValue>("parameterDefaultValues");
-        FieldDefaultValues = ReadTable<Il2CppDefaultValue>("fieldDefaultValues");
-        FieldMarshaledSizes = ReadTable<Il2CppFieldMarshaledSize>("fieldMarshaledSizes");
-        Parameters = ReadTable<Il2CppParameterDefinition>("parameters");
-        Fields = ReadTable<Il2CppFieldDefinition>("fields");
-        GenericParameters = ReadTable<Il2CppGenericParameter>("genericParameters");
-        GenericParameterConstraints = ReadInts("genericParameterConstraints");
-        GenericContainers = ReadTable<Il2CppGenericContainer>("genericContainers");
-        NestedTypes = ReadInts("nestedTypes");
-        Interfaces = ReadInts("interfaces");
-        VTableMethods = [.. ReadInts("vtableMethods").Select(i => unchecked((uint)i))];
-        InterfaceOffsets = ReadTable<Il2CppInterfaceOffsetPair>("interfaceOffsets");
-        TypeDefinitions = ReadTable<Il2CppTypeDefinition>("typeDefinitions");
-        Images = ReadTable<Il2CppImageDefinition>("images");
-        // 24.1 builds from late 2018.4 already dropped hashValueIndex: pick the assembly layout that divides evenly.
-        Assemblies = version.IsV24 && Images.Length > 0 && Header["assemblies"].Size / Images.Length == 64 && version.HasHashValueIndex
-            ? ReadTable<Il2CppAssemblyDefinition>("assemblies", new MetadataVersion(24, 4))
-            : ReadTable<Il2CppAssemblyDefinition>("assemblies");
-        FieldRefs = version.HasFieldRefs ? ReadTable<Il2CppFieldRef>("fieldRefs") : [];
-        ReferencedAssemblies = version.HasReferencedAssemblies ? ReadInts("referencedAssemblies") : [];
-        if (Header.TryGet("rgctxEntries", out _))
-            ReportBlob("rgctxEntries");
-        if (version.HasMetadataUsageTables)
+        StringLiterals = version.HasV39StringLiterals ? ReadV39StringLiterals() : ReadTable<Il2CppStringLiteral>("stringLiteral");
+        if (version.HasCompactIndices)
         {
-            MetadataUsageLists = ReadTable<Il2CppMetadataUsageList>("metadataUsageLists");
-            MetadataUsagePairs = ReadTable<Il2CppMetadataUsagePair>("metadataUsagePairs");
-        }
-        if (version.HasAttributeDataBlobs)
-        {
+            Events = ReadCompact("events", (ref r) => Il2CppEventDefinition.ReadCompact(ref r, version, sz));
+            Properties = ReadCompact("properties", (ref r) => Il2CppPropertyDefinition.ReadCompact(ref r, version, sz));
+            Methods = ReadCompact("methods", (ref r) => Il2CppMethodDefinition.ReadCompact(ref r, sz));
+            ParameterDefaultValues = ReadCompact("parameterDefaultValues", (ref r) => Il2CppDefaultValue.ReadParamCompact(ref r, version, sz));
+            FieldDefaultValues = ReadCompact("fieldDefaultValues", (ref r) => Il2CppDefaultValue.ReadFieldCompact(ref r, version, sz));
+            FieldMarshaledSizes = ReadCompact("fieldMarshaledSizes", (ref r) => Il2CppFieldMarshaledSize.ReadCompact(ref r, version, sz));
+            Parameters = ReadCompact("parameters", (ref r) => Il2CppParameterDefinition.ReadCompact(ref r, sz));
+            Fields = ReadCompact("fields", (ref r) => Il2CppFieldDefinition.ReadCompact(ref r, sz));
+            GenericParameters = ReadCompact("genericParameters", (ref r) => Il2CppGenericParameter.ReadCompact(ref r, sz));
+            GenericParameterConstraints = ReadCompactInts("genericParameterConstraints", sz.TypeIndex);
+            GenericContainers = ReadCompact("genericContainers", (ref r) => Il2CppGenericContainer.ReadCompact(ref r, version, sz));
+            NestedTypes = ReadInts("nestedTypes");
+            Interfaces = ReadCompactInts("interfaces", sz.TypeIndex);
+            VTableMethods = [.. ReadInts("vtableMethods").Select(i => unchecked((uint)i))];
+            InterfaceOffsets = ReadCompact("interfaceOffsets", (ref r) => Il2CppInterfaceOffsetPair.ReadCompact(ref r, sz));
+            TypeDefinitions = ReadCompact("typeDefinitions", (ref r) => Il2CppTypeDefinition.ReadCompact(ref r, version, sz));
+            if (Header.TryGet("typeInlineArrays", out _)) ReportCounted("typeInlineArrays");
+            Images = ReadCompact("images", (ref r) => Il2CppImageDefinition.ReadCompact(ref r, version, sz));
+            Assemblies = ReadTable<Il2CppAssemblyDefinition>("assemblies");
+            FieldRefs = ReadCompact("fieldRefs", (ref r) => Il2CppFieldRef.ReadCompact(ref r, version, sz));
+            ReferencedAssemblies = ReadInts("referencedAssemblies");
             AttributeDataRanges = ReadTable<Il2CppCustomAttributeDataRange>("attributeDataRange");
             ReportBlob("attributeData");
+            UnresolvedIndirectCallParameterTypes = ReadCompactInts("unresolvedIndirectCallParameterTypes", sz.TypeIndex);
+            UnresolvedIndirectCallParameterRanges = ReadTable<Il2CppMetadataRange>("unresolvedIndirectCallParameterRanges");
+            WindowsRuntimeTypeNames = ReadCompact("windowsRuntimeTypeNames", (ref r) => Il2CppWindowsRuntimeTypeNamePair.ReadCompact(ref r, sz));
+            ExportedTypeDefinitions = ReadInts("exportedTypeDefinitions");
+            if (version.HasV108EmbeddedGenerics)
+            {
+                var onGeneric = ReadCompact("methodSpecsOnGenericType", (ref r) =>
+                    new Registration.Il2CppMethodSpecRecord(
+                        SerializedIndexSizes.ReadIndex(ref r, sz.MethodIndex),
+                        SerializedIndexSizes.ReadIndex(ref r, sz.GenericInstIndex),
+                        -1));
+                var genericOnType = ReadCompact("genericMethodSpecsOnType", (ref r) =>
+                    new Registration.Il2CppMethodSpecRecord(
+                        SerializedIndexSizes.ReadIndex(ref r, sz.MethodIndex),
+                        -1,
+                        SerializedIndexSizes.ReadIndex(ref r, sz.GenericInstIndex)));
+                var fullSpecs = ReadCompact("methodSpecs", (ref r) =>
+                    new Registration.Il2CppMethodSpecRecord(
+                        SerializedIndexSizes.ReadIndex(ref r, sz.MethodIndex),
+                        SerializedIndexSizes.ReadIndex(ref r, sz.GenericInstIndex),
+                        SerializedIndexSizes.ReadIndex(ref r, sz.GenericInstIndex)));
+                EmbeddedMethodSpecs = [.. onGeneric, .. genericOnType, .. fullSpecs];
+
+                var noAdj = ReadCompact("genericMethodFunctionsDefinitions", (ref r) =>
+                    new Registration.Il2CppGenericMethodFunction(
+                        SerializedIndexSizes.ReadIndex(ref r, sz.GenericMethodIndex),
+                        SerializedIndexSizes.ReadIndex(ref r, sz.MethodPointerTableIndex),
+                        SerializedIndexSizes.ReadIndex(ref r, sz.InvokerTableIndex),
+                        -1));
+                var withAdj = ReadCompact("genericMethodFunctionsDefinitionsWithAdjustor", (ref r) =>
+                    new Registration.Il2CppGenericMethodFunction(
+                        SerializedIndexSizes.ReadIndex(ref r, sz.GenericMethodIndex),
+                        SerializedIndexSizes.ReadIndex(ref r, sz.MethodPointerTableIndex),
+                        SerializedIndexSizes.ReadIndex(ref r, sz.InvokerTableIndex),
+                        SerializedIndexSizes.ReadIndex(ref r, sz.AdjustorThunkIndex)));
+                EmbeddedGenericMethodTable = [.. noAdj, .. withAdj];
+
+                ReportCounted("invokerIndices");
+                ReportCounted("rgctxRanges");
+                ReportCounted("rgctxValues");
+                ReportCounted("staticConstructorTypeIndices");
+            }
         }
-        else if (version.HasCustomAttributeTables)
+        else
         {
-            AttributeTypeRanges = ReadTable<Il2CppCustomAttributeTypeRange>("attributesInfo");
-            AttributeTypes = ReadInts("attributeTypes");
+            Events = ReadTable<Il2CppEventDefinition>("events");
+            Properties = ReadTable<Il2CppPropertyDefinition>("properties");
+            Methods = ReadTable<Il2CppMethodDefinition>("methods");
+            ParameterDefaultValues = ReadTable<Il2CppDefaultValue>("parameterDefaultValues");
+            FieldDefaultValues = ReadTable<Il2CppDefaultValue>("fieldDefaultValues");
+            FieldMarshaledSizes = ReadTable<Il2CppFieldMarshaledSize>("fieldMarshaledSizes");
+            Parameters = ReadTable<Il2CppParameterDefinition>("parameters");
+            Fields = ReadTable<Il2CppFieldDefinition>("fields");
+            GenericParameters = ReadTable<Il2CppGenericParameter>("genericParameters");
+            GenericParameterConstraints = ReadInts("genericParameterConstraints");
+            GenericContainers = ReadTable<Il2CppGenericContainer>("genericContainers");
+            NestedTypes = ReadInts("nestedTypes");
+            Interfaces = ReadInts("interfaces");
+            VTableMethods = [.. ReadInts("vtableMethods").Select(i => unchecked((uint)i))];
+            InterfaceOffsets = ReadTable<Il2CppInterfaceOffsetPair>("interfaceOffsets");
+            TypeDefinitions = ReadTable<Il2CppTypeDefinition>("typeDefinitions");
+            Images = ReadTable<Il2CppImageDefinition>("images");
+            // 24.1 builds from late 2018.4 already dropped hashValueIndex: pick the assembly layout that divides evenly.
+            Assemblies = version.IsV24 && Images.Length > 0 && Header["assemblies"].Size / Images.Length == 64 && version.HasHashValueIndex
+                ? ReadTable<Il2CppAssemblyDefinition>("assemblies", new MetadataVersion(24, 4))
+                : ReadTable<Il2CppAssemblyDefinition>("assemblies");
+            FieldRefs = version.HasFieldRefs ? ReadTable<Il2CppFieldRef>("fieldRefs") : [];
+            ReferencedAssemblies = version.HasReferencedAssemblies ? ReadInts("referencedAssemblies") : [];
+            if (Header.TryGet("rgctxEntries", out _))
+                ReportBlob("rgctxEntries");
+            if (version.HasMetadataUsageTables)
+            {
+                MetadataUsageLists = ReadTable<Il2CppMetadataUsageList>("metadataUsageLists");
+                MetadataUsagePairs = ReadTable<Il2CppMetadataUsagePair>("metadataUsagePairs");
+            }
+            if (version.HasAttributeDataBlobs)
+            {
+                AttributeDataRanges = ReadTable<Il2CppCustomAttributeDataRange>("attributeDataRange");
+                ReportBlob("attributeData");
+            }
+            else if (version.HasCustomAttributeTables)
+            {
+                AttributeTypeRanges = ReadTable<Il2CppCustomAttributeTypeRange>("attributesInfo");
+                AttributeTypes = ReadInts("attributeTypes");
+            }
+            UnresolvedIndirectCallParameterTypes = version.HasUnresolvedIndirectCalls ? ReadInts("unresolvedIndirectCallParameterTypes") : [];
+            UnresolvedIndirectCallParameterRanges = version.HasUnresolvedIndirectCalls ? ReadTable<Il2CppMetadataRange>("unresolvedIndirectCallParameterRanges") : [];
+            WindowsRuntimeTypeNames = version.HasWindowsRuntimeTypeNames ? ReadTable<Il2CppWindowsRuntimeTypeNamePair>("windowsRuntimeTypeNames") : [];
+            ExportedTypeDefinitions = version.HasExportedTypeDefinitions ? ReadInts("exportedTypeDefinitions") : [];
         }
-        UnresolvedIndirectCallParameterTypes = version.HasUnresolvedIndirectCalls ? ReadInts("unresolvedIndirectCallParameterTypes") : [];
-        UnresolvedIndirectCallParameterRanges = version.HasUnresolvedIndirectCalls ? ReadTable<Il2CppMetadataRange>("unresolvedIndirectCallParameterRanges") : [];
-        WindowsRuntimeTypeNames = version.HasWindowsRuntimeTypeNames ? ReadTable<Il2CppWindowsRuntimeTypeNamePair>("windowsRuntimeTypeNames") : [];
-        ExportedTypeDefinitions = version.HasExportedTypeDefinitions ? ReadInts("exportedTypeDefinitions") : [];
         ReportBlob("stringLiteralData");
         ReportBlob("string");
         ReportBlob("fieldAndParameterDefaultValueData");
@@ -155,13 +260,26 @@ public sealed class GlobalMetadata : IDisposable
             throw new MetadataLoadException($"Cannot open '{path}'.", ex);
         }
 
-        try { return new GlobalMetadata(file, sink); }
+        try { return new GlobalMetadata(new BackingStore(file), sink); }
         catch (MetadataLoadException) { file.Dispose(); throw; }
         catch (Exception ex)
         {
             file.Dispose();
             sink.Fatal(DiagnosticCategory.Metadata, DiagnosticCodes.MetadataSectionOutOfBounds,
                 $"Unexpected failure while parsing metadata: {ex.Message}", new() { File = path }, ex);
+            throw new MetadataLoadException("Metadata parse failed.", ex);
+        }
+    }
+
+    /// <summary>Parses a <see cref="VirtualFileBuffer"/> (zero-copy mapped slice or in-memory stream) without disk extraction.</summary>
+    public static GlobalMetadata Load(VirtualFileBuffer buffer, IDiagnosticSink sink)
+    {
+        try { return new GlobalMetadata(new BackingStore(buffer), sink); }
+        catch (MetadataLoadException) { throw; }
+        catch (Exception ex)
+        {
+            sink.Fatal(DiagnosticCategory.Metadata, DiagnosticCodes.MetadataSectionOutOfBounds,
+                $"Unexpected failure while parsing metadata: {ex.Message}", new() { File = buffer.VirtualPath }, ex);
             throw new MetadataLoadException("Metadata parse failed.", ex);
         }
     }
@@ -216,7 +334,7 @@ public sealed class GlobalMetadata : IDisposable
     {
         switch (raw)
         {
-            case 16 or 19 or 20 or 21 or 22 or 23 or 27 or 29 or 31:
+            case 16 or 19 or 20 or 21 or 22 or 23 or 27 or 29 or 31 or 39 or 108:
                 return new MetadataVersion(raw);
             case 24:
                 return ResolveV24Minor();
@@ -225,10 +343,10 @@ public sealed class GlobalMetadata : IDisposable
                     $"Metadata v{raw} was never shipped by Unity; the header has likely been altered.");
             case < 16:
                 throw Fail(DiagnosticCodes.MetadataVersionUnsupported,
-                    $"Metadata v{raw} (pre Unity 5.3) is outside the supported range 16-31.");
+                    $"Metadata v{raw} (pre Unity 5.3) is outside the supported range 16-108.");
             default:
                 throw Fail(DiagnosticCodes.MetadataVersionUnsupported,
-                    $"Metadata v{raw} is newer than the supported range 16-31. Add a layout for it before parsing.");
+                    $"Metadata v{raw} is newer than the supported range 16-108. Add a layout for it before parsing.");
         }
     }
 
@@ -284,7 +402,7 @@ public sealed class GlobalMetadata : IDisposable
     /// </summary>
     private void CrossCheckMethodLayout()
     {
-        if (Version.Major < 27) return;
+        if (Version.Major < 27 || Version.HasCompactIndices) return;
         var size = Header["methods"].Size;
         var chosen = Il2CppMethodDefinition.SizeOf(Version);
         var alt = chosen == 36 ? 32 : 36;
@@ -292,6 +410,130 @@ public sealed class GlobalMetadata : IDisposable
             _sink.Error(DiagnosticCategory.MetadataIntegrity, DiagnosticCodes.MetadataLayoutAmbiguous,
                 $"Methods table ({size} bytes) fits {alt}-byte records but not the {chosen}-byte v{Version} layout. " +
                 "The version number in the header may have been modified.", Loc("methods"));
+    }
+
+    private delegate T CompactRowReader<out T>(ref SpanReader reader);
+
+    private SerializedIndexSizes DeriveIndexSizes(MetadataVersion version)
+    {
+        int Stride(string name, int fallback) =>
+            Header.TryGet(name, out var s) && s.Count > 0 ? s.Size / s.Count : fallback;
+
+        var typeIdx = Header["interfaces"].Count > 0 ? Stride("interfaces", 4)
+            : Header["fields"].Count > 0 ? Stride("fields", 12) - 8
+            : Header["parameters"].Count > 0 ? Stride("parameters", 12) - 8
+            : Header["genericParameterConstraints"].Count > 0 ? Stride("genericParameterConstraints", 4)
+            : 4;
+        var tdIdx = SerializedIndexSizes.GetIndexSize(Header["typeDefinitions"].Count);
+        var gcIdx = SerializedIndexSizes.GetIndexSize(Header["genericContainers"].Count);
+        var paramIdx = SerializedIndexSizes.GetIndexSize(Header["parameters"].Count);
+
+        if (!version.HasV108EmbeddedGenerics)
+        {
+            return new SerializedIndexSizes
+            {
+                TypeIndex = typeIdx, TypeDefinitionIndex = tdIdx, GenericContainerIndex = gcIdx, ParameterIndex = paramIdx,
+                GenericParameterIndex = 4, InterfacesIndex = 4, EventIndex = 4, PropertyIndex = 4,
+                NestedTypeIndex = 4, FieldIndex = 4, DefaultValueDataIndex = 4, MethodIndex = 4,
+                GenericInstIndex = 4, GenericMethodIndex = 4, MethodPointerTableIndex = 4,
+                InvokerTableIndex = 4, AdjustorThunkIndex = 4,
+            };
+        }
+
+        var methodIdx = SerializedIndexSizes.GetIndexSize(Header["methods"].Count);
+        var gInstIdx = Header["methodSpecsOnGenericType"].Count > 0 ? Stride("methodSpecsOnGenericType", methodIdx + 4) - methodIdx
+            : Header["genericMethodSpecsOnType"].Count > 0 ? Stride("genericMethodSpecsOnType", methodIdx + 4) - methodIdx
+            : Header["methodSpecs"].Count > 0 ? (Stride("methodSpecs", methodIdx + 8) - methodIdx) / 2
+            : 4;
+        var gmCount = Header["methodSpecsOnGenericType"].Count + Header["genericMethodSpecsOnType"].Count + Header["methodSpecs"].Count;
+        var gmIdx = SerializedIndexSizes.GetIndexSize(gmCount);
+        var invIdx = Header["invokerIndices"].Count > 0 ? Stride("invokerIndices", 4) : 4;
+        var adjIdx = SerializedIndexSizes.GetIndexSize(Header["genericMethodFunctionsDefinitionsWithAdjustor"].Count);
+        var mpIdx = Header["genericMethodFunctionsDefinitions"].Count > 0
+            ? Stride("genericMethodFunctionsDefinitions", gmIdx + invIdx + 4) - gmIdx - invIdx
+            : Header["genericMethodFunctionsDefinitionsWithAdjustor"].Count > 0
+                ? Stride("genericMethodFunctionsDefinitionsWithAdjustor", gmIdx + invIdx + adjIdx + 4) - gmIdx - invIdx - adjIdx
+                : 4;
+
+        return new SerializedIndexSizes
+        {
+            TypeIndex = typeIdx,
+            TypeDefinitionIndex = tdIdx,
+            GenericContainerIndex = gcIdx,
+            ParameterIndex = paramIdx,
+            GenericParameterIndex = SerializedIndexSizes.GetIndexSize(Header["genericParameters"].Count),
+            InterfacesIndex = SerializedIndexSizes.GetIndexSize(Header["interfaceOffsets"].Count),
+            EventIndex = SerializedIndexSizes.GetIndexSize(Header["events"].Count),
+            PropertyIndex = SerializedIndexSizes.GetIndexSize(Header["properties"].Count),
+            NestedTypeIndex = SerializedIndexSizes.GetIndexSize(Header["nestedTypes"].Count),
+            FieldIndex = SerializedIndexSizes.GetIndexSize(Header["fields"].Count),
+            DefaultValueDataIndex = SerializedIndexSizes.GetIndexSize(Header["fieldAndParameterDefaultValueData"].Count),
+            MethodIndex = methodIdx,
+            GenericInstIndex = gInstIdx,
+            GenericMethodIndex = gmIdx,
+            MethodPointerTableIndex = mpIdx,
+            InvokerTableIndex = invIdx,
+            AdjustorThunkIndex = adjIdx,
+        };
+    }
+
+    private Il2CppStringLiteral[] ReadV39StringLiterals()
+    {
+        var s = Header["stringLiteral"];
+        var count = Math.Max(0, s.Count);
+        var inBounds = s.Offset >= 0 && s.Size >= 0 && s.End <= _file.Length;
+        var aligned = count == 0 ? s.Size == 0 : s.Size == count * 4;
+        _sectionReports.Add(new MetadataSectionReport(s.Name, s.Offset, s.Size, 4, count, inBounds, aligned, s.Description));
+        if (!inBounds || count <= 1) return [];
+
+        var r = new SpanReader(_file.Span.Slice(s.Offset, Math.Min(s.Size, count * 4)));
+        var literalCount = count - 1;
+        var result = new Il2CppStringLiteral[literalCount];
+        var prev = r.ReadInt32();
+        for (var i = 0; i < literalCount; i++)
+        {
+            var next = r.ReadInt32();
+            var len = next >= prev ? (uint)(next - prev) : 0u;
+            result[i] = new Il2CppStringLiteral(len, prev);
+            prev = next;
+        }
+        return result;
+    }
+
+    private T[] ReadCompact<T>(string sectionName, CompactRowReader<T> read)
+    {
+        var s = Header[sectionName];
+        var count = Math.Max(0, s.Count);
+        var inBounds = s.Offset >= 0 && s.Size >= 0 && s.End <= _file.Length;
+        var elementSize = count > 0 ? s.Size / count : 0;
+        var aligned = count == 0 ? s.Size == 0 : s.Size % count == 0;
+        _sectionReports.Add(new MetadataSectionReport(s.Name, s.Offset, s.Size, elementSize, count, inBounds, aligned, s.Description));
+        if (!inBounds || count == 0) return [];
+
+        var result = new T[count];
+        var reader = new SpanReader(_file.Span.Slice(s.Offset, s.Size));
+        for (var i = 0; i < count; i++)
+            result[i] = read(ref reader);
+
+        if (reader.Position != s.Size)
+            _sink.Warn(DiagnosticCategory.MetadataIntegrity, DiagnosticCodes.MetadataSectionMisaligned,
+                $"Compact section '{s.Name}' read {reader.Position} bytes vs header size {s.Size}.", Loc(s.Name));
+
+        _sink.Verbose(DiagnosticCategory.Metadata, DiagnosticCodes.MetadataTableRead, $"{s.Name}: {count:N0} x {elementSize} bytes.", Loc(s.Name));
+        return result;
+    }
+
+    private int[] ReadCompactInts(string sectionName, int indexSize) =>
+        ReadCompact(sectionName, (ref r) => SerializedIndexSizes.ReadIndex(ref r, indexSize));
+
+    private void ReportCounted(string sectionName)
+    {
+        var s = Header[sectionName];
+        var inBounds = s.Offset >= 0 && s.Size >= 0 && s.End <= _file.Length;
+        var count = Math.Max(0, s.Count);
+        var elemSize = count > 0 ? s.Size / count : 0;
+        var aligned = count == 0 ? s.Size == 0 : s.Size % count == 0;
+        _sectionReports.Add(new MetadataSectionReport(s.Name, s.Offset, s.Size, elemSize, count, inBounds, aligned, s.Description));
     }
 
     private T[] ReadTable<T>(string sectionName, MetadataVersion? layout = null) where T : IMetadataRecord<T>

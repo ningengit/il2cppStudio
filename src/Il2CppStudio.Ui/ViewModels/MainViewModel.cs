@@ -117,6 +117,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         await LoadPathAsync(file);
     }
 
+    [RelayCommand]
+    private async Task LoadInstalledApp()
+    {
+        if (Ui is null) return;
+        var app = await Ui.PickInstalledAppAsync();
+        if (app is null) return;
+        await LoadFolderAsync(
+            app.BaseApkPath,
+            switchKeysetPath: null,
+            ps4Passcode: null,
+            additionalApkPaths: app.SplitApkPaths,
+            nativeLibraryDir: app.NativeLibraryDir);
+    }
+
     public async Task LoadPathAsync(string path)
     {
         if (Ui is null || string.IsNullOrWhiteSpace(path)) return;
@@ -150,7 +164,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public Task LoadFolderAsync(string folder) => LoadFolderAsync(folder, null, null);
 
-    public async Task LoadFolderAsync(string folder, string? switchKeysetPath, string? ps4Passcode)
+    public async Task LoadFolderAsync(
+        string folder,
+        string? switchKeysetPath,
+        string? ps4Passcode,
+        IReadOnlyList<string>? additionalApkPaths = null,
+        string? nativeLibraryDir = null)
     {
         CancelSearch();
         _renderCts?.Cancel();
@@ -177,6 +196,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 SubstituteBcl = SubstituteBcl,
                 SwitchKeysetPath = switchKeysetPath,
                 Ps4PkgPasscode = ps4Passcode,
+                AdditionalApkPaths = additionalApkPaths,
+                NativeLibraryDir = nativeLibraryDir,
             });
             WorkspaceSetup.Attach(ws);
             _searchIndex = WorkspaceSearchIndex.Build(ws.Model);

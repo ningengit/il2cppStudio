@@ -55,7 +55,7 @@ public static class ExportService
         _ = ws.Stubs;
         _ = ws.Decompiler;
         _ = ws.Cpp;
-        var sharedBcl = new BclReferenceProvider(ws.Options.BclReferenceDirectory, ws.Environment.UnityVersion, null, NullDiagnosticSink.Instance);
+        var sharedBcl = ws.Decompiler.Bcl;
         var materializedRefs = new ConcurrentDictionary<string, Lazy<string?>>(StringComparer.OrdinalIgnoreCase);
         var refsDir = Path.GetFullPath(Path.Combine(outDir, "_references"));
 
@@ -117,7 +117,7 @@ public static class ExportService
         foreach (var p in plans)
         {
             EnsureDir(p.Dir);
-            if (p.Image < 0) continue;
+            if (p.Image < 0 || (filter is null && p.Substituted)) continue;
             foreach (var type in p.TopLevel)
             {
                 var nsDir = type.Namespace.Length == 0 ? "-" : WorkspaceSerializer.Sanitize(type.Namespace);
@@ -198,6 +198,7 @@ public static class ExportService
             foreach (var p in plans)
             {
                 if (p.Image < 0) continue;
+                if (filter is null && p.Substituted) continue;
                 batchPlans.Add(p);
                 requests.Add(new DecompilerService.BatchImageRequest(
                     p.Image, p.Asm.ImageName, p.TopLevel, includeIl && !p.Substituted, p.Substituted));
@@ -213,10 +214,14 @@ public static class ExportService
                 }, ct);
             }
 
-            foreach (var p in plans)
+            // Pre-materialize the union of unique references once in parallel so csproj emission has zero lock contention.
+            var tRefsPre = ExportProfiler.Start();
+            ProjectReferences.WarmAll(ws, plans.Where(p => p.Image >= 0 && !p.Substituted).Select(p => p.Asm), refsDir, sharedBcl, materializedRefs);
+            ExportProfiler.RecordProjectRefs(tRefsPre);
+
+            Parallel.ForEach(plans, parallelOpts, p =>
             {
-                ct.ThrowIfCancellationRequested();
-                if (p.Image < 0 || p.Substituted) continue;
+                if (p.Image < 0 || p.Substituted) return;
                 try
                 {
                     var tRefs = ExportProfiler.Start();
@@ -229,7 +234,7 @@ public static class ExportService
                     ws.Sink.Warn(DiagnosticCategory.Extraction, DiagnosticCodes.ExtractionEntryFailed,
                         $"Project file for {p.Asm.Name}: {ex.Message}", new() { AssemblyName = p.Asm.Name }, ex);
                 }
-            }
+            });
         }
         catch
         {

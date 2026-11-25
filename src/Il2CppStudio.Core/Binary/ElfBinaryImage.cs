@@ -62,8 +62,11 @@ public sealed class ElfBinaryImage : IBinaryImage
     {
         using var f = File.OpenRead(path);
         Span<byte> m = stackalloc byte[4];
-        return f.Read(m) == 4 && m[0] == 0x7F && m[1] == (byte)'E' && m[2] == (byte)'L' && m[3] == (byte)'F';
+        return f.Read(m) == 4 && IsElf(m);
     }
+
+    public static bool IsElf(ReadOnlySpan<byte> header) =>
+        header.Length >= 4 && header[0] == 0x7F && header[1] == (byte)'E' && header[2] == (byte)'L' && header[3] == (byte)'F';
 
     public IReadOnlyList<(string Name, ulong Rva)> GetSymbols() => _symbols;
 

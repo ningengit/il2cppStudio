@@ -30,6 +30,7 @@ public sealed class DecompilerService
     private readonly StubAssemblyBuilder _stubs;
     private readonly MetadataModel _model;
     private readonly BclReferenceProvider _bcl;
+    internal BclReferenceProvider Bcl => _bcl;
     private readonly IDiagnosticSink _sink;
     private readonly ConcurrentDictionary<int, (int LiftedCount, PEFile File)> _images = new();
     private readonly ConcurrentDictionary<string, PEFile?> _bclFiles = new(StringComparer.OrdinalIgnoreCase);
@@ -49,7 +50,7 @@ public sealed class DecompilerService
 
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<MetadataFile, Dictionary<string, TypeDefinitionHandle>> TypeHandleCache = new();
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<byte[], HashSet<uint>> _crossTypeTokens = new();
-    private readonly Lock _stubImageGate = new();
+    private readonly ConcurrentDictionary<int, Lock> _stubImageGates = new();
 
     private EntityMapper? Mapper()
     {
@@ -180,7 +181,10 @@ public sealed class DecompilerService
     public DecompilerService(StubAssemblyBuilder stubs, MetadataModel model, BclReferenceProvider bcl, bool substituteBcl, IDiagnosticSink sink)
     {
         _stubs = stubs; _model = model; _bcl = bcl; SubstituteBcl = substituteBcl; _sink = sink;
+        _sharedResolver = new Resolver(this);
     }
+
+    private readonly Resolver _sharedResolver;
 
     public static DecompilerSettings CreateSettings() => new(LanguageVersion.Latest)
     {
@@ -291,7 +295,7 @@ public sealed class DecompilerService
     private byte[]? CachedStubBytes(int imageIndex)
     {
         var stub = _stubs.GetModule(imageIndex);
-        lock (_stubImageGate)
+        lock (_stubImageGates.GetOrAdd(imageIndex, static _ => new Lock()))
         {
             if (_stubBytes.TryGetValue(imageIndex, out var c) && c.LiftedCount == stub.LiftedMethods.Count) return c.Bytes;
             var tWrite = ExportProfiler.Start();
@@ -305,7 +309,7 @@ public sealed class DecompilerService
     public PEFile GetStubFile(int imageIndex)
     {
         var stub = _stubs.GetModule(imageIndex);
-        lock (_stubImageGate)
+        lock (_stubImageGates.GetOrAdd(imageIndex, static _ => new Lock()))
         {
             if (_images.TryGetValue(imageIndex, out var cached) && cached.LiftedCount == stub.LiftedMethods.Count) return cached.File;
             var tStub = ExportProfiler.Start();
@@ -353,7 +357,7 @@ public sealed class DecompilerService
         if (includeIl && pristine is null) _ = TypeMapFor(file);
         var isPristine = pristine is not null;
         var settings = isPristine ? CreateBclSettings() : CreateSettings();
-        var typeSystem = new DecompilerTypeSystem(file, new Resolver(this), settings);
+        var typeSystem = new DecompilerTypeSystem(file, _sharedResolver, settings);
         var options = new ParallelOptions { MaxDegreeOfParallelism = maxDegreeOfParallelism ?? Environment.ProcessorCount, CancellationToken = ct };
         // Schedule heaviest types first without range-chunk buffering so no worker is stranded on a huge class at the tail.
         var ordered = new int[types.Count];
@@ -535,7 +539,7 @@ public sealed class DecompilerService
                 var crossTypeTokens = !isPristine && CachedStubBytes(req.ImageIndex) is { } bytes ? CrossTypeTokens(bytes) : null;
                 if (effectiveIl && !isPristine) _ = TypeMapFor(file);
                 var settings = isPristine ? CreateBclSettings() : CreateSettings();
-                var typeSystem = new DecompilerTypeSystem(file, new Resolver(this), settings);
+                var typeSystem = new DecompilerTypeSystem(file, _sharedResolver, settings);
 
                 var types = req.TopLevelTypes;
                 var ordered = new int[types.Count];
@@ -592,7 +596,7 @@ public sealed class DecompilerService
                     var crossTypeTokens = !isPristine && CachedStubBytes(req.ImageIndex) is { } bytes ? CrossTypeTokens(bytes) : null;
                     if (effectiveIl && !isPristine) _ = TypeMapFor(file);
                     var settings = isPristine ? CreateBclSettings() : CreateSettings();
-                    var typeSystem = new DecompilerTypeSystem(file, new Resolver(this), settings);
+                    var typeSystem = new DecompilerTypeSystem(file, _sharedResolver, settings);
                     var decompiler = new CSharpDecompiler(typeSystem, settings);
 
                     var types = req.TopLevelTypes;
@@ -675,7 +679,7 @@ public sealed class DecompilerService
 
     private void LiftMethods(IEnumerable<int> methods) => BodyProvider?.EnsureLifted(methods);
 
-    private CSharpDecompiler NewDecompiler(MetadataFile file) => new(file, new Resolver(this), CreateSettings());
+    private CSharpDecompiler NewDecompiler(MetadataFile file) => new(file, _sharedResolver, CreateSettings());
 
     private (ReflectionDisassembler, StringWriter) NewDisassembler(MetadataFile file)
     {
@@ -683,7 +687,7 @@ public sealed class DecompilerService
         var output = new PlainTextOutput(writer);
         var dis = new ReflectionDisassembler(output, CancellationToken.None)
         {
-            AssemblyResolver = new Resolver(this),
+            AssemblyResolver = _sharedResolver,
             DetectControlStructure = true,
             ShowSequencePoints = false,
         };

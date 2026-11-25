@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using Il2CppStudio.Core.Diagnostics;
+using Il2CppStudio.Core.IO;
 
 namespace Il2CppStudio.Core.Workspace;
 
@@ -92,6 +93,99 @@ public static class IpaExtractor
             $"IPA: extracted {count} IL2CPP files from '{Path.GetFileName(ipaPath)}' to '{cache}'.",
             new() { File = ipaPath });
         return cache;
+    }
+
+    public static VirtualArchiveSession? OpenZeroCopy(string ipaPath, IDiagnosticSink sink)
+    {
+        if (!File.Exists(ipaPath))
+        {
+            sink.Error(DiagnosticCategory.Workspace, DiagnosticCodes.GameFolderNotFound,
+                $"'{ipaPath}' does not exist.", new() { File = ipaPath });
+            return null;
+        }
+
+        ZipZeroCopyReader? reader = null;
+        VirtualFileBuffer? metadata = null;
+        string? metadataVirtual = null;
+        VirtualFileBuffer? binary = null;
+        string? binaryVirtual = null;
+        var dataFiles = new Dictionary<string, VirtualFileBuffer>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            reader = ZipZeroCopyReader.Open(ipaPath);
+            string? appRootPrefix = null;
+            string? appExeName = null;
+            var hasUnityFramework = false;
+
+            foreach (var entry in reader.Entries)
+            {
+                var norm = entry.FullName.Replace('\\', '/').TrimStart('/');
+                if (!norm.StartsWith("Payload/", StringComparison.OrdinalIgnoreCase)) continue;
+                var rest = norm["Payload/".Length..];
+                var slash = rest.IndexOf('/');
+                if (slash <= 4 || !rest[..slash].EndsWith(".app", StringComparison.OrdinalIgnoreCase)) continue;
+
+                appRootPrefix ??= "Payload/" + rest[..(slash + 1)];
+                appExeName ??= Path.GetFileNameWithoutExtension(rest[..slash]);
+                var rel = rest[(slash + 1)..];
+                if (rel.Equals("Frameworks/UnityFramework.framework/UnityFramework", StringComparison.OrdinalIgnoreCase))
+                    hasUnityFramework = true;
+            }
+
+            foreach (var entry in reader.Entries)
+            {
+                var norm = entry.FullName.Replace('\\', '/').TrimStart('/');
+                if (norm.Length == 0 || norm.EndsWith('/')) continue;
+                if (!IsWantedEntry(norm, appRootPrefix, appExeName, hasUnityFramework)) continue;
+
+                var vPath = $"{ipaPath}::{norm}";
+                var fileName = Path.GetFileName(norm);
+                if (fileName.Equals("global-metadata.dat", StringComparison.OrdinalIgnoreCase))
+                {
+                    metadata ??= reader.OpenBuffer(entry);
+                    metadataVirtual ??= vPath;
+                    continue;
+                }
+
+                if (norm.EndsWith("/Frameworks/UnityFramework.framework/UnityFramework", StringComparison.OrdinalIgnoreCase)
+                    || (!hasUnityFramework && appRootPrefix is not null && !string.IsNullOrEmpty(appExeName)
+                        && norm.Equals(appRootPrefix + appExeName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    binary ??= reader.OpenBuffer(entry);
+                    binaryVirtual ??= vPath;
+                    continue;
+                }
+
+                if (!dataFiles.ContainsKey(fileName))
+                    dataFiles[fileName] = reader.OpenBuffer(entry);
+            }
+
+            var session = new VirtualArchiveSession
+            {
+                PrimaryArchivePath = ipaPath,
+                Metadata = metadata,
+                MetadataVirtualPath = metadataVirtual,
+                Binary = binary,
+                BinaryVirtualPath = binaryVirtual,
+                DataFiles = dataFiles,
+            };
+            session.AddOwner(reader);
+            sink.Info(DiagnosticCategory.Workspace, DiagnosticCodes.ExtractionCompleted,
+                $"IPA: mapped '{Path.GetFileName(ipaPath)}' in-memory (zero-copy metadata={metadata?.IsZeroCopy == true}, zero-copy binary={binary?.IsZeroCopy == true}).",
+                new() { File = ipaPath });
+            return session;
+        }
+        catch (Exception ex)
+        {
+            metadata?.Dispose();
+            binary?.Dispose();
+            foreach (var d in dataFiles.Values) d.Dispose();
+            reader?.Dispose();
+            sink.Error(DiagnosticCategory.Workspace, DiagnosticCodes.FileAccessFailed,
+                $"Failed to open '{Path.GetFileName(ipaPath)}': {ex.Message}", new() { File = ipaPath }, ex);
+            return null;
+        }
     }
 
     private static bool HasMetadata(string dir) =>
