@@ -114,6 +114,9 @@ public static class GameFolderLocator
                     : dir;
                 return LocateCore(root, sink, explicitBinary: WasmFiles.IsWasmPath(path) ? path : null);
             }
+
+            if (path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && Path.GetDirectoryName(path) is { } exeDir)
+                return LocateCore(exeDir, sink, explicitBinary: null, options);
         }
 
         if (!Directory.Exists(path))

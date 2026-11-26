@@ -15,10 +15,10 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         Opened += (_, _) => FitToScreen();
-        AddHandler(DragDrop.DragEnterEvent, OnDragOver, RoutingStrategies.Tunnel, handledEventsToo: true);
-        AddHandler(DragDrop.DragOverEvent, OnDragOver, RoutingStrategies.Tunnel, handledEventsToo: true);
+        AddHandler(DragDrop.DragEnterEvent, OnDragOver, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
+        AddHandler(DragDrop.DragOverEvent, OnDragOver, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
         AddHandler(DragDrop.DragLeaveEvent, OnDragLeave, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
-        AddHandler(DragDrop.DropEvent, OnDrop, RoutingStrategies.Tunnel, handledEventsToo: true);
+        AddHandler(DragDrop.DropEvent, OnDrop, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
         Deactivated += (_, _) => { ++_dragToken; HideDropOverlay(); };
         PointerMoved += (_, _) => { if (DropOverlay.IsVisible) { ++_dragToken; HideDropOverlay(); } };
     }
@@ -58,6 +58,7 @@ public sealed partial class MainWindow : Window
         {
             e.DragEffects = DragDropEffects.None;
             HideDropOverlay();
+            e.Handled = true;
         }
     }
 
@@ -117,6 +118,7 @@ public sealed partial class MainWindow : Window
             || ext.Equals(".prx", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".elf", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".self", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".exe", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".dll", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".so", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".dylib", StringComparison.OrdinalIgnoreCase)

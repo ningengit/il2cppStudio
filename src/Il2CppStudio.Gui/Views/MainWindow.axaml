@@ -8,7 +8,7 @@
         WindowStartupLocation="CenterScreen" SystemDecorations="Full" CanResize="True"
         ExtendClientAreaToDecorationsHint="False"
         DragDrop.AllowDrop="True">
-  <Grid>
+  <Grid Background="Transparent" DragDrop.AllowDrop="True">
     <views:MainView />
 
     <Border x:Name="DropOverlay"
@@ -19,7 +19,7 @@
             BorderThickness="2"
             CornerRadius="8"
             Margin="12">
-      <TextBlock Text="Drop a game folder, APK, XAPK, APKS, APKM, IPA, NSP, PKG, PRX, WASM, Mach-O, or global-metadata.dat to load"
+      <TextBlock Text="Drop a game folder, EXE, APK, XAPK, APKS, APKM, IPA, NSP, PKG, PRX, WASM, Mach-O, or global-metadata.dat to load"
                  IsHitTestVisible="False"
                  HorizontalAlignment="Center"
                  VerticalAlignment="Center"

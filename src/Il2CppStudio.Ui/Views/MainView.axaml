@@ -5,7 +5,7 @@
              xmlns:ae="using:AvaloniaEdit"
              x:Class="Il2CppStudio.Gui.Views.MainView"
              x:DataType="vm:MainViewModel">
-  <Border x:Name="RootSafeArea">
+  <Border x:Name="RootSafeArea" Background="Transparent" DragDrop.AllowDrop="True">
     <Grid>
       <DockPanel>
         <!-- Desktop menu bar -->

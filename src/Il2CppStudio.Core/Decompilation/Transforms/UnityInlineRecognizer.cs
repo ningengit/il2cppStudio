@@ -733,15 +733,9 @@ public static class UnityInlineRecognizer
             if (!AstWalk.IsAttachedTo(cond, scope)) continue;
             if (!IsResNotPosInf(cond.Condition, resVar)) continue;
             if (!IsMinIntFallback(cond.FalseExpression)) continue;
-            var replacement = cond.TrueExpression;
-            if (inlineIntExpr is not null)
-            {
-                var intCasts = AstWalk.Collect<CastExpression>(replacement, c =>
-                    c.Type is PrimitiveType { Keyword: "int" } && Unparen(c.Expression) is IdentifierExpression id && id.Identifier == resVar);
-                if (intCasts.Count != 1) continue;
-                intCasts[0].ReplaceWith(inlineIntExpr.Clone());
-            }
-            cond.ReplaceWith(replacement.Detach());
+            var replacement = InlineCastInReplacement(Unparen(cond.TrueExpression), resVar, inlineIntExpr, out var ok);
+            if (!ok) continue;
+            ReplaceUnwrappingParens(cond, replacement, scope);
             folded = true;
         }
         foreach (var bin in AstWalk.Collect<BinaryOperatorExpression>(scope))
@@ -752,14 +746,9 @@ public static class UnityInlineRecognizer
                 Expression? keep = IsResEqPosInf(bin.Left, resVar) ? bin.Right
                                  : IsResEqPosInf(bin.Right, resVar) ? bin.Left : null;
                 if (keep is null) continue;
-                if (inlineIntExpr is not null)
-                {
-                    var intCasts = AstWalk.Collect<CastExpression>(keep, c =>
-                        c.Type is PrimitiveType { Keyword: "int" } && Unparen(c.Expression) is IdentifierExpression id && id.Identifier == resVar);
-                    if (intCasts.Count != 1) continue;
-                    intCasts[0].ReplaceWith(inlineIntExpr.Clone());
-                }
-                bin.ReplaceWith(keep.Detach());
+                var replacement = InlineCastInReplacement(Unparen(keep), resVar, inlineIntExpr, out var ok);
+                if (!ok) continue;
+                ReplaceUnwrappingParens(bin, replacement, scope);
                 folded = true;
             }
             else if (bin.Operator == BinaryOperatorType.ConditionalAnd)
@@ -767,18 +756,39 @@ public static class UnityInlineRecognizer
                 Expression? keep = IsResNotPosInf(bin.Left, resVar) ? bin.Right
                                  : IsResNotPosInf(bin.Right, resVar) ? bin.Left : null;
                 if (keep is null) continue;
-                if (inlineIntExpr is not null)
-                {
-                    var intCasts = AstWalk.Collect<CastExpression>(keep, c =>
-                        c.Type is PrimitiveType { Keyword: "int" } && Unparen(c.Expression) is IdentifierExpression id && id.Identifier == resVar);
-                    if (intCasts.Count != 1) continue;
-                    intCasts[0].ReplaceWith(inlineIntExpr.Clone());
-                }
-                bin.ReplaceWith(keep.Detach());
+                var replacement = InlineCastInReplacement(Unparen(keep), resVar, inlineIntExpr, out var ok);
+                if (!ok) continue;
+                ReplaceUnwrappingParens(bin, replacement, scope);
                 folded = true;
             }
         }
         return folded;
+    }
+
+    private static Expression InlineCastInReplacement(Expression expr, string resVar, Expression? inlineIntExpr, out bool ok)
+    {
+        ok = true;
+        if (inlineIntExpr is null) return expr;
+        if (expr is CastExpression selfCast && selfCast.Type is PrimitiveType { Keyword: "int" }
+            && Unparen(selfCast.Expression) is IdentifierExpression selfId && selfId.Identifier == resVar)
+            return inlineIntExpr.Clone();
+        var intCasts = AstWalk.Collect<CastExpression>(expr, c =>
+            c.Type is PrimitiveType { Keyword: "int" } && Unparen(c.Expression) is IdentifierExpression id && id.Identifier == resVar);
+        if (intCasts.Count != 1)
+        {
+            ok = false;
+            return expr;
+        }
+        ReplaceUnwrappingParens(intCasts[0], inlineIntExpr.Clone(), expr);
+        return expr;
+    }
+
+    private static void ReplaceUnwrappingParens(AstNode target, Expression replacement, AstNode stopAt)
+    {
+        AstNode outer = target;
+        while (outer.Parent is ParenthesizedExpression paren && !ReferenceEquals(paren, stopAt))
+            outer = paren;
+        outer.ReplaceWith(Unparen(replacement).Detach());
     }
 
     private static bool IsResNotPosInf(Expression cond, string resVar) =>

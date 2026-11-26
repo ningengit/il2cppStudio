@@ -215,7 +215,8 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
 
         // Inlined IEEE banker's rounding (Mathf.RoundToInt) + dead label/temp pruning
         var aiLocCs = ws.Render(Assert.Single(ws.FindTypes("AILocationSelectorScript")), null, CodeView.CSharp);
-        Assert.Contains("Mathf.RoundToInt(", aiLocCs);
+        Assert.Contains("id = Mathf.RoundToInt(", aiLocCs);
+        Assert.DoesNotContain("((Mathf.RoundToInt(", aiLocCs);
         Assert.DoesNotContain("goto IL_", aiLocCs);
         Assert.DoesNotContain("Math.Truncate", aiLocCs);
 
