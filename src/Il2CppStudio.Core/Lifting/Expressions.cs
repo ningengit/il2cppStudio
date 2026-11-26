@@ -223,6 +223,7 @@ public sealed class IndirectExpr(Expr pointer, TypeSignature type) : Expr
     {
         var il = ctx.IL;
         if (KindOf(type) == ValueKind.Struct) { il.Add(CilOpCodes.Ldobj, type.ToTypeDefOrRef()); return; }
+        if (KindOf(type) == ValueKind.Ref) { il.Add(CilOpCodes.Ldind_Ref); return; }
         switch (type.ElementType)
         {
             case E.Boolean or E.U1: il.Add(CilOpCodes.Ldind_U1); return;
@@ -244,6 +245,7 @@ public sealed class IndirectExpr(Expr pointer, TypeSignature type) : Expr
     {
         var il = ctx.IL;
         if (KindOf(type) == ValueKind.Struct) { il.Add(CilOpCodes.Stobj, type.ToTypeDefOrRef()); return; }
+        if (KindOf(type) == ValueKind.Ref) { il.Add(CilOpCodes.Stind_Ref); return; }
         switch (type.ElementType)
         {
             case E.Boolean or E.I1 or E.U1: il.Add(CilOpCodes.Stind_I1); return;
@@ -464,6 +466,41 @@ public sealed class MarkerExpr(MarkerKind marker, int index, string text, Expr? 
     public override ValueKind Kind => ValueKind.Native;
     public override void Emit(EmitContext ctx) => ctx.Native(text);
     public override string Describe() => text;
+}
+
+/// <summary>Deferred ternary value emitted as a CIL branch only when consumed (avoids eager spills on constant address offsets).</summary>
+public sealed class CondSelectExpr(Expr cond, Expr trueVal, Expr falseVal, TypeSignature type) : Expr
+{
+    public Expr Cond => cond;
+    public Expr TrueVal => trueVal;
+    public Expr FalseVal => falseVal;
+    public override TypeSignature Type => type;
+    public override ValueKind Kind => KindOf(type);
+
+    public override void Emit(EmitContext ctx)
+    {
+        var elseLbl = new CilInstructionLabel();
+        var endLbl = new CilInstructionLabel();
+        cond.Emit(ctx);
+        ctx.IL.Add(CilOpCodes.Brfalse, elseLbl);
+        EmitAs(ctx, trueVal, type);
+        ctx.IL.Add(CilOpCodes.Br, endLbl);
+        elseLbl.Instruction = ctx.IL.Add(CilOpCodes.Nop);
+        EmitAs(ctx, falseVal, type);
+        endLbl.Instruction = ctx.IL.Add(CilOpCodes.Nop);
+    }
+
+    public override string Describe() => $"({cond.Describe()} ? {trueVal.Describe()} : {falseVal.Describe()})";
+}
+
+/// <summary>128-bit constant read from a contiguous read-only pool slot (e.g., <c>ldr q0</c>).</summary>
+public sealed class Const128Expr(ulong lo, ulong hi) : Expr
+{
+    public ulong Lo => lo;
+    public ulong Hi => hi;
+    public override ValueKind Kind => ValueKind.I8;
+    public override void Emit(EmitContext ctx) => ctx.IL.Add(CilOpCodes.Ldc_I8, unchecked((long)lo));
+    public override string Describe() => $"0x{hi:X16}_{lo:X16}";
 }
 
 public enum MarkerKind { TypeInfo, StaticFields, MethodInfo, Klass, VTableEntry, FieldInfo, Il2CppType, ElementClass, InitFlag }

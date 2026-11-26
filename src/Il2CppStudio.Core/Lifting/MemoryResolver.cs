@@ -519,6 +519,29 @@ public sealed class MemoryResolver
 
         if (baseExpr is AddressExpr a && TypeDefOf(a.Target.Type) is var std and >= 0 && index is null)
         {
+            if (size == 16 && value is Const128Expr c128
+                && StructField(a.Target, std, disp) is FieldExpr
+                && StructField(a.Target, std, disp + 8) is FieldExpr)
+            {
+                return Store(ctx, baseExpr, null, 1, disp, 8, new ConstExpr(unchecked((long)c128.Lo), ValueKind.I8))
+                    && Store(ctx, baseExpr, null, 1, disp + 8, 8, new ConstExpr(unchecked((long)c128.Hi), ValueKind.I8));
+            }
+            if (size == 8 && StructField(a.Target, std, disp) is FieldExpr pf1 && StructField(a.Target, std, disp + 4) is FieldExpr pf2
+                && ValueSize(pf1.Type!) <= 4 && ValueSize(pf2.Type!) <= 4 && TryExtract64BitConstant(value, out var packedStructBits))
+            {
+                var lo = PackedHalfExpr(unchecked((uint)packedStructBits), pf1.Type!);
+                new AddressExpr(pf1.Instance).Emit(ctx);
+                Expr.EmitAs(ctx, lo, pf1.Type!);
+                il.Add(CilOpCodes.Stfld, pf1.Field);
+                NotifyStored(lo, pf1);
+
+                var hi = PackedHalfExpr(unchecked((uint)(packedStructBits >> 32)), pf2.Type!);
+                new AddressExpr(pf2.Instance).Emit(ctx);
+                Expr.EmitAs(ctx, hi, pf2.Type!);
+                il.Add(CilOpCodes.Stfld, pf2.Field);
+                NotifyStored(hi, pf2);
+                return true;
+            }
             if (StructField(a.Target, std, disp) is FieldExpr zf && size > ValueSize(zf.Type!) && IsZero(value))
                 return StoreZeros(ctx, a.Target, std, disp, size);   // `mov qword [x], 0`: zeroes two adjacent fields at once
             if (StructField(a.Target, std, disp) is FieldExpr fe)
@@ -597,9 +620,33 @@ public sealed class MemoryResolver
 
         var td = TypeDefOf(baseExpr.Type);
         if (td < 0 || index is not null) return false;
+        if (size == 16 && value is Const128Expr c128Obj
+            && FindInstanceField(td, disp) is not null && FindInstanceField(td, disp + 8) is not null)
+        {
+            return Store(ctx, baseExpr, null, 1, disp, 8, new ConstExpr(unchecked((long)c128Obj.Lo), ValueKind.I8))
+                && Store(ctx, baseExpr, null, 1, disp + 8, 8, new ConstExpr(unchecked((long)c128Obj.Hi), ValueKind.I8));
+        }
         if (FindInstanceField(td, disp) is { } f && FieldRef(f) is { } fr)
         {
             var ft = FieldType(f, baseExpr.Type);
+            if (size == 8 && ValueSize(ft) <= 4
+                && FindInstanceField(td, disp + 4) is { } f2 && FieldRef(f2) is { } fr2
+                && FieldType(f2, baseExpr.Type) is { } ft2 && ValueSize(ft2) <= 4
+                && TryExtract64BitConstant(value, out var raw64))
+            {
+                var lo = PackedHalfExpr(unchecked((uint)raw64), ft);
+                baseExpr.Emit(ctx);
+                Expr.EmitAs(ctx, lo, ft);
+                il.Add(CilOpCodes.Stfld, fr);
+                NotifyStored(lo, new FieldExpr(baseExpr, fr, ft));
+
+                var hi = PackedHalfExpr(unchecked((uint)(raw64 >> 32)), ft2);
+                baseExpr.Emit(ctx);
+                Expr.EmitAs(ctx, hi, ft2);
+                il.Add(CilOpCodes.Stfld, fr2);
+                NotifyStored(hi, new FieldExpr(baseExpr, fr2, ft2));
+                return true;
+            }
             if (Expr.KindOf(ft) == ValueKind.Struct && (value is StructChunkExpr || size < ValueSize(ft) && value.Kind != ValueKind.Struct))
                 return Store(ctx, new AddressExpr(new FieldExpr(baseExpr, fr, ft)), null, 1, 0, size, value);
             baseExpr.Emit(ctx);
@@ -612,6 +659,27 @@ public sealed class MemoryResolver
             return Store(ctx, new AddressExpr(new FieldExpr(baseExpr, ofr2, FieldType(of, baseExpr.Type))), null, 1, disp - of.Offset, size, value);
         return false;
     }
+
+    private static bool TryExtract64BitConstant(Expr value, out ulong bits)
+    {
+        switch (value)
+        {
+            case ConstExpr c:
+                bits = unchecked((ulong)c.Value);
+                return true;
+            case FloatExpr { Kind: ValueKind.R8 } fd:
+                bits = unchecked((ulong)BitConverter.DoubleToInt64Bits(fd.Value));
+                return true;
+            default:
+                bits = 0;
+                return false;
+        }
+    }
+
+    private static Expr PackedHalfExpr(uint bits, TypeSignature targetType) =>
+        Expr.KindOf(targetType) == ValueKind.R4
+            ? new FloatExpr(BitConverter.UInt32BitsToSingle(bits), true)
+            : new ConstExpr(unchecked((int)bits), ValueKind.I4);
 
     private void NotifyStored(Expr value, Expr fieldExpr)
     {

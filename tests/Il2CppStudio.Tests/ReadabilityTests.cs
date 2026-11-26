@@ -141,5 +141,76 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
 
         var bullyCs = ws.Render(Assert.Single(ws.FindTypes("BullyScript")), null, CodeView.CSharp);
         Assert.DoesNotContain("sub_E6F914", bullyCs);
+
+        // Call return values spilled to stack before ToString / Box / float getters
+        var scoreCs = ws.Render(Assert.Single(ws.FindTypes("ScoreScript")), null, CodeView.CSharp);
+        Assert.Contains("PlayerPrefs.GetInt(\"CurrentBooks\")", scoreCs);
+        Assert.DoesNotContain("default(int)", scoreCs);
+
+        var endlessTextCs = ws.Render(Assert.Single(ws.FindTypes("EndlessTextScript")), null, CodeView.CSharp);
+        Assert.Contains("PlayerPrefs.GetInt(\"HighBooks\")", endlessTextCs);
+        Assert.DoesNotContain("default(int)", endlessTextCs);
+
+        var detentionCs = ws.Render(Assert.Single(ws.FindTypes("DetentionTextScript")), null, CodeView.CSharp);
+        Assert.Contains("Math.Ceiling", detentionCs);
+        Assert.DoesNotContain("default(int)", detentionCs);
+
+        var mouseSliderCs = ws.Render(Assert.Single(ws.FindTypes("MouseSliderScript")), null, CodeView.CSharp);
+        Assert.Contains("slider.value = PlayerPrefs.GetFloat(\"MouseSensitivity\")", mouseSliderCs);
+
+        // Merge points (csel, external/virtual tail calls, converged field pointers)
+        var moveCs = ws.Render(Assert.Single(ws.FindTypes("PlayerMovement")), null, CodeView.CSharp);
+        Assert.Contains("runSpeed : walkSpeed", moveCs);
+        Assert.DoesNotContain("= 0L;", moveCs);
+
+        var camCs = ws.Render(Assert.Single(ws.FindTypes("CameraScript")), null, CodeView.CSharp);
+        Assert.Contains(".rotation = new Quaternion(", camCs);
+
+        var uiSettingsCs = ws.Render(Assert.Single(ws.FindTypes("UiSettings")), null, CodeView.CSharp);
+        Assert.Contains("PlayerPrefs.SetInt(\"UiHeight\", value);", uiSettingsCs);
+        Assert.DoesNotContain("PlayerPrefs.SetInt(\"UiHeight\", default(int))", uiSettingsCs);
+
+        var startBtnCs = ws.Render(Assert.Single(ws.FindTypes("StartButton")), null, CodeView.CSharp);
+        Assert.Contains("\"endless\"", startBtnCs);
+        Assert.Contains("\"story\"", startBtnCs);
+
+        var principalCs = ws.Render(Assert.Single(ws.FindTypes("PrincipalScript")), null, CodeView.CSharp);
+        Assert.Contains("audNoFaculty", principalCs);
+        Assert.Contains("audNoRunning", principalCs);
+        Assert.Contains("audNoDrinking", principalCs);
+        Assert.Contains("audNoEscaping", principalCs);
+
+        // Large struct returns/args (Ray) & array indexing / loop bounds / packed stores / base calls
+        var notebookCs = ws.Render(Assert.Single(ws.FindTypes("NotebookScript")), null, CodeView.CSharp);
+        Assert.Contains("ScreenPointToRay", notebookCs);
+        Assert.Contains("Physics.Raycast(ray, out hitInfo)", notebookCs);
+        Assert.DoesNotContain("default(Ray)", notebookCs);
+
+        var uiMgrCs = ws.Render(Assert.Single(ws.FindTypes("UiManager")), null, CodeView.CSharp);
+        Assert.Contains("array[num4]", uiMgrCs);
+        Assert.Contains("while (num4 < array.Length)", uiMgrCs);
+        Assert.DoesNotContain("/ 8", uiMgrCs);
+        Assert.DoesNotContain("num4 + 1", uiMgrCs);
+
+        var alarmCs = ws.Render(Assert.Single(ws.FindTypes("AlarmClockScript")), null, CodeView.CSharp);
+        Assert.Contains("timeLeft = 30f;", alarmCs);
+        Assert.Contains("lifeSpan = 35f;", alarmCs);
+
+        var inputMgrCs = ws.Render(Assert.Single(ws.FindTypes("InputManager")), null, CodeView.CSharp);
+        Assert.Contains("base.Awake();", inputMgrCs);
+        Assert.Contains("while (num != 13)", inputMgrCs);
+        Assert.DoesNotContain("/ 8", inputMgrCs);
+
+        // Coroutine factory, IEnumerator.Reset metadata-init recognition, 16-byte SIMD field init
+        var defSettingsCs = ws.Render(Assert.Single(ws.FindTypes("DefaultSettingsScript")), null, CodeView.CSharp);
+        Assert.Contains("new _CloseOptions_d__1(0)", defSettingsCs);
+        Assert.Contains("throw new NotSupportedException();", defSettingsCs);
+        Assert.DoesNotContain("throw null;", defSettingsCs);
+        Assert.DoesNotContain("sub_E6F90C", defSettingsCs);
+
+        var dpScalerCs = ws.Render(Assert.Single(ws.FindTypes("DpCanvasScaler")), null, CodeView.CSharp);
+        Assert.Contains("100f", dpScalerCs);
+        Assert.Contains("96f", dpScalerCs);
+        Assert.DoesNotContain("m_ReferencePixelsPerUnit = 0L;", dpScalerCs);
     }
 }

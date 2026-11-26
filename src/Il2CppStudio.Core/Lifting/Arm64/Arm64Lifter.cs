@@ -430,7 +430,10 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                 ClassifyOperands(ins, defs, reads);
                 foreach (var r in reads) if (!b.Def.Contains(r)) b.Use.Add(r);
                 foreach (var d in defs) b.Def.Add(d);
-                if (ins.Mnemonic is Arm64Mnemonic.BL or Arm64Mnemonic.BLR)
+                var isTailCall = (ins.Mnemonic == Arm64Mnemonic.B && ins.OperandCount == 1
+                        && BranchTarget(insns[i].Address, ins, 0) is var bt && (bt < funcStart || bt >= funcEnd))
+                    || (ins.Mnemonic == Arm64Mnemonic.BR && b.Successors.Count == 0);
+                if (ins.Mnemonic is Arm64Mnemonic.BL or Arm64Mnemonic.BLR || isTailCall)
                 {
                     for (var r = 0; r <= 7; r++) if (!b.Def.Contains(r)) b.Use.Add(r);
                     for (var r = 32; r <= 39; r++) if (!b.Def.Contains(r)) b.Use.Add(r);

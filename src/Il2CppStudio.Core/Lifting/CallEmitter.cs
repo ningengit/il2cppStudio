@@ -24,6 +24,9 @@ public sealed class CallEmitter(
     private static readonly Register[] Win32Volatile = [Register.RAX, Register.RCX, Register.RDX,
         Register.XMM0, Register.XMM1, Register.XMM2, Register.XMM3, Register.XMM4, Register.XMM5, Register.XMM6, Register.XMM7];
 
+    /// <summary>Declaring typedef of the method currently being lifted (used to distinguish <c>base.M()</c> from <c>this.M()</c>).</summary>
+    public int CurrentTypeDef { get; init; } = -1;
+
     /// <summary>Registers a call clobbers under the active calling convention.</summary>
     public static Register[] Volatile => ArgumentLocations.Abi switch
     {
@@ -84,7 +87,14 @@ public sealed class CallEmitter(
         if (thisValue is not null) EmitThis(ctx, shape, thisValue);
         for (var i = 0; i < shape.Parameters.Count; i++) EmitParameter(ctx, shape.Parameters[i], shape.FirstParameterPosition + i);
 
-        var useCallvirt = !shape.IsStatic && !shape.DeclaringIsValueType;
+        var isBaseCall = explicitThis is null
+            && thisValue is ArgExpr { Parameter.Index: -1 }
+            && !shape.IsStatic && !shape.DeclaringIsValueType
+            && CurrentTypeDef >= 0
+            && md.Methods[methodIndex].DeclaringType != CurrentTypeDef
+            && (md.Methods[methodIndex].Flags & 0x0040) != 0
+            && mem.IsStrictDerivedFrom(CurrentTypeDef, md.Methods[methodIndex].DeclaringType);
+        var useCallvirt = !shape.IsStatic && !shape.DeclaringIsValueType && !isBaseCall;
         ctx.IL.Add(useCallvirt ? CilOpCodes.Callvirt : CilOpCodes.Call, target);
         regs.ClobberVolatiles(Volatile);
         StoreResult(ctx, shape, retPtr);

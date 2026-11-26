@@ -59,7 +59,7 @@ public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs
             var arith = new InstructionTranslators(regs, ops, writer, f, new ScalarIdioms(regs, ops, writer, f, sym.Registration.Reader));
             var branch = new BranchTranslator(regs, ops, arith);
             var binder = new StructBinder(regs, slots, mem);
-            var emitter = new CallEmitter(md, sym.Registration, stubs, stub.Module, mem, regs, slots, binder);
+            var emitter = new CallEmitter(md, sym.Registration, stubs, stub.Module, mem, regs, slots, binder) { CurrentTypeDef = md.Methods[methodIndex].DeclaringType };
             var helperEmitter = helpers is null ? null : new Runtime.RuntimeHelperEmitter(helpers, stubs, stub.Module, regs, binder);
             var calls = new CallDispatcher(sym, emitter, regs, sink, loc, helperEmitter, helpers) { InConstructor = method.IsConstructor && !method.IsStatic };
             var shape = MethodShape.Create(md, sym.Registration, stubs, mem, stub.Module, methodIndex, -1);
