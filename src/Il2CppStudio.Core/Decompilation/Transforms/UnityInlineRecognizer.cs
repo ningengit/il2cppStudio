@@ -294,6 +294,7 @@ public static class UnityInlineRecognizer
                 postIfGoto = null;
 
             // Inline preceding `srcVar = <rhs>;` if srcVar is overwritten or never read again before overwrite.
+            var removedDecls = new Dictionary<string, AstType>(StringComparer.Ordinal);
             Expression argExpr = srcId.Clone();
             Statement? prevSrcAssign = null;
             var inLoop = IsLoopBody(block);
@@ -312,6 +313,7 @@ public static class UnityInlineRecognizer
                 && IsVarDeadAfter(stmts[idx], methodBody, innerSrc.Identifier, joinLabel)
                 && (!inLoop || !ContainsIdentifierBefore(block, i - 2, innerSrc.Identifier)))
             {
+                RecordRemovedDecls(innerPrev, removedDecls);
                 innerPrev.Remove();
                 argExpr = innerRhs.Clone();
                 deadCandidates.Add(innerSrc.Identifier);
@@ -323,6 +325,13 @@ public static class UnityInlineRecognizer
             var anchorNext = ifs.NextSibling;
             var insertAnchor = stmts[i];
 
+            // Record declarations before removing statements so any surviving reference elsewhere gets hoisted safely.
+            RecordRemovedDecls(prevSrcAssign, removedDecls);
+            RecordRemovedDecls(insertAnchor, removedDecls);
+            RecordRemovedDecls(diffStmt, removedDecls);
+            RecordRemovedDecls(copyStmt, removedDecls);
+            RecordRemovedDecls(ifs, removedDecls);
+
             // Remove the inlined rounding block.
             prevSrcAssign?.Remove();
             diffStmt.Remove();
@@ -332,6 +341,7 @@ public static class UnityInlineRecognizer
             // Remove tieLabel + parity check + trailing goto if no other goto jumps to tieLabel.
             if (!HasGotoTarget(methodBody, tieLabel))
             {
+                RecordRemovedDecls(tieAssignStmt, removedDecls);
                 tieAssignStmt.Remove();
                 tieGotoStmt?.Remove();
                 tieLabelStmt.Remove();
@@ -398,13 +408,17 @@ public static class UnityInlineRecognizer
                     {
                         if (s is VariableDeclarationStatement vd && vd.Variables.Count == 1 && vd.Variables.Single().Name == resVar)
                         {
+                            RecordRemovedDecls(vd, removedDecls);
                             vd.Remove();
                             trailingResDecl = true;
                             break;
                         }
                     }
                 }
-                Statement replacement = diffDeclaredRes || trailingResDecl
+                var declareLocally = (diffDeclaredRes || trailingResDecl) && !HasRefOutside(methodBody, block, resVar);
+                if (!declareLocally && (diffDeclaredRes || trailingResDecl))
+                    removedDecls.TryAdd(resVar, new PrimitiveType("double"));
+                Statement replacement = declareLocally
                     ? new VariableDeclarationStatement(new PrimitiveType("double"), resVar, roundCall)
                     : new ExpressionStatement(new AssignmentExpression(new IdentifierExpression(resVar), roundCall));
                 block.Statements.InsertBefore(insertAnchor, replacement);
@@ -427,6 +441,7 @@ public static class UnityInlineRecognizer
             }
 
             PruneDeadLocalsAndLabels(methodBody, deadCandidates);
+            EnsureReferencedDeclsPresent(methodBody, removedDecls);
             return true;
         }
         return false;
@@ -852,5 +867,98 @@ public static class UnityInlineRecognizer
             if (!HasGotoTarget(methodBody, lbl.Label))
                 lbl.Remove();
         }
+    }
+
+    private static void RecordRemovedDecls(AstNode? root, Dictionary<string, AstType> map)
+    {
+        if (root is null) return;
+        if (root is VariableDeclarationStatement selfVd)
+            RecordDeclVars(selfVd, map);
+        AstWalk.Visit<VariableDeclarationStatement>(root, vd => RecordDeclVars(vd, map));
+    }
+
+    private static void RecordDeclVars(VariableDeclarationStatement vd, Dictionary<string, AstType> map)
+    {
+        if (vd.Type.IsNull) return;
+        foreach (var v in vd.Variables)
+            map.TryAdd(v.Name, vd.Type.Clone());
+    }
+
+    private static bool HasRefOutside(BlockStatement methodBody, BlockStatement innerBlock, string name)
+    {
+        var found = false;
+        AstWalk.Visit<IdentifierExpression>(methodBody, id =>
+        {
+            if (!found && id.Identifier == name && !IsDescendantOf(id, innerBlock))
+                found = true;
+        });
+        return found;
+    }
+
+    private static bool IsDescendantOf(AstNode node, AstNode ancestor)
+    {
+        for (AstNode? a = node; a is not null; a = a.Parent)
+            if (ReferenceEquals(a, ancestor)) return true;
+        return false;
+    }
+
+    private static void EnsureReferencedDeclsPresent(BlockStatement methodBody, Dictionary<string, AstType> removedDecls)
+    {
+        if (removedDecls.Count == 0) return;
+        foreach (var (name, type) in removedDecls)
+        {
+            var hasUncoveredUse = false;
+            AstWalk.Visit<IdentifierExpression>(methodBody, id =>
+            {
+                if (!hasUncoveredUse && id.Identifier == name && !IsIdentifierDeclaredInScope(id, methodBody, name))
+                    hasUncoveredUse = true;
+            });
+            if (!hasUncoveredUse) continue;
+
+            // Remove/demote any nested declaration of `name` before hoisting to methodBody so we never introduce CS0136 shadowing.
+            foreach (var vd in AstWalk.Collect<VariableDeclarationStatement>(methodBody))
+            {
+                if (ReferenceEquals(vd.Parent, methodBody) || vd.Variables.Count != 1) continue;
+                var v = vd.Variables.Single();
+                if (v.Name != name) continue;
+                if (v.Initializer.IsNull || v.Initializer is DefaultValueExpression)
+                    vd.Remove();
+                else
+                    vd.ReplaceWith(new ExpressionStatement(new AssignmentExpression(new IdentifierExpression(name), v.Initializer.Detach())));
+            }
+
+            var hasTopDecl = methodBody.Statements.OfType<VariableDeclarationStatement>()
+                .Any(vd => vd.Variables.Any(v => v.Name == name));
+            if (!hasTopDecl)
+            {
+                var hoisted = new VariableDeclarationStatement(type.Clone(), name, new DefaultValueExpression(type.Clone()));
+                if (methodBody.Statements.FirstOrDefault() is { } first)
+                    methodBody.Statements.InsertBefore(first, hoisted);
+                else
+                    methodBody.Statements.Add(hoisted);
+            }
+        }
+    }
+
+    private static bool IsIdentifierDeclaredInScope(IdentifierExpression id, BlockStatement methodBody, string name)
+    {
+        AstNode? cur = id;
+        while (cur is not null)
+        {
+            AstNode? stmt = cur;
+            while (stmt is not null && stmt.Parent is not BlockStatement)
+                stmt = stmt.Parent;
+            if (stmt?.Parent is not BlockStatement block) break;
+
+            foreach (var s in block.Statements)
+            {
+                if (s is VariableDeclarationStatement vd && vd.Variables.Any(v => v.Name == name))
+                    return true;
+                if (ReferenceEquals(s, stmt)) break;
+            }
+            if (ReferenceEquals(block, methodBody)) break;
+            cur = block.Parent;
+        }
+        return false;
     }
 }

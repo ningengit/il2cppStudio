@@ -187,10 +187,11 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
         Assert.DoesNotContain("default(Ray)", notebookCs);
 
         var uiMgrCs = ws.Render(Assert.Single(ws.FindTypes("UiManager")), null, CodeView.CSharp);
-        Assert.Contains("array[num4]", uiMgrCs);
-        Assert.Contains("while (num4 < array.Length)", uiMgrCs);
+        Assert.Contains("referenceResolution", uiMgrCs);
+        Assert.Contains("array[num5]", uiMgrCs);
+        Assert.Contains("< array.Length", uiMgrCs);
         Assert.DoesNotContain("/ 8", uiMgrCs);
-        Assert.DoesNotContain("num4 + 1", uiMgrCs);
+        Assert.DoesNotContain("num5 + 1", uiMgrCs);
 
         var alarmCs = ws.Render(Assert.Single(ws.FindTypes("AlarmClockScript")), null, CodeView.CSharp);
         Assert.Contains("timeLeft = 30f;", alarmCs);
@@ -198,7 +199,7 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
 
         var inputMgrCs = ws.Render(Assert.Single(ws.FindTypes("InputManager")), null, CodeView.CSharp);
         Assert.Contains("base.Awake();", inputMgrCs);
-        Assert.Contains("while (num != 13)", inputMgrCs);
+        Assert.Contains("!= 13", inputMgrCs);
         Assert.DoesNotContain("/ 8", inputMgrCs);
 
         // Coroutine factory, IEnumerator.Reset metadata-init recognition, 16-byte SIMD field init
@@ -232,5 +233,67 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
 
         Assert.Contains("Mathf.RoundToInt(", bullyCs);
         Assert.DoesNotContain("9218868437227405312L", bullyCs);
+
+        // Compile-breaking AST fixes (--16, undeclared locals after Mathf.RoundToInt collapse)
+        var firstSpriteCs = ws.Render(Assert.Single(ws.FindTypes("FirstPrizeSpriteScript")), null, CodeView.CSharp);
+        Assert.DoesNotContain("--16", firstSpriteCs);
+
+        var firstPrizeCs = ws.Render(Assert.Single(ws.FindTypes("FirstPrizeScript")), null, CodeView.CSharp);
+        Assert.DoesNotContain("float value = 5f;", firstPrizeCs);
+        Assert.Contains("double num3 = default(double);", firstPrizeCs);
+
+        Assert.Contains("float num11 = default(float);", mathCs);
+        Assert.DoesNotContain("~value", mathCs);
+        Assert.Contains("audioQueue[audioInQueue] = sound;", mathCs);
+        Assert.Contains("audioQueue[num3 / 8 - 4] = audioQueue[", mathCs);
+
+        // Tail-calls & ARM64 jump tables (switch statements)
+        var audioQCs = ws.Render(Assert.Single(ws.FindTypes("AudioQueueScript")), null, CodeView.CSharp);
+        Assert.Contains("PlayQueue();", audioQCs);
+        Assert.Contains("audioQueue[audioInQueue] = sound;", audioQCs);
+        Assert.Contains("audioQueue[num3 / 8 - 4] = audioQueue[", audioQCs);
+
+        var gcCs = ws.Render(Assert.Single(ws.FindTypes("GameControllerScript")), null, CodeView.CSharp);
+        Assert.Contains("switch (item[itemSelected] - 1)", gcCs);
+        Assert.Contains("SetActive(value: true)", gcCs);
+        Assert.Contains("item[itemSelected] = 0;", gcCs);
+        Assert.Contains("item[id] = 0;", gcCs);
+        Assert.Contains("if (exitsReached == 1)", gcCs);
+        Assert.DoesNotContain("if (exitsReached == 0)", gcCs);
+
+        Assert.Contains("case 0:", uiSettingsCs);
+        Assert.Contains("toggle = sAuto;", uiSettingsCs);
+        Assert.Contains("toggle = sSmall;", uiSettingsCs);
+
+        // Array element stores & field swap coherence
+        Assert.Contains("currentKeyStates[(int)num] =", inputMgrCs);
+        Assert.DoesNotContain("previousKeyStates = currentKeyStates;\r\n\t\tcurrentKeyStates = previousKeyStates;", inputMgrCs);
+        Assert.DoesNotContain("previousKeyStates = currentKeyStates;\n\t\tcurrentKeyStates = previousKeyStates;", inputMgrCs);
+
+        // Packed 16-bit strh bool stores
+        var jumpRopeCs = ws.Render(Assert.Single(ws.FindTypes("JumpRopeScript")), null, CodeView.CSharp);
+        Assert.Contains("ropeHit = true;", jumpRopeCs);
+        Assert.Contains("jumpStarted = false;", jumpRopeCs);
+
+        Assert.Contains("active = false;", bullyCs);
+        Assert.Contains("spoken = false;", bullyCs);
+
+        var playerCs = ws.Render(Assert.Single(ws.FindTypes("PlayerScript")), null, CodeView.CSharp);
+        Assert.Contains("hugging = false;", playerCs);
+        Assert.Contains("\"1st Prize\"", playerCs);
+
+        // ORN string == + distance conditions & PrincipalScript compound field condition
+        var pickupCs = ws.Render(Assert.Single(ws.FindTypes("PickupScript")), null, CodeView.CSharp);
+        Assert.Contains("\"Pickup_EnergyFlavoredZestyBar\"", pickupCs);
+        Assert.Contains("\"Pickup_BSODA\"", pickupCs);
+
+        Assert.Contains("== \"Notebook\"", notebookCs);
+        var endlessNbCs = ws.Render(Assert.Single(ws.FindTypes("EndlessNotebookScript")), null, CodeView.CSharp);
+        Assert.Contains("== \"Notebook\"", endlessNbCs);
+        var clickableCs = ws.Render(Assert.Single(ws.FindTypes("ClickableTest")), null, CodeView.CSharp);
+        Assert.Contains("== \"Notebook\"", clickableCs);
+
+        Assert.DoesNotContain("timeSeenRuleBreak + deltaTime >= 0.5f", principalCs);
+        Assert.Contains("timeSeenRuleBreak >= 0.5f", principalCs);
     }
 }

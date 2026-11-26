@@ -98,6 +98,7 @@ public sealed class MemoryResolver
     private readonly ModuleDefinition _module;
     private readonly Dictionary<string, int> _typeDefByName;
     private readonly Dictionary<int, List<ResolvedField>> _fieldsCache = [];
+    public Action<EmitContext, Expr, Expr>? BeforeFieldStored { get; set; }
     public Action<Expr, Expr>? OnFieldStored { get; set; }
 
     public MemoryResolver(GlobalMetadata md, MetadataModel model, Il2CppRegistration reg, TypeNameService names, StubAssemblyBuilder stubs,
@@ -400,6 +401,13 @@ public sealed class MemoryResolver
             if (bLeft.Type is SzArrayTypeSignature) { baseExpr = bLeft; index = bRight; scale = 1; type = baseExpr.Type; kind = baseExpr.Kind; }
             else if (bRight.Type is SzArrayTypeSignature) { baseExpr = bRight; index = bLeft; scale = 1; type = baseExpr.Type; kind = baseExpr.Kind; }
         }
+        else if (index is not null && baseExpr is BinaryExpr { Op.Code: CilCode.Add, Left: var arrL, Right: ConstExpr arrC } && arrL.Type is SzArrayTypeSignature)
+        {
+            baseExpr = arrL;
+            disp += arrC.Value;
+            type = baseExpr.Type;
+            kind = baseExpr.Kind;
+        }
         if (kind != ValueKind.Ref || type is null) return null;
 
         if (disp == 0 && index is null && size == _ptr)
@@ -416,7 +424,7 @@ public sealed class MemoryResolver
             if (index is null && disp == ArrayLengthOffset) return new ArrayLengthExpr(baseExpr);
             if (ByteOffsetIndex(arr, index, scale, disp) is { } byteIdx) return new ArrayElementExpr(baseExpr, byteIdx, arr.BaseType);
             int elemSize = ValueSize(arr.BaseType);
-            if (index is not null && scale == elemSize && disp >= ArrayDataOffset - elemSize && (disp - ArrayDataOffset) % elemSize == 0)
+            if (index is not null && scale == elemSize && disp >= 0 && (disp - ArrayDataOffset) % elemSize == 0)
                 return new ArrayElementExpr(baseExpr, OffsetIndex(index, (disp - ArrayDataOffset) / elemSize), arr.BaseType);
             if (index is null && disp >= ArrayDataOffset && (disp - ArrayDataOffset) % elemSize == 0)
                 return new ArrayElementExpr(baseExpr, new ConstExpr((disp - ArrayDataOffset) / elemSize, ValueKind.I4), arr.BaseType);
@@ -491,6 +499,8 @@ public sealed class MemoryResolver
             var elemTd = TypeDefOf(elem);
             if (Expr.KindOf(elem) != ValueKind.Struct || (elemTd >= 0 && _md.TypeDefinitions[elemTd].IsEnum))
             {
+                if (scalarAddr.Target is FieldExpr or StaticFieldExpr)
+                    BeforeFieldStored?.Invoke(ctx, value, scalarAddr.Target);
                 if (scalarAddr.Target is LocalExpr le && satt is not ByReferenceTypeSignature)
                 {
                     Expr.EmitAs(ctx, value, elem);
@@ -500,6 +510,8 @@ public sealed class MemoryResolver
                 scalarAddr.Emit(ctx);
                 Expr.EmitAs(ctx, value, elem);
                 IndirectExpr.EmitStore(ctx, elem);
+                if (scalarAddr.Target is FieldExpr or StaticFieldExpr)
+                    NotifyStored(value, scalarAddr.Target);
                 return true;
             }
         }
@@ -526,26 +538,13 @@ public sealed class MemoryResolver
                 return Store(ctx, baseExpr, null, 1, disp, 8, new ConstExpr(unchecked((long)c128.Lo), ValueKind.I8))
                     && Store(ctx, baseExpr, null, 1, disp + 8, 8, new ConstExpr(unchecked((long)c128.Hi), ValueKind.I8));
             }
-            if (size == 8 && StructField(a.Target, std, disp) is FieldExpr pf1 && StructField(a.Target, std, disp + 4) is FieldExpr pf2
-                && ValueSize(pf1.Type!) <= 4 && ValueSize(pf2.Type!) <= 4 && TryExtract64BitConstant(value, out var packedStructBits))
-            {
-                var lo = PackedHalfExpr(unchecked((uint)packedStructBits), pf1.Type!);
-                new AddressExpr(pf1.Instance).Emit(ctx);
-                Expr.EmitAs(ctx, lo, pf1.Type!);
-                il.Add(CilOpCodes.Stfld, pf1.Field);
-                NotifyStored(lo, pf1);
-
-                var hi = PackedHalfExpr(unchecked((uint)(packedStructBits >> 32)), pf2.Type!);
-                new AddressExpr(pf2.Instance).Emit(ctx);
-                Expr.EmitAs(ctx, hi, pf2.Type!);
-                il.Add(CilOpCodes.Stfld, pf2.Field);
-                NotifyStored(hi, pf2);
+            if (size is 2 or 4 or 8 && TryStorePackedScalarFields(ctx, a.Target, isStructAddr: true, std, a.Target.Type!, disp, size, value))
                 return true;
-            }
             if (StructField(a.Target, std, disp) is FieldExpr zf && size > ValueSize(zf.Type!) && IsZero(value))
                 return StoreZeros(ctx, a.Target, std, disp, size);   // `mov qword [x], 0`: zeroes two adjacent fields at once
             if (StructField(a.Target, std, disp) is FieldExpr fe)
             {
+                BeforeFieldStored?.Invoke(ctx, value, fe);
                 new AddressExpr(fe.Instance).Emit(ctx);
                 Expr.EmitAs(ctx, value, fe.Type!);
                 il.Add(CilOpCodes.Stfld, fe.Field);
@@ -559,6 +558,7 @@ public sealed class MemoryResolver
         {
             if (StructField(ind, itd2, disp) is FieldExpr fe2)
             {
+                BeforeFieldStored?.Invoke(ctx, value, fe2);
                 new AddressExpr(fe2.Instance).Emit(ctx);
                 Expr.EmitAs(ctx, value, fe2.Type!);
                 il.Add(CilOpCodes.Stfld, fe2.Field);
@@ -572,9 +572,12 @@ public sealed class MemoryResolver
         {
             if (FindStaticField(sm.Index, disp) is { } sf && FieldRef(sf) is { } sfr)
             {
-                Expr.EmitAs(ctx, value, FieldType(sf, null));
+                var st = FieldType(sf, null);
+                var se = new StaticFieldExpr(sfr, st);
+                BeforeFieldStored?.Invoke(ctx, value, se);
+                Expr.EmitAs(ctx, value, st);
                 il.Add(CilOpCodes.Stsfld, sfr);
-                NotifyStored(value, new StaticFieldExpr(sfr, FieldType(sf, null)));
+                NotifyStored(value, se);
                 return true;
             }
             if (FindContainingStatic(sm.Index, disp) is { } outer && FieldRef(outer) is { } ofr)
@@ -582,6 +585,16 @@ public sealed class MemoryResolver
             return false;
         }
 
+        if (baseExpr.Type is not SzArrayTypeSignature && baseExpr is BinaryExpr { Op.Code: CilCode.Add, Left: var bLeft, Right: var bRight } && index is null)
+        {
+            if (bLeft.Type is SzArrayTypeSignature) { baseExpr = bLeft; index = bRight; scale = 1; }
+            else if (bRight.Type is SzArrayTypeSignature) { baseExpr = bRight; index = bLeft; scale = 1; }
+        }
+        else if (index is not null && baseExpr is BinaryExpr { Op.Code: CilCode.Add, Left: var arrL, Right: ConstExpr arrC } && arrL.Type is SzArrayTypeSignature)
+        {
+            baseExpr = arrL;
+            disp += arrC.Value;
+        }
         if (baseExpr.Kind != ValueKind.Ref || baseExpr.Type is null) return false;
 
         if (baseExpr.Type is SzArrayTypeSignature arr)
@@ -593,7 +606,7 @@ public sealed class MemoryResolver
                 index = innerIdx;
                 disp += c * scale;
             }
-            Expr? idx = index is not null && scale == elemSize && disp >= ArrayDataOffset - elemSize && (disp - ArrayDataOffset) % elemSize == 0 ? OffsetIndex(index, (disp - ArrayDataOffset) / elemSize)
+            Expr? idx = index is not null && scale == elemSize && disp >= 0 && (disp - ArrayDataOffset) % elemSize == 0 ? OffsetIndex(index, (disp - ArrayDataOffset) / elemSize)
                 : index is null && disp >= ArrayDataOffset && (disp - ArrayDataOffset) % elemSize == 0 ? new ConstExpr((disp - ArrayDataOffset) / elemSize, ValueKind.I4)
                 : null;
             idx ??= ByteOffsetIndex(arr, index, scale, disp);
@@ -629,36 +642,79 @@ public sealed class MemoryResolver
         if (FindInstanceField(td, disp) is { } f && FieldRef(f) is { } fr)
         {
             var ft = FieldType(f, baseExpr.Type);
-            if (size == 8 && ValueSize(ft) <= 4
-                && FindInstanceField(td, disp + 4) is { } f2 && FieldRef(f2) is { } fr2
-                && FieldType(f2, baseExpr.Type) is { } ft2 && ValueSize(ft2) <= 4
-                && TryExtract64BitConstant(value, out var raw64))
-            {
-                var lo = PackedHalfExpr(unchecked((uint)raw64), ft);
-                baseExpr.Emit(ctx);
-                Expr.EmitAs(ctx, lo, ft);
-                il.Add(CilOpCodes.Stfld, fr);
-                NotifyStored(lo, new FieldExpr(baseExpr, fr, ft));
-
-                var hi = PackedHalfExpr(unchecked((uint)(raw64 >> 32)), ft2);
-                baseExpr.Emit(ctx);
-                Expr.EmitAs(ctx, hi, ft2);
-                il.Add(CilOpCodes.Stfld, fr2);
-                NotifyStored(hi, new FieldExpr(baseExpr, fr2, ft2));
+            if (size is 2 or 4 or 8 && ValueSize(ft) < size
+                && TryStorePackedScalarFields(ctx, baseExpr, isStructAddr: false, td, baseExpr.Type, disp, size, value))
                 return true;
-            }
             if (Expr.KindOf(ft) == ValueKind.Struct && (value is StructChunkExpr || size < ValueSize(ft) && value.Kind != ValueKind.Struct))
                 return Store(ctx, new AddressExpr(new FieldExpr(baseExpr, fr, ft)), null, 1, 0, size, value);
+            var feObj = new FieldExpr(baseExpr, fr, ft);
+            BeforeFieldStored?.Invoke(ctx, value, feObj);
             baseExpr.Emit(ctx);
             Expr.EmitAs(ctx, value, ft);
             il.Add(CilOpCodes.Stfld, fr);
-            NotifyStored(value, new FieldExpr(baseExpr, fr, ft));
+            NotifyStored(value, feObj);
             return true;
         }
         if (FindContainingInstance(td, disp) is { } of && FieldRef(of) is { } ofr2)
             return Store(ctx, new AddressExpr(new FieldExpr(baseExpr, ofr2, FieldType(of, baseExpr.Type))), null, 1, disp - of.Offset, size, value);
         return false;
     }
+
+    private bool TryStorePackedScalarFields(
+        EmitContext ctx, Expr owner, bool isStructAddr, int td, TypeSignature ownerType, long disp, int size, Expr value)
+    {
+        if (!TryExtract64BitConstant(value, out var rawBits))
+            return false;
+        var subFields = FieldsOf(td)
+            .Where(f => !f.IsStatic && f.Offset >= disp && f.Offset < disp + size)
+            .OrderBy(f => f.Offset)
+            .ToList();
+        if (subFields.Count < 2)
+            return false;
+
+        var parts = new List<(IFieldDescriptor Field, TypeSignature Type, Expr PartExpr, long Offset)>(subFields.Count);
+        var prevEnd = disp;
+        foreach (var sf in subFields)
+        {
+            if (sf.Offset < prevEnd || FieldRef(sf) is not { } sfr)
+                return false;
+            var sft = FieldType(sf, ownerType);
+            var sk = Expr.KindOf(sft);
+            if (sk is not (ValueKind.I4 or ValueKind.R4 or ValueKind.I8 or ValueKind.R8))
+                return false;
+            var fsz = ValueSize(sft);
+            if (fsz <= 0 || sf.Offset + fsz > disp + size)
+                return false;
+            prevEnd = sf.Offset + fsz;
+            var bitOff = (int)((sf.Offset - disp) * 8);
+            var mask = fsz >= 8 ? ulong.MaxValue : ((1UL << (fsz * 8)) - 1UL);
+            var slice = (rawBits >> bitOff) & mask;
+            var partExpr = PackedSliceExpr(slice, sft, sk);
+            parts.Add((sfr, sft, partExpr, sf.Offset));
+        }
+
+        foreach (var (fr, sft, partExpr, offset) in parts)
+        {
+            var fe = isStructAddr
+                ? (StructField(owner, td, offset) as FieldExpr ?? new FieldExpr(owner, fr, sft))
+                : new FieldExpr(owner, fr, sft);
+            BeforeFieldStored?.Invoke(ctx, partExpr, fe);
+            if (isStructAddr) new AddressExpr(fe.Instance).Emit(ctx);
+            else owner.Emit(ctx);
+            Expr.EmitAs(ctx, partExpr, sft);
+            ctx.IL.Add(CilOpCodes.Stfld, fr);
+            NotifyStored(partExpr, fe);
+        }
+        return true;
+    }
+
+    private static Expr PackedSliceExpr(ulong slice, TypeSignature targetType, ValueKind k) => k switch
+    {
+        ValueKind.R4 => new FloatExpr(BitConverter.UInt32BitsToSingle(unchecked((uint)slice)), true),
+        ValueKind.R8 => new FloatExpr(BitConverter.UInt64BitsToDouble(slice), false),
+        ValueKind.I8 => new ConstExpr(unchecked((long)slice), ValueKind.I8),
+        _ => new ConstExpr(unchecked((int)slice), ValueKind.I4),
+    };
 
     private static bool TryExtract64BitConstant(Expr value, out ulong bits)
     {
@@ -675,11 +731,6 @@ public sealed class MemoryResolver
                 return false;
         }
     }
-
-    private static Expr PackedHalfExpr(uint bits, TypeSignature targetType) =>
-        Expr.KindOf(targetType) == ValueKind.R4
-            ? new FloatExpr(BitConverter.UInt32BitsToSingle(bits), true)
-            : new ConstExpr(unchecked((int)bits), ValueKind.I4);
 
     private void NotifyStored(Expr value, Expr fieldExpr)
     {

@@ -46,6 +46,9 @@ internal sealed class Arm64BlockTranslator
     private enum FlagKind { None, Compare, FloatCompare, Test }
     private FlagKind _flagKind;
     private Expr? _flagLeft, _flagRight;
+    private ulong[]? _curBlockLiveAfter;
+    private int _curBlockStart, _curInsnIdx;
+    private (Expr StoredVal, Expr FieldExpr, Expr? InverseExpr)? _pendingFieldRewrite;
 
     public int Unsupported { get; private set; }
     public int Unresolved { get; private set; }
@@ -63,14 +66,69 @@ internal sealed class Arm64BlockTranslator
         _loc = loc; _sink = sink; _notes = notes; _funcStart = funcStart; _funcEnd = funcEnd;
         _helperCache = helperCache ?? new();
         _symbolNames = symbolNames;
+        _mem.BeforeFieldStored = (ctx, val, fieldExpr) =>
+        {
+            _pendingFieldRewrite = null;
+            var isCompound = val is (BinaryExpr or UnaryExpr or MathCallExpr) && val.Kind == fieldExpr.Kind;
+            Expr? exclude = isCompound ? val : null;
+
+            var hasAliasedRead = (_flagLeft is not null && ContainsReadOf(_flagLeft, fieldExpr, exclude))
+                || (_flagRight is not null && ContainsReadOf(_flagRight, fieldExpr, exclude))
+                || _regs.Any(kv => IsRegLiveAfterCurInsn(kv.Key) && ContainsReadOf(kv.Value, fieldExpr, exclude))
+                || _slots.Any(kv => ContainsReadOf(kv.Value, fieldExpr, exclude));
+            if (!hasAliasedRead)
+            {
+                if (isCompound)
+                    _pendingFieldRewrite = (val, fieldExpr, null);
+                return;
+            }
+
+            // Integer `field +/- const`: rewrite remaining reads of `field` to `field -/+ const` after the store (avoids temp locals).
+            if (isCompound
+                && val is BinaryExpr bin
+                && (bin.Op.Code == CilCode.Add || bin.Op.Code == CilCode.Sub)
+                && SameFieldRef(bin.Left, fieldExpr)
+                && bin.Right is ConstExpr { Value: var delta }
+                && fieldExpr.Kind is ValueKind.I4 or ValueKind.I8)
+            {
+                var invOp = bin.Op.Code == CilCode.Add ? CilOpCodes.Sub : CilOpCodes.Add;
+                var inv = new BinaryExpr(invOp, fieldExpr, new ConstExpr(delta, fieldExpr.Kind), fieldExpr.Kind);
+                _pendingFieldRewrite = (val, fieldExpr, inv);
+                return;
+            }
+
+            // General case: snapshot old field value into a local before overwriting the field.
+            var snap = NewLocal(TypeFor(fieldExpr));
+            fieldExpr.Emit(ctx);
+            ctx.IL.Add(CilOpCodes.Stloc, snap);
+            var snapExpr = new LocalExpr(snap);
+            foreach (var k in _regs.Keys.ToList())
+            {
+                if (IsRegLiveAfterCurInsn(k))
+                    _regs[k] = RewriteReadOf(_regs[k], fieldExpr, exclude, snapExpr);
+            }
+            foreach (var k in _slots.Keys.ToList())
+                _slots[k] = RewriteReadOf(_slots[k], fieldExpr, exclude, snapExpr);
+            if (_flagLeft is not null) _flagLeft = RewriteReadOf(_flagLeft, fieldExpr, exclude, snapExpr);
+            if (_flagRight is not null) _flagRight = RewriteReadOf(_flagRight, fieldExpr, exclude, snapExpr);
+            if (isCompound)
+                _pendingFieldRewrite = (val, fieldExpr, null);
+        };
         _mem.OnFieldStored = (val, fieldExpr) =>
         {
-            foreach (var k in _regs.Where(e => ReferenceEquals(e.Value, val)).Select(e => e.Key).ToList())
-                _regs[k] = fieldExpr;
-            foreach (var k in _slots.Where(e => ReferenceEquals(e.Value, val)).Select(e => e.Key).ToList())
-                _slots[k] = fieldExpr;
-            if (ReferenceEquals(_flagLeft, val)) _flagLeft = fieldExpr;
-            if (ReferenceEquals(_flagRight, val)) _flagRight = fieldExpr;
+            var pending = _pendingFieldRewrite;
+            _pendingFieldRewrite = null;
+            var isCompound = val is (BinaryExpr or UnaryExpr or MathCallExpr) && val.Kind == fieldExpr.Kind;
+            var invExpr = pending is { } p && ReferenceEquals(p.FieldExpr, fieldExpr) ? p.InverseExpr : null;
+            if (!isCompound && invExpr is null) return;
+
+            Expr RewritePost(Expr root) => RewritePostFieldStore(root, isCompound ? val : null, fieldExpr, invExpr);
+            foreach (var k in _regs.Keys.ToList())
+                _regs[k] = RewritePost(_regs[k]);
+            foreach (var k in _slots.Keys.ToList())
+                _slots[k] = RewritePost(_slots[k]);
+            if (_flagLeft is not null) _flagLeft = RewritePost(_flagLeft);
+            if (_flagRight is not null) _flagRight = RewritePost(_flagRight);
         };
     }
 
@@ -164,8 +222,11 @@ internal sealed class Arm64BlockTranslator
 
     public void TranslateBlock(EmitContext ctx, List<Arm64Insn> insns, Arm64Block b, Arm64Block? nextInEmit, HashSet<Arm64Block> emitted)
     {
+        _curBlockLiveAfter = ComputeLiveAfterMap(insns, b);
+        _curBlockStart = b.Start;
         for (var i = b.Start; i < b.End; i++)
         {
+            _curInsnIdx = i;
             var item = insns[i];
             var pc = item.Address;
             var ins = item.Ins;
@@ -190,6 +251,45 @@ internal sealed class Arm64BlockTranslator
             if (m == Arm64Mnemonic.RET)
             {
                 EmitReturn(ctx);
+                return;
+            }
+
+            if (isLast && m == Arm64Mnemonic.BR && b.JumpTable is { } jt)
+            {
+                SpillLiveOut(ctx, b, branchReadReg: jt.IndexReg);
+                Expr.EmitAs(ctx, GetRegRaw(jt.IndexReg), _f.Int32);
+                Arm64Block? defBlock = jt.DefaultTargetVa != 0
+                    ? b.Successors.FirstOrDefault(s => s.Va == jt.DefaultTargetVa && emitted.Contains(s))
+                    : null;
+                var labels = new CilInstructionLabel[jt.Targets.Length];
+                CilInstructionLabel? fallbackLabel = null;
+                for (var ti = 0; ti < jt.Targets.Length; ti++)
+                {
+                    var tb = b.Successors.FirstOrDefault(s => s.Va == jt.Targets[ti] && emitted.Contains(s)) ?? defBlock;
+                    if (tb is null)
+                    {
+                        fallbackLabel ??= new CilInstructionLabel();
+                        labels[ti] = fallbackLabel;
+                    }
+                    else
+                    {
+                        labels[ti] = tb.Label;
+                    }
+                }
+                ctx.IL.Add(CilOpCodes.Switch, labels);
+                if (defBlock is not null)
+                {
+                    if (fallbackLabel is not null)
+                        fallbackLabel.Instruction = ctx.IL.Add(CilOpCodes.Br, defBlock.Label);
+                    else if (defBlock != nextInEmit)
+                        ctx.IL.Add(CilOpCodes.Br, defBlock.Label);
+                }
+                else
+                {
+                    if (fallbackLabel is not null)
+                        fallbackLabel.Instruction = ctx.IL.Add(CilOpCodes.Nop);
+                    EmitDefaultReturn(ctx);
+                }
                 return;
             }
 
@@ -279,11 +379,14 @@ internal sealed class Arm64BlockTranslator
             return true;
         }
 
-        SpillLiveOut(ctx, b);
+        var branchReg = m is Arm64Mnemonic.CBZ or Arm64Mnemonic.CBNZ or Arm64Mnemonic.TBZ or Arm64Mnemonic.TBNZ
+            ? Arm64Lifter.RegKey((Arm64RegisterOperand)ins.GetOperand(0))
+            : -1;
+        SpillLiveOut(ctx, b, branchReadReg: branchReg);
         Expr? cond = m switch
         {
-            Arm64Mnemonic.CBZ => new CompareExpr(Condition.Eq, GetReg((Arm64RegisterOperand)ins.GetOperand(0)), ZeroLike(GetReg((Arm64RegisterOperand)ins.GetOperand(0)))),
-            Arm64Mnemonic.CBNZ => new CompareExpr(Condition.Ne, GetReg((Arm64RegisterOperand)ins.GetOperand(0)), ZeroLike(GetReg((Arm64RegisterOperand)ins.GetOperand(0)))),
+            Arm64Mnemonic.CBZ => SimplifyCompare(Condition.Eq, GetReg((Arm64RegisterOperand)ins.GetOperand(0)), ZeroLike(GetReg((Arm64RegisterOperand)ins.GetOperand(0)))),
+            Arm64Mnemonic.CBNZ => SimplifyCompare(Condition.Ne, GetReg((Arm64RegisterOperand)ins.GetOperand(0)), ZeroLike(GetReg((Arm64RegisterOperand)ins.GetOperand(0)))),
             Arm64Mnemonic.TBZ => BitTestCompare(GetReg((Arm64RegisterOperand)ins.GetOperand(0)), (int)ImmOp(ins, 1), zero: true),
             Arm64Mnemonic.TBNZ => BitTestCompare(GetReg((Arm64RegisterOperand)ins.GetOperand(0)), (int)ImmOp(ins, 1), zero: false),
             Arm64Mnemonic.B when ins.OperandCount == 2 => BuildFlagCompare(((Arm64EnumOperand)ins.GetOperand(0)).AsConditional),
@@ -533,7 +636,7 @@ internal sealed class Arm64BlockTranslator
                 {
                     _flagKind = FlagKind.Compare;
                     _flagLeft = GetReg(lhs);
-                    _flagRight = ReadOpOrImm(ins, 2);
+                    _flagRight = ReadShifted(ins, 2);
                     return;
                 }
                 var leftVal = GetReg(lhs);
@@ -546,7 +649,7 @@ internal sealed class Arm64BlockTranslator
             }
             case Arm64Mnemonic.MUL or Arm64Mnemonic.SDIV or Arm64Mnemonic.UDIV
                 or Arm64Mnemonic.AND or Arm64Mnemonic.ANDS or Arm64Mnemonic.BIC or Arm64Mnemonic.BICS
-                or Arm64Mnemonic.ORR or Arm64Mnemonic.EOR
+                or Arm64Mnemonic.ORR or Arm64Mnemonic.ORN or Arm64Mnemonic.EOR or Arm64Mnemonic.EON
                 or Arm64Mnemonic.LSL or Arm64Mnemonic.LSR or Arm64Mnemonic.ASR or Arm64Mnemonic.ROR:
             {
                 var dst = (Arm64RegisterOperand)ins.GetOperand(0);
@@ -554,18 +657,24 @@ internal sealed class Arm64BlockTranslator
                 {
                     _flagKind = FlagKind.Test;
                     _flagLeft = GetReg((Arm64RegisterOperand)ins.GetOperand(1));
-                    _flagRight = ReadOpOrImm(ins, 2);
+                    _flagRight = ReadShifted(ins, 2);
                     return;
                 }
                 var l = GetReg((Arm64RegisterOperand)ins.GetOperand(1));
                 var r = ReadShifted(ins, 2);
                 var kind = dst.Value.Kind == Arm64RegisterKind.X ? ValueKind.I8 : ValueKind.I4;
-                if (m is Arm64Mnemonic.BIC or Arm64Mnemonic.BICS)
+                if (m is Arm64Mnemonic.BIC or Arm64Mnemonic.BICS or Arm64Mnemonic.ORN or Arm64Mnemonic.EON)
                 {
                     if (r.Kind != kind) r = new ConvExpr(r, kind == ValueKind.I8 ? _f.Int64 : _f.Int32);
-                    var bicRes = new BinaryExpr(CilOpCodes.And, l, new UnaryExpr(CilOpCodes.Not, r), kind);
-                    SetReg(Arm64Lifter.RegKey(dst), bicRes);
-                    if (m == Arm64Mnemonic.BICS) SetCompareResult(bicRes);
+                    var combOp = m switch
+                    {
+                        Arm64Mnemonic.ORN => CilOpCodes.Or,
+                        Arm64Mnemonic.EON => CilOpCodes.Xor,
+                        _ => CilOpCodes.And,
+                    };
+                    var bitRes = new BinaryExpr(combOp, l, new UnaryExpr(CilOpCodes.Not, r), kind);
+                    SetReg(Arm64Lifter.RegKey(dst), bitRes);
+                    if (m == Arm64Mnemonic.BICS) SetCompareResult(bitRes);
                     return;
                 }
                 if (m == Arm64Mnemonic.ROR)
@@ -723,7 +832,7 @@ internal sealed class Arm64BlockTranslator
             case Arm64Mnemonic.TST:
                 _flagKind = FlagKind.Test;
                 _flagLeft = GetReg((Arm64RegisterOperand)ins.GetOperand(0));
-                _flagRight = ReadOpOrImm(ins, 1);
+                _flagRight = ReadShifted(ins, 1);
                 return;
             case Arm64Mnemonic.FCMP or Arm64Mnemonic.FCMPE or Arm64Mnemonic.FCCMP:
                 _flagKind = FlagKind.FloatCompare;
@@ -2038,8 +2147,8 @@ internal sealed class Arm64BlockTranslator
         }
         return c switch
         {
-            Arm64ConditionalKind.EQ => new CompareExpr(Condition.Eq, _flagLeft, right),
-            Arm64ConditionalKind.NE => new CompareExpr(Condition.Ne, _flagLeft, right),
+            Arm64ConditionalKind.EQ => SimplifyCompare(Condition.Eq, _flagLeft, right),
+            Arm64ConditionalKind.NE => SimplifyCompare(Condition.Ne, _flagLeft, right),
             Arm64ConditionalKind.LT or Arm64ConditionalKind.MI => new CompareExpr(Condition.Lt, _flagLeft, right),
             Arm64ConditionalKind.LE => new CompareExpr(Condition.Le, _flagLeft, right),
             Arm64ConditionalKind.GT => new CompareExpr(Condition.Gt, _flagLeft, right),
@@ -2054,20 +2163,71 @@ internal sealed class Arm64BlockTranslator
 
     private void SetCompareResult(Expr res) { _flagKind = FlagKind.Compare; _flagLeft = res; _flagRight = ZeroLike(res); }
 
+    private static CompareExpr SimplifyCompare(Condition cond, Expr left, Expr right)
+    {
+        if (cond is Condition.Eq or Condition.Ne && right is ConstExpr { Value: 0 })
+        {
+            if (left is BinaryExpr { Op.Code: CilCode.Sub, Left: var x, Right: ConstExpr c })
+                return new CompareExpr(cond, x, c);
+            if (left is BinaryExpr { Op.Code: CilCode.Add, Left: var x2, Right: ConstExpr c2 })
+                return new CompareExpr(cond, x2, new ConstExpr(-c2.Value, c2.Kind));
+        }
+        return new CompareExpr(cond, left, right);
+    }
+
+    private static bool IsBool01(Expr e) =>
+        e.Type?.ElementType == AsmResolver.PE.DotNet.Metadata.Tables.ElementType.Boolean
+        || e is CompareExpr
+        || (e is BinaryExpr { Op.Code: CilCode.And } band && (band.Right is ConstExpr { Value: 1 } || band.Left is ConstExpr { Value: 1 }))
+        || (e is BinaryExpr { Op.Code: CilCode.And or CilCode.Or or CilCode.Xor } bb && IsBool01(bb.Left) && IsBool01(bb.Right))
+        || (e is ConvExpr c && IsBool01(c.Operand));
+
+    private static Expr FoldBoolBitNot(Expr e, out bool isExactBool)
+    {
+        if (IsBool01(e)) { isExactBool = true; return e; }
+        if (e is UnaryExpr { Op.Code: CilCode.Not, Operand: var inner })
+        {
+            var innerFolded = FoldBoolBitNot(inner, out var ib);
+            if (ib)
+            {
+                isExactBool = true;
+                return new CompareExpr(Condition.Eq, innerFolded, new ConstExpr(0, ValueKind.I4));
+            }
+        }
+        if (e is BinaryExpr { Op.Code: CilCode.And or CilCode.Or or CilCode.Xor } b)
+        {
+            var fl = FoldBoolBitNot(b.Left, out var lb);
+            var fr = FoldBoolBitNot(b.Right, out var rb);
+            if (lb && rb)
+            {
+                isExactBool = true;
+                return new BinaryExpr(b.Op, fl, fr, ValueKind.I4);
+            }
+        }
+        isExactBool = false;
+        return e;
+    }
+
     private static Expr BitTestCompare(Expr val, int bit, bool zero)
     {
-        if (bit == 0 && (val.Type?.ElementType == AsmResolver.PE.DotNet.Metadata.Tables.ElementType.Boolean || val.Kind == ValueKind.I4))
-            return new CompareExpr(zero ? Condition.Eq : Condition.Ne, val, new ConstExpr(0, ValueKind.I4));
+        if (bit == 0)
+        {
+            var folded = FoldBoolBitNot(val, out var isExactBool);
+            if (isExactBool)
+                return new CompareExpr(zero ? Condition.Eq : Condition.Ne, folded, new ConstExpr(0, ValueKind.I4));
+        }
         var k = val.Kind == ValueKind.I8 ? ValueKind.I8 : ValueKind.I4;
         var masked = new BinaryExpr(CilOpCodes.And, val, new ConstExpr(1L << bit, k), k);
         return new CompareExpr(zero ? Condition.Eq : Condition.Ne, masked, new ConstExpr(0, k));
     }
 
-    private void SpillLiveOut(EmitContext ctx, Arm64Block block)
+    private void SpillLiveOut(EmitContext ctx, Arm64Block block, int branchReadReg = -1)
     {
         var exit = _exit[block] = [];
-        foreach (var r in block.LiveOut)
+        var liveOutList = block.LiveOut.ToList();
+        for (var idx = 0; idx < liveOutList.Count; idx++)
         {
+            var r = liveOutList[idx];
             if (!_regs.TryGetValue(r, out var e)) continue;
             exit[r] = e;
             if (e is MarkerExpr or ArgExpr) _lastRemat[r] = e; else _lastRemat.Remove(r);
@@ -2101,6 +2261,34 @@ internal sealed class Arm64BlockTranslator
                 if (s.Predecessors.Count > 1 && s.LiveIn.Contains(r))
                     _joinLocals.TryAdd((s, r), local);
             if (e is LocalExpr le && le.Local == local) continue;
+
+            // Preserve `local` if any flag operand, branch register, or later live-out still reads it before we overwrite `local`.
+            var clobbersLiveLocal = (_flagLeft is not null && ContainsLocal(_flagLeft, local))
+                || (_flagRight is not null && ContainsLocal(_flagRight, local))
+                || (branchReadReg >= 0 && branchReadReg != r && _regs.TryGetValue(branchReadReg, out var brExpr) && ContainsLocal(brExpr, local))
+                || Enumerable.Range(idx + 1, liveOutList.Count - idx - 1)
+                    .Any(j => _regs.TryGetValue(liveOutList[j], out var later) && ContainsLocal(later, local))
+                || _slots.Values.Any(sv => ContainsLocal(sv, local));
+            if (clobbersLiveLocal)
+            {
+                var snap = NewLocal(local.VariableType);
+                ctx.IL.Add(CilOpCodes.Ldloc, local);
+                ctx.IL.Add(CilOpCodes.Stloc, snap);
+                var snapExpr = new LocalExpr(snap);
+                if (_flagLeft is not null) _flagLeft = RewriteLocal(_flagLeft, local, snapExpr);
+                if (_flagRight is not null) _flagRight = RewriteLocal(_flagRight, local, snapExpr);
+                if (branchReadReg >= 0 && branchReadReg != r && _regs.TryGetValue(branchReadReg, out var brVal))
+                    _regs[branchReadReg] = RewriteLocal(brVal, local, snapExpr);
+                for (var j = idx + 1; j < liveOutList.Count; j++)
+                {
+                    var lr = liveOutList[j];
+                    if (_regs.TryGetValue(lr, out var laterVal))
+                        _regs[lr] = RewriteLocal(laterVal, local, snapExpr);
+                }
+                foreach (var sk in _slots.Keys.ToList())
+                    _slots[sk] = RewriteLocal(_slots[sk], local, snapExpr);
+            }
+
             Expr.EmitAs(ctx, e, local.VariableType);
             ctx.IL.Add(CilOpCodes.Stloc, local);
             if (!IsRematerializable(e))
@@ -2108,17 +2296,224 @@ internal sealed class Arm64BlockTranslator
                 var spilled = new LocalExpr(local);
                 if (_gotValues.Contains(e)) _gotValues.Add(spilled);
                 exit[r] = _regs[r] = spilled;
-                ReplaceFlagExpr(ref _flagLeft, e, spilled);
-                ReplaceFlagExpr(ref _flagRight, e, spilled);
+                if (_flagLeft is not null) _flagLeft = RewriteExact(_flagLeft, e, spilled);
+                if (_flagRight is not null) _flagRight = RewriteExact(_flagRight, e, spilled);
             }
         }
     }
 
-    private static void ReplaceFlagExpr(ref Expr? target, Expr oldExpr, Expr newExpr)
+    private ulong[] ComputeLiveAfterMap(List<Arm64Insn> insns, Arm64Block b)
     {
-        if (target is null) return;
-        if (ReferenceEquals(target, oldExpr)) target = newExpr;
-        else if (target is ConvExpr ce && ReferenceEquals(ce.Operand, oldExpr)) target = new ConvExpr(newExpr, ce.Type);
+        var count = b.End - b.Start;
+        var map = new ulong[count];
+        ulong live = 0;
+        foreach (var r in b.LiveOut)
+            if ((uint)r < 64) live |= 1UL << r;
+        var defs = new List<int>(2);
+        var reads = new List<int>(4);
+        for (var i = b.End - 1; i >= b.Start; i--)
+        {
+            map[i - b.Start] = live;
+            var ins = insns[i].Ins;
+            defs.Clear();
+            reads.Clear();
+            Arm64Lifter.ClassifyOperands(ins, defs, reads);
+            if (ins.Mnemonic is Arm64Mnemonic.BL or Arm64Mnemonic.BLR)
+            {
+                for (var r = 0; r <= 18; r++) live &= ~(1UL << r);
+                for (var r = 32; r <= 39; r++) live &= ~(1UL << r);
+                for (var r = 48; r <= 63; r++) live &= ~(1UL << r);
+                for (var r = 0; r <= 8; r++) live |= 1UL << r;
+                for (var r = 32; r <= 39; r++) live |= 1UL << r;
+            }
+            else
+            {
+                foreach (var d in defs) if ((uint)d < 64) live &= ~(1UL << d);
+                foreach (var r in reads) if ((uint)r < 64) live |= 1UL << r;
+            }
+        }
+        return map;
+    }
+
+    private bool IsRegLiveAfterCurInsn(int r)
+    {
+        if (_curBlockLiveAfter is null || (uint)r >= 64) return false;
+        var idx = _curInsnIdx - _curBlockStart;
+        if ((uint)idx >= (uint)_curBlockLiveAfter.Length) return true;
+        return (_curBlockLiveAfter[idx] & (1UL << r)) != 0;
+    }
+
+    private static bool SameFieldRef(Expr a, Expr b) => (a, b) switch
+    {
+        (FieldExpr fa, FieldExpr fb) => fa.Field.Name == fb.Field.Name
+            && SignatureComparer.Default.Equals(fa.Field.DeclaringType, fb.Field.DeclaringType)
+            && SameValue(fa.Instance, fb.Instance),
+        (StaticFieldExpr sa, StaticFieldExpr sb) => sa.Field.Name == sb.Field.Name
+            && SignatureComparer.Default.Equals(sa.Field.DeclaringType, sb.Field.DeclaringType),
+        _ => false,
+    };
+
+    private static bool ContainsReadOf(Expr root, Expr fieldExpr, Expr? excludeExact)
+    {
+        if (excludeExact is not null && ReferenceEquals(root, excludeExact)) return false;
+        if (root is AddressExpr) return false;
+        if (SameFieldRef(root, fieldExpr)) return true;
+        return root switch
+        {
+            FieldExpr fe => ContainsReadOf(fe.Instance, fieldExpr, excludeExact),
+            BinaryExpr be => ContainsReadOf(be.Left, fieldExpr, excludeExact) || ContainsReadOf(be.Right, fieldExpr, excludeExact),
+            UnaryExpr ue => ContainsReadOf(ue.Operand, fieldExpr, excludeExact),
+            ConvExpr ce => ContainsReadOf(ce.Operand, fieldExpr, excludeExact),
+            CompareExpr cmp => ContainsReadOf(cmp.Left, fieldExpr, excludeExact) || ContainsReadOf(cmp.Right, fieldExpr, excludeExact),
+            CondSelectExpr cs => ContainsReadOf(cs.Cond, fieldExpr, excludeExact) || ContainsReadOf(cs.TrueVal, fieldExpr, excludeExact) || ContainsReadOf(cs.FalseVal, fieldExpr, excludeExact),
+            MathCallExpr mc => mc.Args.Any(a => ContainsReadOf(a, fieldExpr, excludeExact)),
+            ArrayElementExpr ae => ContainsReadOf(ae.Array, fieldExpr, excludeExact) || ContainsReadOf(ae.Index, fieldExpr, excludeExact),
+            ArrayLengthExpr al => ContainsReadOf(al.Array, fieldExpr, excludeExact),
+            StringLengthExpr sl => ContainsReadOf(sl.String, fieldExpr, excludeExact),
+            IndirectExpr ie => ContainsReadOf(ie.Pointer, fieldExpr, excludeExact),
+            IndirectStructExpr ise => ContainsReadOf(ise.Address, fieldExpr, excludeExact),
+            StructChunkExpr sc => ContainsReadOf(sc.Source, fieldExpr, excludeExact),
+            _ => false,
+        };
+    }
+
+    private static Expr RewriteReadOf(Expr root, Expr fieldExpr, Expr? excludeExact, Expr replacement)
+    {
+        if (excludeExact is not null && ReferenceEquals(root, excludeExact)) return root;
+        if (root is AddressExpr) return root;
+        if (SameFieldRef(root, fieldExpr)) return replacement;
+        return RewriteChildren(root, child => RewriteReadOf(child, fieldExpr, excludeExact, replacement));
+    }
+
+    private static Expr RewritePostFieldStore(Expr root, Expr? storedVal, Expr fieldExpr, Expr? inverseExpr)
+    {
+        if (storedVal is not null && ReferenceEquals(root, storedVal))
+            return fieldExpr;
+        if (inverseExpr is not null && root is not AddressExpr && SameFieldRef(root, fieldExpr))
+            return inverseExpr;
+        if (root is AddressExpr) return root;
+        return RewriteChildren(root, child => RewritePostFieldStore(child, storedVal, fieldExpr, inverseExpr));
+    }
+
+    private static bool ContainsLocal(Expr root, CilLocalVariable local) => root switch
+    {
+        LocalExpr le => le.Local == local,
+        AddressExpr ae => ContainsLocal(ae.Target, local),
+        FieldExpr fe => ContainsLocal(fe.Instance, local),
+        BinaryExpr be => ContainsLocal(be.Left, local) || ContainsLocal(be.Right, local),
+        UnaryExpr ue => ContainsLocal(ue.Operand, local),
+        ConvExpr ce => ContainsLocal(ce.Operand, local),
+        CompareExpr cmp => ContainsLocal(cmp.Left, local) || ContainsLocal(cmp.Right, local),
+        CondSelectExpr cs => ContainsLocal(cs.Cond, local) || ContainsLocal(cs.TrueVal, local) || ContainsLocal(cs.FalseVal, local),
+        MathCallExpr mc => mc.Args.Any(a => ContainsLocal(a, local)),
+        ArrayElementExpr ae => ContainsLocal(ae.Array, local) || ContainsLocal(ae.Index, local),
+        ArrayLengthExpr al => ContainsLocal(al.Array, local),
+        StringLengthExpr sl => ContainsLocal(sl.String, local),
+        IndirectExpr ie => ContainsLocal(ie.Pointer, local),
+        IndirectStructExpr ise => ContainsLocal(ise.Address, local),
+        StructChunkExpr sc => ContainsLocal(sc.Source, local),
+        _ => false,
+    };
+
+    private static Expr RewriteLocal(Expr root, CilLocalVariable local, Expr replacement)
+    {
+        if (root is LocalExpr le && le.Local == local) return replacement;
+        if (root is AddressExpr) return root;
+        return RewriteChildren(root, child => RewriteLocal(child, local, replacement));
+    }
+
+    private static Expr RewriteExact(Expr root, Expr oldExpr, Expr newExpr)
+    {
+        if (ReferenceEquals(root, oldExpr)) return newExpr;
+        if (root is AddressExpr) return root;
+        return RewriteChildren(root, child => RewriteExact(child, oldExpr, newExpr));
+    }
+
+    private static Expr RewriteChildren(Expr root, Func<Expr, Expr> fn)
+    {
+        switch (root)
+        {
+            case FieldExpr fe:
+            {
+                var ni = fn(fe.Instance);
+                return ReferenceEquals(ni, fe.Instance) ? fe : new FieldExpr(ni, fe.Field, fe.Type);
+            }
+            case BinaryExpr be:
+            {
+                var nl = fn(be.Left);
+                var nr = fn(be.Right);
+                return ReferenceEquals(nl, be.Left) && ReferenceEquals(nr, be.Right) ? be : new BinaryExpr(be.Op, nl, nr, be.Kind);
+            }
+            case UnaryExpr ue:
+            {
+                var no = fn(ue.Operand);
+                return ReferenceEquals(no, ue.Operand) ? ue : new UnaryExpr(ue.Op, no);
+            }
+            case ConvExpr ce:
+            {
+                var no = fn(ce.Operand);
+                return ReferenceEquals(no, ce.Operand) ? ce : new ConvExpr(no, ce.Type);
+            }
+            case CompareExpr cmp:
+            {
+                var nl = fn(cmp.Left);
+                var nr = fn(cmp.Right);
+                return ReferenceEquals(nl, cmp.Left) && ReferenceEquals(nr, cmp.Right) ? cmp : new CompareExpr(cmp.Condition, nl, nr);
+            }
+            case CondSelectExpr cs:
+            {
+                var nc = fn(cs.Cond);
+                var nt = fn(cs.TrueVal);
+                var nf = fn(cs.FalseVal);
+                return ReferenceEquals(nc, cs.Cond) && ReferenceEquals(nt, cs.TrueVal) && ReferenceEquals(nf, cs.FalseVal)
+                    ? cs
+                    : new CondSelectExpr(nc, nt, nf, cs.Type);
+            }
+            case MathCallExpr mc:
+            {
+                var changed = false;
+                var newArgs = new Expr[mc.Args.Count];
+                for (var i = 0; i < mc.Args.Count; i++)
+                {
+                    newArgs[i] = fn(mc.Args[i]);
+                    if (!ReferenceEquals(newArgs[i], mc.Args[i])) changed = true;
+                }
+                return !changed ? mc : new MathCallExpr(mc.Name, mc.Type!, newArgs);
+            }
+            case ArrayElementExpr ae:
+            {
+                var na = fn(ae.Array);
+                var ni = fn(ae.Index);
+                return ReferenceEquals(na, ae.Array) && ReferenceEquals(ni, ae.Index) ? ae : new ArrayElementExpr(na, ni, ae.Type);
+            }
+            case ArrayLengthExpr al:
+            {
+                var na = fn(al.Array);
+                return ReferenceEquals(na, al.Array) ? al : new ArrayLengthExpr(na);
+            }
+            case StringLengthExpr sl:
+            {
+                var ns = fn(sl.String);
+                return ReferenceEquals(ns, sl.String) ? sl : new StringLengthExpr(ns);
+            }
+            case IndirectExpr ie:
+            {
+                var np = fn(ie.Pointer);
+                return ReferenceEquals(np, ie.Pointer) ? ie : new IndirectExpr(np, ie.Type);
+            }
+            case IndirectStructExpr ise:
+            {
+                var na = fn(ise.Address);
+                return ReferenceEquals(na, ise.Address) ? ise : new IndirectStructExpr(ise.Type, na);
+            }
+            case StructChunkExpr sc:
+            {
+                var ns = fn(sc.Source);
+                return ReferenceEquals(ns, sc.Source) ? sc : new StructChunkExpr(ns, sc.Offset, sc.Size);
+            }
+            default:
+                return root;
+        }
     }
 
     private static bool SameSpillFamily(TypeSignature existing, TypeSignature candidate, Expr e)
@@ -2217,10 +2612,19 @@ internal sealed class Arm64BlockTranslator
                 var sh = (Arm64ShiftOperand)extra;
                 if (sh.Amount > 0)
                 {
+                    if (sh.ShiftKind == Arm64ShiftKind.LSR
+                        && baseVal is UnaryExpr { Op.Code: CilCode.Not, Operand: var notInner }
+                        && ((sh.Amount == 31 && notInner.Kind == ValueKind.I4) || (sh.Amount == 63 && notInner.Kind == ValueKind.I8)))
+                        return new CompareExpr(Condition.Ge, notInner, ZeroLike(notInner));
                     if (baseVal is ConstExpr c)
-                        return new ConstExpr(sh.ShiftKind == Arm64ShiftKind.LSL ? c.Value << sh.Amount : c.Value >> sh.Amount, c.Kind);
+                        return new ConstExpr(sh.ShiftKind == Arm64ShiftKind.LSL ? c.Value << sh.Amount
+                            : sh.ShiftKind == Arm64ShiftKind.ASR ? c.Value >> sh.Amount
+                            : unchecked((long)((ulong)c.Value >>> sh.Amount)), c.Kind);
                     var k = baseVal.Kind == ValueKind.I8 ? ValueKind.I8 : ValueKind.I4;
-                    return new BinaryExpr(sh.ShiftKind == Arm64ShiftKind.LSL ? CilOpCodes.Shl : CilOpCodes.Shr_Un, baseVal, new ConstExpr(sh.Amount, ValueKind.I4), k);
+                    var cilShift = sh.ShiftKind == Arm64ShiftKind.LSL ? CilOpCodes.Shl
+                        : sh.ShiftKind == Arm64ShiftKind.ASR ? CilOpCodes.Shr
+                        : CilOpCodes.Shr_Un;
+                    return new BinaryExpr(cilShift, baseVal, new ConstExpr(sh.Amount, ValueKind.I4), k);
                 }
             }
             else if (extra.Kind == Arm64OperandKind.Extend)

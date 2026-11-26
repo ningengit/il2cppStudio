@@ -97,6 +97,7 @@ public static class CompileFixups
         NativeEscapeSanitizer.Apply(tree, in flags);
         PurgeDiscardsAndDeadStatements(tree);
         FixLeakedAndConstantPatterns(tree);
+        FoldDoubleUnaryMinus(tree);
 
         var emptyTypeArgs = new List<SimpleType>();
         var boxedCtorCasts = new List<CastExpression>();
@@ -1676,4 +1677,40 @@ public static class CompileFixups
     private static bool SameGenericDefinition(AstType a, AstType b) =>
         a is SimpleType sa && b is SimpleType sb && sa.Identifier == sb.Identifier && sa.TypeArguments.Count == sb.TypeArguments.Count && sa.TypeArguments.Count > 0
         || a is MemberType ma && b is MemberType mb && ma.MemberName == mb.MemberName && ma.TypeArguments.Count == mb.TypeArguments.Count && ma.TypeArguments.Count > 0;
+
+    private static void FoldDoubleUnaryMinus(SyntaxTree tree)
+    {
+        foreach (var u in AstWalk.Collect<UnaryOperatorExpression>(tree, static e => e.Operator == UnaryOperatorType.Minus))
+        {
+            if (u.Parent is null) continue;
+            var rawInner = UnwrapParens(u.Expression);
+            if (rawInner is PrimitiveExpression pe)
+            {
+                Expression? folded = pe.Value switch
+                {
+                    sbyte v when v < 0 && v != sbyte.MinValue => new PrimitiveExpression(-v),
+                    short v when v < 0 && v != short.MinValue => new PrimitiveExpression(-v),
+                    int v when v < 0 && v != int.MinValue => new PrimitiveExpression(-v),
+                    long v when v < 0 && v != long.MinValue => new PrimitiveExpression(-v),
+                    float v when v < 0f => new PrimitiveExpression(-v),
+                    double v when v < 0d => new PrimitiveExpression(-v),
+                    _ => null,
+                };
+                if (folded is not null)
+                {
+                    u.ReplaceWith(folded);
+                    continue;
+                }
+                if (u.Expression is not ParenthesizedExpression && pe.Value is int.MinValue or long.MinValue)
+                    u.Expression = new ParenthesizedExpression(u.Expression.Detach());
+            }
+            else if (rawInner is UnaryOperatorExpression { Operator: UnaryOperatorType.Minus } innerMinus)
+            {
+                if (UnwrapParens(innerMinus.Expression) is PrimitiveExpression innerPe)
+                    u.ReplaceWith(innerPe.Detach());
+                else if (u.Expression is not ParenthesizedExpression)
+                    u.Expression = new ParenthesizedExpression(innerMinus.Detach());
+            }
+        }
+    }
 }

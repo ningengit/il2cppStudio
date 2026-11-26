@@ -12,6 +12,8 @@ namespace Il2CppStudio.Core.Lifting.Arm64;
 
 internal sealed record Arm64Insn(ulong Address, Arm64Instruction Ins);
 
+internal sealed record Arm64JumpTable(int IndexReg, ulong[] Targets, ulong DefaultTargetVa);
+
 internal sealed class Arm64Block(int start, ulong va)
 {
     public int Start { get; } = start;
@@ -25,6 +27,7 @@ internal sealed class Arm64Block(int start, ulong va)
     public HashSet<int> LiveIn { get; } = [];
     public HashSet<int> LiveOut { get; } = [];
     public bool IsTrap { get; set; }
+    public Arm64JumpTable? JumpTable { get; set; }
 }
 
 /// <summary>
@@ -207,6 +210,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                 if (m == Arm64Mnemonic.B)
                 {
                     var target = BranchTarget(insns[k].Address, ins, 0);
+                    if (sym.Map.SymbolAt(target) is not null) return false;
                     if ((target < funcStart || target >= funcEnd)
                         && Arm64BlockTranslator.ClassifyNativeHelper(reader, helperCache, target, symbolNames) == Arm64HelperKind.NoReturn)
                         return true;
@@ -284,6 +288,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         }
 
         var leaders = new SortedSet<int> { 0 };
+        var jumpTablesByBrIdx = new Dictionary<int, Arm64JumpTable>();
         for (var i = 0; i < insns.Count; i++)
         {
             var ins = insns[i].Ins;
@@ -328,7 +333,20 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                     if (i + 1 < insns.Count) leaders.Add(i + 1);
                     break;
                 }
-                case Arm64Mnemonic.RET or Arm64Mnemonic.BR or Arm64Mnemonic.BRK or Arm64Mnemonic.UDF:
+                case Arm64Mnemonic.BR:
+                {
+                    if (TryDecodeJumpTable(insns, i, indexAtVa, reader) is { } jt)
+                    {
+                        jumpTablesByBrIdx[i] = jt;
+                        foreach (var tVa in jt.Targets)
+                            if (indexAtVa.TryGetValue(tVa, out var ti)) leaders.Add(ti);
+                        if (jt.DefaultTargetVa != 0 && !IsTrapAt(jt.DefaultTargetVa) && indexAtVa.TryGetValue(jt.DefaultTargetVa, out var di))
+                            leaders.Add(di);
+                    }
+                    if (i + 1 < insns.Count) leaders.Add(i + 1);
+                    break;
+                }
+                case Arm64Mnemonic.RET or Arm64Mnemonic.BRK or Arm64Mnemonic.UDF:
                     if (i + 1 < insns.Count) leaders.Add(i + 1);
                     break;
             }
@@ -342,6 +360,8 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             var start = leaderList[bi];
             var end = bi + 1 < leaderList.Count ? leaderList[bi + 1] : insns.Count;
             var b = new Arm64Block(start, insns[start].Address) { End = end };
+            if (end > start && jumpTablesByBrIdx.TryGetValue(end - 1, out var jt))
+                b.JumpTable = jt;
             blocks.Add(b);
             blockAtVa[b.Va] = b;
         }
@@ -362,6 +382,17 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             var lastIdx = b.End - 1;
             var last = insns[lastIdx];
             var m = last.Ins.Mnemonic;
+            if (m == Arm64Mnemonic.BR && b.JumpTable is { } jt)
+            {
+                foreach (var tVa in jt.Targets.Distinct())
+                {
+                    if (blockAtVa.TryGetValue(tVa, out var tb) && !tb.IsTrap && !IsTrapAt(tVa))
+                        b.Successors.Add(tb);
+                }
+                if (jt.DefaultTargetVa != 0 && blockAtVa.TryGetValue(jt.DefaultTargetVa, out var db) && !db.IsTrap && !IsTrapAt(jt.DefaultTargetVa) && !b.Successors.Contains(db))
+                    b.Successors.Add(db);
+                continue;
+            }
             if (m is Arm64Mnemonic.RET or Arm64Mnemonic.BR or Arm64Mnemonic.BRK or Arm64Mnemonic.UDF) continue;
             if (m == Arm64Mnemonic.B && last.Ins.OperandCount == 1)
             {
@@ -447,6 +478,8 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                     for (var r = 32; r <= 35; r++) if (!b.Def.Contains(r)) b.Use.Add(r);
                 }
             }
+            if (b.JumpTable is { } jt && !b.Def.Contains(jt.IndexReg))
+                b.Use.Add(jt.IndexReg);
         }
         bool changed;
         do
@@ -467,7 +500,249 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         _ = funcEnd;
     }
 
-    private static void ClassifyOperands(in Arm64Instruction ins, List<int> defs, List<int> reads)
+    private static Arm64JumpTable? TryDecodeJumpTable(
+        List<Arm64Insn> insns, int brIdx, Dictionary<ulong, int> indexAtVa, Binary.VirtualReader reader)
+    {
+        if (insns[brIdx].Ins.OperandCount < 1 || insns[brIdx].Ins.GetOperand(0).Kind != Arm64OperandKind.Register)
+            return null;
+        var targetReg = RegKey((Arm64RegisterOperand)insns[brIdx].Ins.GetOperand(0));
+        if (targetReg < 0) return null;
+
+        var earliest = brIdx;
+        var floor = Math.Max(0, brIdx - 20);
+
+        // 1. Optional `mov xTarget, xTmp` + `add xTarget, xBase, xOff(, shift/extend)`.
+        var baseReg = -1;
+        var offReg = -1;
+        var addShift = 0;
+        var addIdx = -1;
+        for (var k = brIdx - 1; k >= floor; k--)
+        {
+            var ins = insns[k].Ins;
+            var m = ins.Mnemonic;
+            if (k < brIdx - 1 && (IsArm64Terminator(ins) || m is Arm64Mnemonic.CBZ or Arm64Mnemonic.CBNZ or Arm64Mnemonic.TBZ or Arm64Mnemonic.TBNZ or Arm64Mnemonic.BL or Arm64Mnemonic.BLR))
+                break;
+            if (m == Arm64Mnemonic.MOV && ins.OperandCount == 2 && ins.GetOperand(0).Kind == Arm64OperandKind.Register
+                && ins.GetOperand(1).Kind == Arm64OperandKind.Register && RegKey((Arm64RegisterOperand)ins.GetOperand(0)) == targetReg)
+            {
+                targetReg = RegKey((Arm64RegisterOperand)ins.GetOperand(1));
+                earliest = Math.Min(earliest, k);
+                continue;
+            }
+            if (m == Arm64Mnemonic.ADD && ins.OperandCount >= 3 && ins.GetOperand(0).Kind == Arm64OperandKind.Register
+                && ins.GetOperand(1).Kind == Arm64OperandKind.Register && ins.GetOperand(2).Kind == Arm64OperandKind.Register
+                && RegKey((Arm64RegisterOperand)ins.GetOperand(0)) == targetReg)
+            {
+                baseReg = RegKey((Arm64RegisterOperand)ins.GetOperand(1));
+                offReg = RegKey((Arm64RegisterOperand)ins.GetOperand(2));
+                if (ins.OperandCount >= 4)
+                {
+                    var op3 = ins.GetOperand(3);
+                    if (op3.Kind == Arm64OperandKind.Shift) addShift = ((Arm64ShiftOperand)op3).Amount;
+                    else if (op3.Kind == Arm64OperandKind.Extend) addShift = ((Arm64ExtendOperand)op3).Amount;
+                }
+                addIdx = k;
+                earliest = Math.Min(earliest, k);
+                break;
+            }
+        }
+        if (addIdx < 0 || baseReg < 0 || offReg < 0) return null;
+
+        // 2. Locate base address definition (`adr xBase, label` or `adrp + add`), offset load (`ldr* wOff, [xTable, xIdx]`),
+        //    and table address (`adrp + add` or `adr`).
+        ulong baseVa = 0;
+        long baseAddImm = 0;
+        var baseNeedsAdrp = false;
+        var tableReg = -1;
+        var idxReg = -1;
+        var entrySize = 0;
+        var isSigned = false;
+        ulong tableVa = 0;
+        long tableAddImm = 0;
+        var tableNeedsAdrp = false;
+
+        for (var k = addIdx - 1; k >= floor; k--)
+        {
+            var ins = insns[k].Ins;
+            var pc = insns[k].Address;
+            var m = ins.Mnemonic;
+            if (IsArm64Terminator(ins) || m is Arm64Mnemonic.CBZ or Arm64Mnemonic.CBNZ or Arm64Mnemonic.TBZ or Arm64Mnemonic.TBNZ or Arm64Mnemonic.BL or Arm64Mnemonic.BLR)
+                break;
+
+            if (baseVa == 0 && !baseNeedsAdrp && m == Arm64Mnemonic.ADR && ins.OperandCount >= 2
+                && ins.GetOperand(0).Kind == Arm64OperandKind.Register && RegKey((Arm64RegisterOperand)ins.GetOperand(0)) == baseReg)
+            {
+                baseVa = BranchTarget(pc, ins, 1);
+                earliest = Math.Min(earliest, k);
+                continue;
+            }
+            if (baseVa == 0 && m == Arm64Mnemonic.ADD && ins.OperandCount >= 3
+                && ins.GetOperand(0).Kind == Arm64OperandKind.Register && ins.GetOperand(1).Kind == Arm64OperandKind.Register
+                && ins.GetOperand(2).Kind == Arm64OperandKind.Immediate
+                && RegKey((Arm64RegisterOperand)ins.GetOperand(0)) == baseReg)
+            {
+                baseAddImm = ((Arm64ImmediateOperand)ins.GetOperand(2)).Value;
+                if (ins.OperandCount >= 4 && ins.GetOperand(3).Kind == Arm64OperandKind.Shift)
+                    baseAddImm <<= ((Arm64ShiftOperand)ins.GetOperand(3)).Amount;
+                baseReg = RegKey((Arm64RegisterOperand)ins.GetOperand(1));
+                baseNeedsAdrp = true;
+                earliest = Math.Min(earliest, k);
+                continue;
+            }
+            if (baseVa == 0 && m == Arm64Mnemonic.ADRP && ins.OperandCount >= 2
+                && ins.GetOperand(0).Kind == Arm64OperandKind.Register && RegKey((Arm64RegisterOperand)ins.GetOperand(0)) == baseReg
+                && ins.GetOperand(1).Kind == Arm64OperandKind.Label)
+            {
+                var lbl = (Arm64LabelOperand)ins.GetOperand(1);
+                var page = (pc & ~0xFFFUL) + unchecked((ulong)lbl.Offset);
+                baseVa = unchecked((ulong)((long)page + baseAddImm));
+                baseNeedsAdrp = false;
+                earliest = Math.Min(earliest, k);
+                continue;
+            }
+
+            if (entrySize == 0 && m is Arm64Mnemonic.LDRB or Arm64Mnemonic.LDRSB or Arm64Mnemonic.LDRH or Arm64Mnemonic.LDRSH or Arm64Mnemonic.LDRSW or Arm64Mnemonic.LDR
+                && ins.OperandCount >= 2 && ins.GetOperand(0).Kind == Arm64OperandKind.Register && ins.GetOperand(1).Kind == Arm64OperandKind.Memory
+                && RegKey((Arm64RegisterOperand)ins.GetOperand(0)) == offReg)
+            {
+                var dstOp = (Arm64RegisterOperand)ins.GetOperand(0);
+                var acc = ((Arm64MemoryOperand)ins.GetOperand(1)).Accessor;
+                if (acc.HasIndexRegister && acc.Immediate == 0)
+                {
+                    tableReg = RawRegKey(acc.BaseRegister);
+                    idxReg = RawRegKey(acc.IndexRegister);
+                    (entrySize, isSigned) = m switch
+                    {
+                        Arm64Mnemonic.LDRB => (1, false),
+                        Arm64Mnemonic.LDRSB => (1, true),
+                        Arm64Mnemonic.LDRH => (2, false),
+                        Arm64Mnemonic.LDRSH => (2, true),
+                        Arm64Mnemonic.LDRSW => (4, true),
+                        Arm64Mnemonic.LDR when dstOp.Value.Kind == Arm64RegisterKind.W => (4, false),
+                        _ => (0, false),
+                    };
+                    if (entrySize == 0) return null;
+                    earliest = Math.Min(earliest, k);
+                    continue;
+                }
+            }
+
+            if (tableReg >= 0 && tableVa == 0)
+            {
+                if (!tableNeedsAdrp && m == Arm64Mnemonic.ADR && ins.OperandCount >= 2
+                    && ins.GetOperand(0).Kind == Arm64OperandKind.Register && RegKey((Arm64RegisterOperand)ins.GetOperand(0)) == tableReg)
+                {
+                    tableVa = BranchTarget(pc, ins, 1);
+                    earliest = Math.Min(earliest, k);
+                    continue;
+                }
+                if (!tableNeedsAdrp && m == Arm64Mnemonic.ADD && ins.OperandCount >= 3
+                    && ins.GetOperand(0).Kind == Arm64OperandKind.Register && ins.GetOperand(1).Kind == Arm64OperandKind.Register
+                    && ins.GetOperand(2).Kind == Arm64OperandKind.Immediate
+                    && RegKey((Arm64RegisterOperand)ins.GetOperand(0)) == tableReg)
+                {
+                    tableAddImm = ((Arm64ImmediateOperand)ins.GetOperand(2)).Value;
+                    if (ins.OperandCount >= 4 && ins.GetOperand(3).Kind == Arm64OperandKind.Shift)
+                        tableAddImm <<= ((Arm64ShiftOperand)ins.GetOperand(3)).Amount;
+                    tableReg = RegKey((Arm64RegisterOperand)ins.GetOperand(1));
+                    tableNeedsAdrp = true;
+                    earliest = Math.Min(earliest, k);
+                    continue;
+                }
+                if (m == Arm64Mnemonic.ADRP && ins.OperandCount >= 2
+                    && ins.GetOperand(0).Kind == Arm64OperandKind.Register && RegKey((Arm64RegisterOperand)ins.GetOperand(0)) == tableReg
+                    && ins.GetOperand(1).Kind == Arm64OperandKind.Label)
+                {
+                    var lbl = (Arm64LabelOperand)ins.GetOperand(1);
+                    var page = (pc & ~0xFFFUL) + unchecked((ulong)lbl.Offset);
+                    tableVa = unchecked((ulong)((long)page + tableAddImm));
+                    tableNeedsAdrp = false;
+                    earliest = Math.Min(earliest, k);
+                    continue;
+                }
+            }
+        }
+
+        if (baseVa == 0 || tableVa == 0 || idxReg < 0 || entrySize == 0)
+            return null;
+
+        // 3. Locate the preceding `cmp wIdx, #maxVal` + `b.hi`/`b.hs defaultVa` bounds guard.
+        ulong defaultVa = 0;
+        var isHs = false;
+        var guardBranchIdx = -1;
+        var guardFloor = Math.Max(0, earliest - 12);
+        for (var k = earliest - 1; k >= guardFloor; k--)
+        {
+            var ins = insns[k].Ins;
+            var m = ins.Mnemonic;
+            if (m == Arm64Mnemonic.B && ins.OperandCount == 2)
+            {
+                var cc = ((Arm64EnumOperand)ins.GetOperand(0)).AsConditional;
+                if (cc is Arm64ConditionalKind.HI or Arm64ConditionalKind.HS)
+                {
+                    defaultVa = BranchTarget(insns[k].Address, ins, 1);
+                    isHs = cc == Arm64ConditionalKind.HS;
+                    guardBranchIdx = k;
+                    break;
+                }
+            }
+            if (IsArm64Terminator(ins) || m is Arm64Mnemonic.BL or Arm64Mnemonic.BLR or Arm64Mnemonic.CBZ or Arm64Mnemonic.CBNZ or Arm64Mnemonic.TBZ or Arm64Mnemonic.TBNZ)
+                break;
+        }
+        if (guardBranchIdx < 0) return null;
+
+        var maxVal = -1L;
+        var cmpFloor = Math.Max(0, guardBranchIdx - 8);
+        for (var k = guardBranchIdx - 1; k >= cmpFloor; k--)
+        {
+            var ins = insns[k].Ins;
+            var m = ins.Mnemonic;
+            if (m == Arm64Mnemonic.CMP && ins.OperandCount >= 2
+                && ins.GetOperand(0).Kind == Arm64OperandKind.Register && ins.GetOperand(1).Kind == Arm64OperandKind.Immediate
+                && RegKey((Arm64RegisterOperand)ins.GetOperand(0)) == idxReg)
+            {
+                maxVal = ((Arm64ImmediateOperand)ins.GetOperand(1)).Value;
+                break;
+            }
+            if (m == Arm64Mnemonic.SUBS && ins.OperandCount >= 3
+                && ins.GetOperand(0).Kind == Arm64OperandKind.Register && ((Arm64RegisterOperand)ins.GetOperand(0)).IsZeroRegister
+                && ins.GetOperand(1).Kind == Arm64OperandKind.Register && ins.GetOperand(2).Kind == Arm64OperandKind.Immediate
+                && RegKey((Arm64RegisterOperand)ins.GetOperand(1)) == idxReg)
+            {
+                maxVal = ((Arm64ImmediateOperand)ins.GetOperand(2)).Value;
+                break;
+            }
+            if (IsArm64Terminator(ins) || m is Arm64Mnemonic.BL or Arm64Mnemonic.BLR or Arm64Mnemonic.CMP or Arm64Mnemonic.SUBS or Arm64Mnemonic.FCMP or Arm64Mnemonic.TST)
+                break;
+        }
+        if (maxVal < 1 || maxVal > 511) return null;
+
+        var count = isHs ? (int)maxVal : (int)maxVal + 1;
+        if (count < 2 || count > 512) return null;
+        var byteLen = count * entrySize;
+        if (!reader.IsMapped(tableVa) || !reader.IsMapped(tableVa + (ulong)byteLen - 1))
+            return null;
+        var raw = reader.Slice(tableVa, byteLen);
+        if (raw.Length < byteLen) return null;
+
+        var targets = new ulong[count];
+        for (var c = 0; c < count; c++)
+        {
+            var off = c * entrySize;
+            long entry = entrySize switch
+            {
+                1 => isSigned ? unchecked((sbyte)raw[off]) : raw[off],
+                2 => isSigned ? BinaryPrimitives.ReadInt16LittleEndian(raw.Slice(off, 2)) : BinaryPrimitives.ReadUInt16LittleEndian(raw.Slice(off, 2)),
+                _ => isSigned ? BinaryPrimitives.ReadInt32LittleEndian(raw.Slice(off, 4)) : BinaryPrimitives.ReadUInt32LittleEndian(raw.Slice(off, 4)),
+            };
+            var tVa = unchecked((ulong)((long)baseVa + (entry << addShift)));
+            if (!indexAtVa.ContainsKey(tVa)) return null;
+            targets[c] = tVa;
+        }
+        return new Arm64JumpTable(idxReg, targets, defaultVa);
+    }
+
+    internal static void ClassifyOperands(in Arm64Instruction ins, List<int> defs, List<int> reads)
     {
         if (ins.OperandCount == 0) return;
         var m = ins.Mnemonic;
