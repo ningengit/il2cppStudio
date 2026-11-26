@@ -242,7 +242,10 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
         Assert.DoesNotContain("float value = 5f;", firstPrizeCs);
         Assert.Contains("double num3 = default(double);", firstPrizeCs);
 
-        Assert.Contains("float num11 = default(float);", mathCs);
+        Assert.DoesNotContain("sub_21703EC", mathCs);
+        Assert.Contains("questionText3.text =", mathCs);
+        Assert.Contains("\")+\"", mathCs);
+        Assert.Contains("\"X\"", mathCs);
         Assert.DoesNotContain("~value", mathCs);
         Assert.Contains("audioQueue[audioInQueue] = sound;", mathCs);
         Assert.Contains("audioQueue[num3 / 8 - 4] = audioQueue[", mathCs);
@@ -295,5 +298,83 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
 
         Assert.DoesNotContain("timeSeenRuleBreak + deltaTime >= 0.5f", principalCs);
         Assert.Contains("timeSeenRuleBreak >= 0.5f", principalCs);
+
+        // Group 1: String/constant merge points, .rodata switch tables, bit-reinterpreted floats, ref deref
+        var controlsCs = ws.Render(Assert.Single(ws.FindTypes("ControlsMenu")), null, CodeView.CSharp);
+        Assert.Contains("result = \"ESC\";", controlsCs);
+        Assert.Contains("result = \"Middle Mouse Button\";", controlsCs);
+        Assert.Contains("inputMan.KeyboardMapping", controlsCs);
+
+        Assert.Contains("case InputAction.MoveLeft:", inputMgrCs);
+        Assert.Contains("case InputAction.PauseOrCancel:", inputMgrCs);
+        Assert.Contains("return action.ToString();", inputMgrCs);
+        Assert.Contains("KeyboardMapping[(InputAction)num] = defaultBinding;", inputMgrCs);
+        Assert.Contains("result = \"Left Mouse Button\";", inputMgrCs);
+
+        Assert.Contains("\"/7 Notebooks\"", gcCs);
+        Assert.Contains("\" Notebooks\"", gcCs);
+        Assert.Contains("\"BSODAMachine\"", gcCs);
+        Assert.Contains("\"ZestyMachine\"", gcCs);
+        Assert.Contains("\"PayPhone\"", gcCs);
+        Assert.Contains("\"1st Prize\"", gcCs);
+
+        var gameOverCs = ws.Render(Assert.Single(ws.FindTypes("GameOverScript")), null, CodeView.CSharp);
+        Assert.Contains("sprite = images[(int)num3];", gameOverCs);
+        Assert.DoesNotContain("rare = ref", gameOverCs);
+
+        Assert.Contains("640f", uiMgrCs);
+        Assert.Contains("480f", uiMgrCs);
+        Assert.Contains("800f", uiMgrCs);
+        Assert.Contains("600f", uiMgrCs);
+        Assert.Contains("900f", uiMgrCs);
+        Assert.Contains("720f", uiMgrCs);
+        Assert.Contains("1024f", uiMgrCs);
+        Assert.DoesNotContain("NativeIntrinsics.Reinterpret<float>", uiMgrCs);
+
+        // Group 2: Vector3/NEON, FMAXNM, coroutine state preservation, z component preservation
+        var baldiCs = ws.Render(Assert.Single(ws.FindTypes("BaldiScript")), null, CodeView.CSharp);
+        Assert.Contains("position.z", baldiCs);
+        var craftersCs = ws.Render(Assert.Single(ws.FindTypes("CraftersScript")), null, CodeView.CSharp);
+        Assert.Contains("position.z", craftersCs);
+        Assert.Contains("Math.Max(stamina - staminaDrop", moveCs);
+        Assert.Contains("Vector3.up", playerCs);
+        Assert.Contains("yield return null;", gcCs);
+        Assert.Contains("case 2:", gcCs);
+        Assert.Contains("case 3:", gcCs);
+        Assert.Contains("= 2;", gcCs);
+        Assert.Contains("= 3;", gcCs);
+        Assert.Contains("__1__state = num;", gcCs);
+
+        var envMapCs = ws.Render(Assert.Single(ws.FindTypes("EnvMapAnimator")), null, CodeView.CSharp);
+        Assert.Contains("Vector3.one", envMapCs);
+
+        // Group 3: Struct/enumerator recovery, interface diamonds, HasFieldRva / InitializeArray
+        Assert.Contains("KeyboardMapping.GetEnumerator()", inputMgrCs);
+        Assert.Contains("enumerator2.MoveNext()", inputMgrCs);
+        Assert.Contains("new List<KeyCode>(simulatedKeys.Keys).GetEnumerator()", inputMgrCs);
+
+        var debugCs = ws.Render(Assert.Single(ws.FindTypes("DebugScript")), null, CodeView.CSharp);
+        Assert.Contains("enumerator.MoveNext()", debugCs);
+        Assert.Contains("Dispose();", debugCs);
+        Assert.DoesNotContain("arm64_indirect", debugCs);
+
+        Assert.Contains("15, 30, 45, 60, 99", principalCs);
+        var monoScriptCs = ws.FindTypes("UnitySourceGeneratedAssemblyMonoScriptTypes_v1")
+            .Select(t => ws.Render(t, null, CodeView.CSharp))
+            .First(s => s.Contains("new byte[6521]"));
+        Assert.Contains("new byte[6521]", monoScriptCs);
+        Assert.DoesNotContain("LdMemberToken", monoScriptCs);
+
+        // Group 4: Custom attributes, generic constraints, optional parameter defaults
+        Assert.Contains("[Header(\"UI Elements\")]", controlsCs);
+        Assert.Contains("[SerializeField]", controlsCs);
+        Assert.Contains("KeyCode secondaryKey = KeyCode.None", inputMgrCs);
+        Assert.Contains("[RequireComponent(typeof(Canvas))]", dpScalerCs);
+        Assert.Contains("[ExecuteInEditMode]", dpScalerCs);
+        Assert.Contains("[AddComponentMenu(\"Layout/DP Canvas Scaler\")]", dpScalerCs);
+        Assert.Contains("[Tooltip(", dpScalerCs);
+        var singletonCs = ws.Render(ws.FindTypes("Singleton`1").First(), null, CodeView.CSharp);
+        Assert.Contains("where T : Component", singletonCs);
+        Assert.Contains("[RuntimeInitializeOnLoadMethod]", singletonCs);
     }
 }

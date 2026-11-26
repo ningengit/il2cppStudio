@@ -140,6 +140,17 @@ public sealed class MemoryResolver
 
     public IFieldDescriptor? FieldRef(ResolvedField f) => _stubs.FieldRefFor(_module, f.FieldIndex, f.DeclaringTypeDef);
 
+    public IFieldDescriptor? ResolveFieldRefDescriptor(int fieldRefIndex)
+    {
+        if ((uint)fieldRefIndex >= (uint)_md.FieldRefs.Length) return null;
+        var fr = _md.FieldRefs[fieldRefIndex];
+        if (!_reg.TryGetType(fr.TypeIndex, out var t)) return null;
+        var declTd = _names.ResolveTypeDefIndex(t);
+        if ((uint)declTd >= (uint)_md.TypeDefinitions.Length) return null;
+        var absIdx = _md.TypeDefinitions[declTd].FieldStart + fr.FieldIndex;
+        return (uint)absIdx < (uint)_md.Fields.Length ? _stubs.FieldRefFor(_module, absIdx, declTd) : null;
+    }
+
     /// <summary>All fields of a type and its base types with native offsets (instance) or static-data offsets.</summary>
     public IReadOnlyList<ResolvedField> FieldsOf(int typeDef)
     {
@@ -222,7 +233,7 @@ public sealed class MemoryResolver
     }
 
     /// <summary>Byte size of a value of the given type as laid out natively.</summary>
-    public int ValueSize(TypeSignature t)
+    public int ValueSize(TypeSignature t, int depth = 0)
     {
         switch (Expr.KindOf(t))
         {
@@ -238,7 +249,21 @@ public sealed class MemoryResolver
             case ValueKind.R4: return 4;
             case ValueKind.Struct:
                 var td = TypeDefOf(t);
-                return td >= 0 ? Math.Max(1, _reg.GetValueTypeSize(td)) : _ptr;
+                if (td < 0) return _ptr;
+                var regSize = _reg.GetValueTypeSize(td);
+                if (regSize > 0) return regSize;
+                if (depth >= 8) return _ptr;
+                var computed = 0;
+                foreach (var f in FieldsOf(td))
+                {
+                    if (f.IsStatic) continue;
+                    var fsz = Math.Max(1, ValueSize(FieldType(f, t), depth + 1));
+                    var align = Math.Min(_ptr, fsz >= 8 ? 8 : fsz >= 4 ? 4 : fsz >= 2 ? 2 : 1);
+                    computed = (computed + align - 1) / align * align;
+                    if (f.Offset > computed) computed = f.Offset;
+                    computed += fsz;
+                }
+                return computed > 0 ? (computed + _ptr - 1) / _ptr * _ptr : _ptr;
             default: return _ptr;
         }
     }
@@ -470,6 +495,14 @@ public sealed class MemoryResolver
         return new StructChunkExpr(structValue, offset, size);
     }
 
+    public PackedFloatsExpr? TryLoadFloatPair(Expr baseExpr, long disp)
+    {
+        if (Load(baseExpr, null, 1, disp, 4) is { Kind: ValueKind.R4 } lo
+            && Load(baseExpr, null, 1, disp + 4, 4) is { Kind: ValueKind.R4 } hi)
+            return new PackedFloatsExpr(lo, hi, _module.CorLibTypeFactory.Single);
+        return null;
+    }
+
     private ResolvedField? FindContainingInstance(int td, long disp) =>
         FieldsOf(td).Where(f => !f.IsStatic && disp > f.Offset).Select(f => (f, t: _stubs.ToSig(_module, f.TypeIndex)))
             .Where(x => Expr.KindOf(x.t) == ValueKind.Struct && disp < x.f.Offset + ValueSize(x.t)).Select(x => (ResolvedField?)x.f).FirstOrDefault();
@@ -486,6 +519,16 @@ public sealed class MemoryResolver
     /// </summary>
     public bool Store(EmitContext ctx, Expr baseExpr, Expr? index, int scale, long disp, int size, Expr value)
     {
+        if (value is PackedFloatsExpr packed && size == 8)
+            return Store(ctx, baseExpr, index, scale, disp, 4, packed.Lane0)
+                && Store(ctx, baseExpr, index, scale, disp + 4, 4, packed.Lane1);
+        if (value is VectorConstExpr vc && size == 16)
+        {
+            for (var lane = 0; lane < 4; lane++)
+                if (!Store(ctx, baseExpr, index, scale, disp + lane * 4, 4, vc.Lane(lane)))
+                    return false;
+            return true;
+        }
         if (index is null && disp != 0 && TryRebaseFieldAddress(baseExpr, disp, out var rb, out var rd)
             && (!ReferenceEquals(rb, baseExpr) || rd != disp))
             return Store(ctx, rb, null, scale, rd, size, value);

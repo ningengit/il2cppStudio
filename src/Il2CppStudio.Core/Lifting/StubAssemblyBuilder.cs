@@ -78,24 +78,46 @@ public sealed class StubAssemblyBuilder
     }
 
     private DefaultValueReader? _defaults;
+    private CustomAttributeReader? _attrReader;
+    private readonly Dictionary<(ModuleDefinition, int), TypeSignature> _sysTypeCache = [];
+    private RuntimeContext? _runtimeContext;
+
+    private RuntimeContext GetOrCreateRuntimeContext(AssemblyReference corlib) =>
+        _runtimeContext ??= new RuntimeContext(DotNetRuntimeInfo.NetFramework(4, 0), new StubAssemblyResolver(this), corlib, null);
+
+    private sealed class StubAssemblyResolver(StubAssemblyBuilder owner) : IAssemblyResolver
+    {
+        public ResolutionStatus Resolve(AssemblyDescriptor assembly, ModuleDefinition? originModule, out AssemblyDefinition? result)
+        {
+            if (assembly.Name?.Value is { } name && owner.FindImage(name) is >= 0 and var img)
+            {
+                var mod = owner._modules[img] ?? owner.GetModule(img);
+                result = mod.Module.Assembly;
+                return result is not null ? ResolutionStatus.Success : ResolutionStatus.AssemblyNotFound;
+            }
+            result = null;
+            return ResolutionStatus.AssemblyNotFound;
+        }
+    }
+
+    private static Constant? ConstantFromObject(object? v) => v switch
+    {
+        bool b => AsmResolver.DotNet.Constant.FromValue(b), char c => AsmResolver.DotNet.Constant.FromValue(c),
+        byte x => AsmResolver.DotNet.Constant.FromValue(x), sbyte x => AsmResolver.DotNet.Constant.FromValue(x),
+        ushort x => AsmResolver.DotNet.Constant.FromValue(x), short x => AsmResolver.DotNet.Constant.FromValue(x),
+        uint x => AsmResolver.DotNet.Constant.FromValue(x), int x => AsmResolver.DotNet.Constant.FromValue(x),
+        ulong x => AsmResolver.DotNet.Constant.FromValue(x), long x => AsmResolver.DotNet.Constant.FromValue(x),
+        float x => AsmResolver.DotNet.Constant.FromValue(x), double x => AsmResolver.DotNet.Constant.FromValue(x),
+        string s => AsmResolver.DotNet.Constant.FromValue(s),
+        _ => null,
+    };
 
     /// <summary>Metadata constant of a literal field (enum member / const), as an AsmResolver Constant.</summary>
     private Constant? Constant(int fieldIndex)
     {
         if (_reg is null) return null;
         _defaults ??= new DefaultValueReader(_md, _reg);
-        if (!_defaults.TryGetFieldDefault(fieldIndex, out var v)) return null;
-        return v switch
-        {
-            bool b => AsmResolver.DotNet.Constant.FromValue(b), char c => AsmResolver.DotNet.Constant.FromValue(c),
-            byte x => AsmResolver.DotNet.Constant.FromValue(x), sbyte x => AsmResolver.DotNet.Constant.FromValue(x),
-            ushort x => AsmResolver.DotNet.Constant.FromValue(x), short x => AsmResolver.DotNet.Constant.FromValue(x),
-            uint x => AsmResolver.DotNet.Constant.FromValue(x), int x => AsmResolver.DotNet.Constant.FromValue(x),
-            ulong x => AsmResolver.DotNet.Constant.FromValue(x), long x => AsmResolver.DotNet.Constant.FromValue(x),
-            float x => AsmResolver.DotNet.Constant.FromValue(x), double x => AsmResolver.DotNet.Constant.FromValue(x),
-            string s => AsmResolver.DotNet.Constant.FromValue(s),
-            _ => null,
-        };
+        return _defaults.TryGetFieldDefault(fieldIndex, out var v) ? ConstantFromObject(v) : null;
     }
 
     /// <summary>Registers every enum (signature full name → underlying stack kind) so lifted code treats them as integers.</summary>
@@ -177,13 +199,15 @@ public sealed class StubAssemblyBuilder
         var end = img.TypeStart + (int)img.TypeCount;
 
         // Pass 1: type shells (so every intra-module reference resolves to a TypeDefinition).
+        var attrTargets = new List<(uint Token, IHasCustomAttribute Target)>();
         for (var t = start; t < end; t++)
         {
             var def = _md.TypeDefinitions[t];
             var tm = _model.Types[t];
             var td = new TypeDefinition(tm.DeclaringType is null && !string.IsNullOrEmpty(tm.Namespace) ? tm.Namespace : null, tm.Name, (TypeAttributes)def.Flags);
             _typeDefs[t] = td;
-            AddGenericParameters(td.GenericParameters, def.GenericContainerIndex);
+            AddGenericParameters(module, td.GenericParameters, def.GenericContainerIndex);
+            if (def.Token != 0) attrTargets.Add((def.Token, td));
         }
         for (var t = start; t < end; t++)
         {
@@ -193,14 +217,20 @@ public sealed class StubAssemblyBuilder
         }
 
         // Pass 2: base types, interfaces, members.
-        for (var t = start; t < end; t++) PopulateType(module, t);
+        for (var t = start; t < end; t++) PopulateType(module, t, attrTargets);
 
         var intrinsics = CreateIntrinsics(module);
         var stub = new StubModule { ImageIndex = imageIndex, AssemblyName = asmName, Module = module, Intrinsics = intrinsics };
+        _modules[imageIndex] = stub;
+        try { GetOrCreateRuntimeContext(corlib).AddAssembly(assembly); }
+        catch (ArgumentException) { }
+
+        // Pass 3: custom attributes (after stub registration so intra-image attribute ctors do not recurse).
+        AttachCustomAttributes(module, imageIndex, attrTargets);
         return stub;
     }
 
-    private void PopulateType(ModuleDefinition module, int t)
+    private void PopulateType(ModuleDefinition module, int t, List<(uint Token, IHasCustomAttribute Target)> attrTargets)
     {
         var def = _md.TypeDefinitions[t];
         var td = _typeDefs[t]!;
@@ -225,16 +255,33 @@ public sealed class StubAssemblyBuilder
         }
 
         var missingExplicitOffset = false;
+        if (def.IsValueType && _reg is not null && def.FieldCount == 0
+            && _reg.GetValueTypeSize(t) is > 0 and var vtSize)
+            td.ClassLayout = new ClassLayout(1, (uint)vtSize);
         for (var f = 0; f < def.FieldCount; f++)
         {
             var fi = def.FieldStart + f;
             var fd = _md.Fields[fi];
             var attrs = _reg is not null && _reg.TryGetType(fd.TypeIndex, out var ft) ? (FieldAttributes)ft.Attrs : FieldAttributes.Public;
-            var cleanAttrs = attrs & ~FieldAttributes.HasFieldRva;
+            byte[]? rvaBytes = null;
+            if ((attrs & FieldAttributes.HasFieldRva) != 0 && _reg is not null)
+            {
+                var rvaTd = TypeDefOfTypeIndex(fd.TypeIndex);
+                var rvaSize = rvaTd >= 0 ? _reg.GetValueTypeSize(rvaTd) : 0;
+                if (rvaSize > 0)
+                {
+                    _defaults ??= new DefaultValueReader(_md, _reg);
+                    if (_defaults.TryGetFieldRvaBytes(fi, rvaSize, out var bytes))
+                        rvaBytes = bytes;
+                }
+            }
+            var cleanAttrs = rvaBytes is not null ? attrs : (attrs & ~FieldAttributes.HasFieldRva);
             if ((cleanAttrs & FieldAttributes.Literal) == 0) cleanAttrs &= ~FieldAttributes.InitOnly;
             var field = new FieldDefinition(_md.GetString(fd.NameIndex), cleanAttrs, ToSig(module, fd.TypeIndex));
+            if (rvaBytes is not null) field.FieldRva = new DataSegment(rvaBytes);
             if ((attrs & FieldAttributes.HasDefault) != 0 && Constant(fi) is { } constant) field.Constant = constant;
             else field.Attributes &= ~FieldAttributes.HasDefault;
+            if (fd.Token != 0) attrTargets.Add((fd.Token, field));
             if (td.IsExplicitLayout && (field.Attributes & FieldAttributes.Static) == 0)
             {
                 if (_reg is not null && _reg.GetFieldOffset(t, f) is >= 0 and var rawOff)
@@ -250,7 +297,7 @@ public sealed class StubAssemblyBuilder
         for (var m = 0; m < def.MethodCount; m++)
         {
             var mi = def.MethodStart + m;
-            var method = BuildMethod(module, mi);
+            var method = BuildMethod(module, mi, attrTargets);
             _methodDefs[mi] = method;
             td.Methods.Add(method);
         }
@@ -271,6 +318,7 @@ public sealed class StubAssemblyBuilder
             if (getter is not null) prop.Semantics.Add(new MethodSemantics(getter, MethodSemanticsAttributes.Getter));
             if (setter is not null) prop.Semantics.Add(new MethodSemantics(setter, MethodSemanticsAttributes.Setter));
             td.Properties.Add(prop);
+            if (pd.Token != 0) attrTargets.Add((pd.Token, prop));
             if (indexParams.Count > 0 && !addedDefaultMember && !prop.Name!.Value.Contains('.'))
             {
                 AddDefaultMemberAttribute(module, td, prop.Name.Value);
@@ -319,7 +367,11 @@ public sealed class StubAssemblyBuilder
             var ev = new EventDefinition(evName, 0, evType);
             if (ed.Add >= 0 && _methodDefs[def.MethodStart + ed.Add] is { } add) ev.Semantics.Add(new MethodSemantics(add, MethodSemanticsAttributes.AddOn));
             if (ed.Remove >= 0 && _methodDefs[def.MethodStart + ed.Remove] is { } rem) ev.Semantics.Add(new MethodSemantics(rem, MethodSemanticsAttributes.RemoveOn));
-            if (ev.Semantics.Count > 0 && (!td.Fields.Any(f => f.Name == evName) || ImplementsInterfaceEvent(def, evName))) td.Events.Add(ev);
+            if (ev.Semantics.Count > 0 && (!td.Fields.Any(f => f.Name == evName) || ImplementsInterfaceEvent(def, evName)))
+            {
+                td.Events.Add(ev);
+                if (ed.Token != 0) attrTargets.Add((ed.Token, ev));
+            }
         }
     }
 
@@ -386,7 +438,7 @@ public sealed class StubAssemblyBuilder
         td.CustomAttributes.Add(new CustomAttribute(dmCtor, caSig));
     }
 
-    private MethodDefinition BuildMethod(ModuleDefinition module, int mi)
+    private MethodDefinition BuildMethod(ModuleDefinition module, int mi, List<(uint Token, IHasCustomAttribute Target)> attrTargets)
     {
         var md = _md.Methods[mi];
         var attrs = (MethodAttributes)md.Flags & ~MethodAttributes.PInvokeImpl;
@@ -400,13 +452,32 @@ public sealed class StubAssemblyBuilder
         {
             ImplAttributes = (MethodImplAttributes)md.IFlags & ~(MethodImplAttributes.InternalCall | MethodImplAttributes.Runtime),
         };
-        AddGenericParameters(method.GenericParameters, md.GenericContainerIndex);
+        AddGenericParameters(module, method.GenericParameters, md.GenericContainerIndex);
         for (var p = 0; p < md.ParameterCount; p++)
         {
-            var pd = _md.Parameters[md.ParameterStart + p];
+            var pi = md.ParameterStart + p;
+            var pd = _md.Parameters[pi];
             var pattrs = _reg is not null && _reg.TryGetType(pd.TypeIndex, out var pt) ? (ParameterAttributes)pt.Attrs : 0;
-            method.ParameterDefinitions.Add(new ParameterDefinition((ushort)(p + 1), _md.GetString(pd.NameIndex), pattrs));
+            var pdef = new ParameterDefinition((ushort)(p + 1), _md.GetString(pd.NameIndex), pattrs);
+            if ((pattrs & ParameterAttributes.HasDefault) != 0 && _reg is not null)
+            {
+                _defaults ??= new DefaultValueReader(_md, _reg);
+                if (_defaults.TryGetParameterDefault(pi, out var pv, out var isNullDefault))
+                {
+                    if (isNullDefault)
+                        pdef.Constant = new AsmResolver.DotNet.Constant(ElementType.Class, new DataBlobSignature(new byte[4]));
+                    else if (ConstantFromObject(pv) is { } pc)
+                        pdef.Constant = pc;
+                    else
+                        pdef.Attributes &= ~ParameterAttributes.HasDefault;
+                }
+                else
+                    pdef.Attributes &= ~ParameterAttributes.HasDefault;
+            }
+            method.ParameterDefinitions.Add(pdef);
+            if (pd.Token != 0) attrTargets.Add((pd.Token, pdef));
         }
+        if (md.Token != 0) attrTargets.Add((md.Token, method));
         if (!method.IsAbstract) SetPlaceholderBody(method);
         return method;
     }
@@ -420,15 +491,187 @@ public sealed class StubAssemblyBuilder
         method.CilMethodBody = body;
     }
 
-    private void AddGenericParameters(IList<GenericParameter> target, int containerIndex)
+    private void AddGenericParameters(ModuleDefinition module, IList<GenericParameter> target, int containerIndex)
     {
         if ((uint)containerIndex >= (uint)_md.GenericContainers.Length) return;
         var c = _md.GenericContainers[containerIndex];
         for (var i = 0; i < c.TypeArgc; i++)
         {
             var gp = _md.GenericParameters[c.GenericParameterStart + i];
-            target.Add(new GenericParameter(_md.GetString(gp.NameIndex), (GenericParameterAttributes)gp.Flags));
+            var gparam = new GenericParameter(_md.GetString(gp.NameIndex), (GenericParameterAttributes)gp.Flags);
+            for (var ci = 0; ci < gp.ConstraintsCount; ci++)
+            {
+                var idx = gp.ConstraintsStart + ci;
+                if ((uint)idx < (uint)_md.GenericParameterConstraints.Length
+                    && ToTypeDefOrRef(module, _md.GenericParameterConstraints[idx]) is { } constraintType)
+                    gparam.Constraints.Add(new GenericParameterConstraint(constraintType));
+            }
+            target.Add(gparam);
         }
+    }
+
+    private static readonly HashSet<string> SkippedAttributeTypes = new(StringComparer.Ordinal)
+    {
+        "System.Runtime.CompilerServices.CompilerGeneratedAttribute",
+        "System.Runtime.CompilerServices.IteratorStateMachineAttribute",
+        "System.Runtime.CompilerServices.AsyncStateMachineAttribute",
+        "System.Runtime.CompilerServices.NullableAttribute",
+        "System.Runtime.CompilerServices.NullableContextAttribute",
+        "System.Runtime.CompilerServices.RefSafetyRulesAttribute",
+        "System.Runtime.CompilerServices.IsReadOnlyAttribute",
+        "System.Runtime.CompilerServices.IsByRefLikeAttribute",
+        "System.Runtime.CompilerServices.ExtensionAttribute",
+        "System.Diagnostics.DebuggerHiddenAttribute",
+        "System.Diagnostics.DebuggerBrowsableAttribute",
+        "System.Diagnostics.DebuggerStepThroughAttribute",
+        "System.Diagnostics.DebuggerNonUserCodeAttribute",
+        "System.Reflection.DefaultMemberAttribute",
+        "Microsoft.CodeAnalysis.EmbeddedAttribute",
+        "System.Runtime.InteropServices.OptionalAttribute",
+        "System.Runtime.InteropServices.InAttribute",
+        "System.Runtime.InteropServices.OutAttribute",
+    };
+
+    private TypeSignature SystemTypeSignature(ModuleDefinition module)
+    {
+        var image = ImageOfType(0);
+        if (_sysTypeCache.TryGetValue((module, image), out var cached)) return cached;
+        var f = module.CorLibTypeFactory;
+        var tr = new TypeReference(module, f.CorLibScope, "System", "Type").ToTypeSignature(false);
+        _sysTypeCache[(module, image)] = tr;
+        return tr;
+    }
+
+    private void AttachCustomAttributes(ModuleDefinition module, int imageIndex, List<(uint Token, IHasCustomAttribute Target)> targets)
+    {
+        if (targets.Count == 0) return;
+        _attrReader ??= new CustomAttributeReader(_md, _reg);
+        foreach (var (token, target) in targets)
+        {
+            IReadOnlyList<DecodedCustomAttribute> decoded;
+            try { decoded = _attrReader.ReadForToken(imageIndex, token); }
+            catch { continue; }
+            if (decoded.Count == 0) continue;
+
+            foreach (var da in decoded)
+            {
+                try
+                {
+                    if ((uint)da.CtorMethodIndex >= (uint)_md.Methods.Length) continue;
+                    var attrDeclTd = _md.Methods[da.CtorMethodIndex].DeclaringType;
+                    if ((uint)attrDeclTd >= (uint)_model.Types.Count) continue;
+                    var attrTypeName = _model.Types[attrDeclTd].FullName;
+                    if (SkippedAttributeTypes.Contains(attrTypeName)) continue;
+
+                    if (MethodRefFor(module, da.CtorMethodIndex) is not ICustomAttributeType ctor) continue;
+                    var caSig = new CustomAttributeSignature();
+                    var ok = true;
+                    var ctorParams = _md.Methods[da.CtorMethodIndex];
+                    if (da.FixedArgs.Count != ctorParams.ParameterCount) continue;
+
+                    for (var ai = 0; ai < da.FixedArgs.Count; ai++)
+                    {
+                        var argSig = ToSig(module, _md.Parameters[ctorParams.ParameterStart + ai].TypeIndex);
+                        if (ToCustomAttributeArg(module, da.FixedArgs[ai], argSig) is not { } caa)
+                        {
+                            ok = false;
+                            break;
+                        }
+                        caSig.FixedArguments.Add(caa);
+                    }
+                    if (!ok) continue;
+
+                    foreach (var na in da.NamedArgs)
+                    {
+                        if ((uint)na.DeclaringTypeDef >= (uint)_md.TypeDefinitions.Length) { ok = false; break; }
+                        var owner = _md.TypeDefinitions[na.DeclaringTypeDef];
+                        string? memberName = null;
+                        TypeSignature? memberType = null;
+                        if (na.IsField && (uint)na.MemberOffsetInType < owner.FieldCount)
+                        {
+                            var fd = _md.Fields[owner.FieldStart + na.MemberOffsetInType];
+                            memberName = _md.GetString(fd.NameIndex);
+                            memberType = ToSig(module, fd.TypeIndex);
+                        }
+                        else if (!na.IsField && (uint)na.MemberOffsetInType < owner.PropertyCount)
+                        {
+                            var pd = _md.Properties[owner.PropertyStart + na.MemberOffsetInType];
+                            memberName = _md.GetString(pd.NameIndex);
+                            var m = pd.Get >= 0 ? pd.Get : pd.Set;
+                            if (m >= 0)
+                            {
+                                var propMethod = _md.Methods[owner.MethodStart + m];
+                                memberType = pd.Get >= 0
+                                    ? ToSig(module, propMethod.ReturnType)
+                                    : (propMethod.ParameterCount > 0 ? ToSig(module, _md.Parameters[propMethod.ParameterStart + propMethod.ParameterCount - 1].TypeIndex) : null);
+                            }
+                        }
+                        if (memberName is null || memberType is null) { ok = false; break; }
+                        if (ToCustomAttributeArg(module, na.Value, memberType) is not { } ncVal) { ok = false; break; }
+                        caSig.NamedArguments.Add(new CustomAttributeNamedArgument(
+                            na.IsField ? CustomAttributeArgumentMemberType.Field : CustomAttributeArgumentMemberType.Property,
+                            memberName, memberType, ncVal));
+                    }
+                    if (ok) target.CustomAttributes.Add(new CustomAttribute(ctor, caSig));
+                }
+                catch { }
+            }
+        }
+    }
+
+    private CustomAttributeArgument? ToCustomAttributeArg(ModuleDefinition module, DecodedAttrValue v, TypeSignature expectedType)
+    {
+        var f = module.CorLibTypeFactory;
+        if (v.TypeCode == Il2CppTypeEnum.SzArray)
+        {
+            var elemType = expectedType is SzArrayTypeSignature sz ? sz.BaseType : f.Object;
+            var arrType = elemType.MakeSzArrayType();
+            if (v.Value is not DecodedAttrValue[] items)
+                return new CustomAttributeArgument(arrType, (object?)null);
+            var boxed = new object?[items.Length];
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (ToCustomAttributeArg(module, items[i], elemType) is not { } elemArg) return null;
+                if (elemType.ElementType == ElementType.Object)
+                    boxed[i] = elemArg;
+                else
+                    boxed[i] = elemArg.Elements.Count > 0 ? elemArg.Elements[0] : null;
+            }
+            return new CustomAttributeArgument(arrType, (IEnumerable<object?>)boxed);
+        }
+        if (v.TypeCode == Il2CppTypeEnum.Il2CppTypeIndex)
+        {
+            var sysType = SystemTypeSignature(module);
+            if (v.TypeIndex < 0) return new CustomAttributeArgument(sysType, (object?)null);
+            return new CustomAttributeArgument(sysType, ToSig(module, v.TypeIndex));
+        }
+        if (v.TypeCode == Il2CppTypeEnum.Enum)
+        {
+            var enumSig = v.TypeIndex >= 0 ? ToSig(module, v.TypeIndex) : expectedType;
+            return ((ITypeDescriptor)enumSig).Resolve(module.RuntimeContext, out var enumDef) == ResolutionStatus.Success && enumDef is { IsEnum: true }
+                ? new CustomAttributeArgument(enumSig, v.Value)
+                : null;
+        }
+        var primSig = v.TypeCode switch
+        {
+            Il2CppTypeEnum.Boolean => f.Boolean,
+            Il2CppTypeEnum.Char => f.Char,
+            Il2CppTypeEnum.I1 => f.SByte,
+            Il2CppTypeEnum.U1 => f.Byte,
+            Il2CppTypeEnum.I2 => f.Int16,
+            Il2CppTypeEnum.U2 => f.UInt16,
+            Il2CppTypeEnum.I4 => f.Int32,
+            Il2CppTypeEnum.U4 => f.UInt32,
+            Il2CppTypeEnum.I8 => f.Int64,
+            Il2CppTypeEnum.U8 => f.UInt64,
+            Il2CppTypeEnum.R4 => f.Single,
+            Il2CppTypeEnum.R8 => f.Double,
+            Il2CppTypeEnum.String => f.String,
+            _ => expectedType,
+        };
+        if (v.TypeCode == Il2CppTypeEnum.Object && v.Value is null && expectedType.ElementType == ElementType.Object)
+            return null;
+        return new CustomAttributeArgument(primSig, v.Value);
     }
 
     private static NativeIntrinsics CreateIntrinsics(ModuleDefinition module)

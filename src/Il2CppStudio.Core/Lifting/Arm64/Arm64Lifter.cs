@@ -14,6 +14,8 @@ internal sealed record Arm64Insn(ulong Address, Arm64Instruction Ins);
 
 internal sealed record Arm64JumpTable(int IndexReg, ulong[] Targets, ulong DefaultTargetVa);
 
+internal sealed record Arm64InterfaceCall(int IfaceReg, int Slot, int CallReg, ulong SkipLdpVa);
+
 internal sealed class Arm64Block(int start, ulong va)
 {
     public int Start { get; } = start;
@@ -26,8 +28,12 @@ internal sealed class Arm64Block(int start, ulong va)
     public HashSet<int> Def { get; } = [];
     public HashSet<int> LiveIn { get; } = [];
     public HashSet<int> LiveOut { get; } = [];
+    public HashSet<int> NonZeroDispRegs { get; } = [];
+    public HashSet<int> WrittenOrEscapedRegs { get; } = [];
     public bool IsTrap { get; set; }
     public Arm64JumpTable? JumpTable { get; set; }
+    public Arm64Block? InterfaceRedirect { get; set; }
+    public Arm64InterfaceCall? InterfaceCall { get; set; }
 }
 
 /// <summary>
@@ -59,7 +65,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             var (start, end) = sym.Map.GetFunctionBounds(va, 0x10000);
             var reader = sym.Registration.Reader;
             var code = reader.Slice(start, (int)Math.Min(end - start, 0x10000UL));
-            var insns = DecodeFunction(code, start, out var failedVa, out var failedBytesHex);
+            var insns = DecodeFunction(reader, code, start, out var failedVa, out var failedBytesHex);
             if (failedVa != 0)
             {
                 sink.Warn(DiagnosticCategory.Lifting, DiagnosticCodes.DisassemblyFailed,
@@ -115,7 +121,7 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         }
     }
 
-    private static List<Arm64Insn> DecodeFunction(ReadOnlySpan<byte> code, ulong startVa, out ulong failedVa, out string? failedBytesHex)
+    private static List<Arm64Insn> DecodeFunction(Binary.VirtualReader reader, ReadOnlySpan<byte> code, ulong startVa, out ulong failedVa, out string? failedBytesHex)
     {
         failedVa = 0;
         failedBytesHex = null;
@@ -140,6 +146,12 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                 break;
             }
             var va = startVa + (ulong)off;
+            if (ins.Mnemonic == Arm64Mnemonic.B && ins.OperandCount == 1 && ins.GetOperand(0).Kind == Arm64OperandKind.Label)
+            {
+                var target = BranchTarget(va, ins, 0);
+                if ((target < startVa || target >= endVa) && TryInlineCortexA53Veneer(reader, va, target, out var inlined))
+                    ins = inlined;
+            }
             list.Add(new Arm64Insn(va, ins));
 
             if (ins.Mnemonic == Arm64Mnemonic.BR)
@@ -163,6 +175,23 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                 break;
         }
         return list;
+    }
+
+    private static bool TryInlineCortexA53Veneer(Binary.VirtualReader reader, ulong callSiteVa, ulong veneerVa, out Arm64Instruction inlined)
+    {
+        inlined = default;
+        if (!reader.IsMapped(veneerVa) || !reader.IsMapped(veneerVa + 7)) return false;
+        var bytes = reader.Slice(veneerVa, 8);
+        if (bytes.Length < 8) return false;
+        var v0 = Arm64Instruction.Decode(BinaryPrimitives.ReadUInt32LittleEndian(bytes[..4]));
+        var v1 = Arm64Instruction.Decode(BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(4, 4)));
+        if (v0.Id == Arm64InstructionId.Invalid || IsArm64Terminator(v0)) return false;
+        if (v0.Mnemonic is Arm64Mnemonic.ADRP or Arm64Mnemonic.ADR) return false;
+        if (v0.OperandCount >= 2 && v0.GetOperand(1).Kind == Arm64OperandKind.Label) return false;
+        if (v1.Mnemonic != Arm64Mnemonic.B || v1.OperandCount != 1 || BranchTarget(veneerVa + 4, v1, 0) != callSiteVa + 4)
+            return false;
+        inlined = v0;
+        return true;
     }
 
     private static bool IsUnconditionalArm64Terminator(Arm64Instruction ins) =>
@@ -415,6 +444,8 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                 b.Successors.Add(blocks[bi + 1]);
         }
 
+        CollapseInterfaceDiamonds(insns, blocks);
+
         var reachable = new HashSet<Arm64Block>();
         var q = new Queue<Arm64Block>();
         reachable.Add(blocks[0]);
@@ -427,10 +458,154 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         }
 
         foreach (var b in blocks)
+        {
+            var definedHere = new HashSet<int>();
+            for (var i = b.Start; i < b.End; i++)
+            {
+                var ins = insns[i].Ins;
+                var m = ins.Mnemonic;
+                for (var oi = 0; oi < ins.OperandCount; oi++)
+                {
+                    if (ins.GetOperand(oi).Kind != Arm64OperandKind.Memory) continue;
+                    var acc = ((Arm64MemoryOperand)ins.GetOperand(oi)).Accessor;
+                    var bk = RawRegKey(acc.BaseRegister);
+                    if (acc.Immediate != 0 && acc.BaseRegister.Kind != Arm64RegisterKind.SP && bk >= 0)
+                        b.NonZeroDispRegs.Add(bk);
+                    if (bk >= 0 && bk != 99 && !definedHere.Contains(bk))
+                    {
+                        var isSimpleLoad = m is Arm64Mnemonic.LDR or Arm64Mnemonic.LDP or Arm64Mnemonic.LDUR
+                            && !acc.IsPreIncrement
+                            && (ins.OperandCount <= oi + 1 || ins.GetOperand(oi + 1).Kind != Arm64OperandKind.Immediate);
+                        if (!isSimpleLoad)
+                            b.WrittenOrEscapedRegs.Add(bk);
+                    }
+                    if (acc.HasIndexRegister)
+                    {
+                        var ik = RawRegKey(acc.IndexRegister);
+                        if (ik >= 0 && ik != 99 && !definedHere.Contains(ik)) b.WrittenOrEscapedRegs.Add(ik);
+                    }
+                }
+                var defs = new List<int>(2);
+                var reads = new List<int>(4);
+                ClassifyOperands(ins, defs, reads);
+                foreach (var r in reads)
+                {
+                    if (!definedHere.Contains(r) && !(m is Arm64Mnemonic.LDR or Arm64Mnemonic.LDP or Arm64Mnemonic.LDUR))
+                        b.WrittenOrEscapedRegs.Add(r);
+                }
+                if (m is Arm64Mnemonic.BL or Arm64Mnemonic.BLR)
+                {
+                    for (var r = 0; r <= 7; r++)
+                        if (!definedHere.Contains(r)) b.WrittenOrEscapedRegs.Add(r);
+                    for (var r = 0; r <= 18; r++) definedHere.Add(r);
+                }
+                else if (m == Arm64Mnemonic.RET && !definedHere.Contains(0))
+                    b.WrittenOrEscapedRegs.Add(0);
+                foreach (var d in defs) definedHere.Add(d);
+            }
             if (reachable.Contains(b))
                 foreach (var s in b.Successors.Distinct())
                     s.Predecessors.Add(b);
+        }
         return blocks;
+    }
+
+    private static void CollapseInterfaceDiamonds(List<Arm64Insn> insns, List<Arm64Block> blocks)
+    {
+        foreach (var hdr in blocks)
+        {
+            if (hdr.IsTrap || hdr.End - hdr.Start < 2 || hdr.Successors.Count != 2) continue;
+            var last = insns[hdr.End - 1].Ins;
+            if (last.Mnemonic is not (Arm64Mnemonic.CBZ or Arm64Mnemonic.CBNZ)) continue;
+
+            // Header loads interface_offsets_count (ldrh w_, [rClass, #260..340]) before cbz -> slowBlock.
+            var foundCountLoad = false;
+            for (var i = hdr.Start; i < hdr.End - 1; i++)
+            {
+                var ins = insns[i].Ins;
+                if (ins.Mnemonic == Arm64Mnemonic.LDRH && ins.OperandCount >= 2 && ins.GetOperand(1).Kind == Arm64OperandKind.Memory
+                    && ((Arm64MemoryOperand)ins.GetOperand(1)).Accessor is { BaseRegister.Kind: not Arm64RegisterKind.SP, Immediate: >= 260 and <= 340 })
+                {
+                    foundCountLoad = true;
+                    break;
+                }
+            }
+            if (!foundCountLoad) continue;
+
+            var slow = hdr.Successors[0];
+            var loopInit = hdr.Successors[1];
+            if (slow.IsTrap || loopInit.IsTrap || slow.Successors.Count != 1 || loopInit.Successors.Count != 1) continue;
+            var callBlock = slow.Successors[0];
+            var loopHead = loopInit.Successors[0];
+            if (loopHead.Successors.Count != 2) continue;
+            var fast = loopHead.Successors[0];
+            var loopTail = loopHead.Successors[1];
+            if (fast.Successors.Count != 1 || fast.Successors[0] != callBlock) continue;
+            if (loopTail.Successors.Count != 2 || loopTail.Successors[0] != loopHead || loopTail.Successors[1] != slow)
+                continue;
+
+            var ifaceReg = -1;
+            for (var i = loopHead.Start; i < loopHead.End; i++)
+            {
+                var li = insns[i].Ins;
+                if (li.Mnemonic == Arm64Mnemonic.CMP && li.OperandCount >= 2 && li.GetOperand(1).Kind == Arm64OperandKind.Register)
+                    ifaceReg = RegKey((Arm64RegisterOperand)li.GetOperand(1));
+            }
+            var hasStride16 = false;
+            for (var i = loopTail.Start; i < loopTail.End; i++)
+            {
+                var ti = insns[i].Ins;
+                if (ti.Mnemonic == Arm64Mnemonic.ADD && ti.OperandCount >= 3 && ti.GetOperand(2).Kind == Arm64OperandKind.Immediate
+                    && ((Arm64ImmediateOperand)ti.GetOperand(2)).Value == 16)
+                    hasStride16 = true;
+            }
+            if (ifaceReg < 0 || !hasStride16 || callBlock.End - callBlock.Start < 2) continue;
+
+            var callFirst = insns[callBlock.Start].Ins;
+            if (callFirst.Mnemonic != Arm64Mnemonic.LDP || callFirst.OperandCount < 3
+                || callFirst.GetOperand(2).Kind != Arm64OperandKind.Memory
+                || RawRegKey(((Arm64MemoryOperand)callFirst.GetOperand(2)).Accessor.BaseRegister) != 0)
+                continue;
+
+            var callReg = -1;
+            for (var i = callBlock.Start + 1; i < callBlock.End; i++)
+            {
+                var ci = insns[i].Ins;
+                if (ci.Mnemonic == Arm64Mnemonic.BLR && ci.OperandCount >= 1 && ci.GetOperand(0).Kind == Arm64OperandKind.Register)
+                {
+                    callReg = RegKey((Arm64RegisterOperand)ci.GetOperand(0));
+                    break;
+                }
+            }
+            if (callReg < 0) continue;
+
+            var slot = 0;
+            for (var i = fast.Start; i < fast.End; i++)
+            {
+                var fi = insns[i].Ins;
+                if (fi.Mnemonic == Arm64Mnemonic.ADD && fi.OperandCount >= 3 && fi.GetOperand(2).Kind == Arm64OperandKind.Immediate)
+                {
+                    var imm = ((Arm64ImmediateOperand)fi.GetOperand(2)).Value;
+                    if (imm is > 0 and < 100) slot = (int)imm;
+                }
+            }
+            if (slot == 0)
+            {
+                for (var i = slow.Start; i < slow.End; i++)
+                {
+                    var si = insns[i].Ins;
+                    if (si.Mnemonic is Arm64Mnemonic.MOV or Arm64Mnemonic.MOVZ && si.OperandCount >= 2
+                        && si.GetOperand(0).Kind == Arm64OperandKind.Register && RegKey((Arm64RegisterOperand)si.GetOperand(0)) == 2
+                        && si.GetOperand(1).Kind == Arm64OperandKind.Immediate)
+                        slot = (int)((Arm64ImmediateOperand)si.GetOperand(1)).Value;
+                }
+            }
+
+            hdr.Successors.Clear();
+            hdr.Successors.Add(callBlock);
+            hdr.InterfaceRedirect = callBlock;
+            callBlock.InterfaceCall = new Arm64InterfaceCall(ifaceReg, slot, callReg, insns[callBlock.Start].Address);
+        }
     }
 
     private static List<Arm64Block> TopologicalOrder(List<Arm64Block> blocks)
@@ -454,6 +629,8 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
         {
             for (var i = b.Start; i < b.End; i++)
             {
+                if (b.InterfaceCall is { } skipIc && insns[i].Address == skipIc.SkipLdpVa)
+                    continue;
                 var ins = insns[i].Ins;
                 // Mark register reads/writes conservatively across basic blocks.
                 var defs = new List<int>(2);
@@ -480,6 +657,11 @@ public sealed class Arm64Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
             }
             if (b.JumpTable is { } jt && !b.Def.Contains(jt.IndexReg))
                 b.Use.Add(jt.IndexReg);
+            if (b.InterfaceCall is { } ic)
+            {
+                if (!b.Def.Contains(ic.IfaceReg)) b.Use.Add(ic.IfaceReg);
+                if (!b.Def.Contains(0)) b.Use.Add(0);
+            }
         }
         bool changed;
         do

@@ -14,12 +14,14 @@ public sealed class DefaultValueReader
     private readonly GlobalMetadata _md;
     private readonly Il2CppRegistration _reg;
     private readonly Dictionary<int, Il2CppDefaultValue> _fieldDefaults;
+    private readonly Dictionary<int, Il2CppDefaultValue> _paramDefaults;
 
     public DefaultValueReader(GlobalMetadata md, Il2CppRegistration reg)
     {
         _md = md;
         _reg = reg;
         _fieldDefaults = md.FieldDefaultValues.GroupBy(d => d.OwnerIndex).ToDictionary(g => g.Key, g => g.First());
+        _paramDefaults = md.ParameterDefaultValues.GroupBy(d => d.OwnerIndex).ToDictionary(g => g.Key, g => g.First());
     }
 
     public bool TryGetFieldDefault(int fieldIndex, out object? value)
@@ -28,17 +30,66 @@ public sealed class DefaultValueReader
         return _fieldDefaults.TryGetValue(fieldIndex, out var d) && TryDecode(d.TypeIndex, d.DataIndex, out value);
     }
 
+    public bool TryGetParameterDefault(int paramIndex, out object? value, out bool isNullDefault)
+    {
+        value = null;
+        isNullDefault = false;
+        if (!_paramDefaults.TryGetValue(paramIndex, out var d)) return false;
+        if (d.DataIndex < 0)
+        {
+            isNullDefault = true;
+            return true;
+        }
+        if (TryDecode(d.TypeIndex, d.DataIndex, out value)) return true;
+        if (value is null && _reg.TryGetType(d.TypeIndex, out var t)
+            && t.Type is Il2CppTypeEnum.String or Il2CppTypeEnum.Class or Il2CppTypeEnum.Object or Il2CppTypeEnum.GenericInst or Il2CppTypeEnum.SzArray or Il2CppTypeEnum.Array)
+        {
+            isNullDefault = true;
+            return true;
+        }
+        return false;
+    }
+
+    public bool TryGetFieldRvaBytes(int fieldIndex, int size, out byte[] bytes)
+    {
+        bytes = [];
+        if (size <= 0 || !_fieldDefaults.TryGetValue(fieldIndex, out var d) || d.DataIndex < 0)
+            return false;
+        var blob = _md.GetSectionBytes("fieldAndParameterDefaultValueData").Span;
+        if (d.DataIndex + size > blob.Length)
+            return false;
+        bytes = blob.Slice(d.DataIndex, size).ToArray();
+        return true;
+    }
+
     public bool TryDecode(int typeIndex, int dataIndex, out object? value)
     {
         value = null;
         if (dataIndex < 0 || !_reg.TryGetType(typeIndex, out var t)) return false;
+        var kind = t.Type;
+        if (kind == Il2CppTypeEnum.ValueType && (uint)t.KlassIndex < (uint)_md.TypeDefinitions.Length)
+        {
+            var td = _md.TypeDefinitions[t.KlassIndex];
+            if (td.IsEnum && td.FieldCount > 0)
+            {
+                for (var f = 0; f < td.FieldCount; f++)
+                {
+                    var fd = _md.Fields[td.FieldStart + f];
+                    if (_md.GetString(fd.NameIndex) == "value__" && _reg.TryGetType(fd.TypeIndex, out var ut))
+                    {
+                        kind = ut.Type;
+                        break;
+                    }
+                }
+            }
+        }
         var blob = _md.GetSectionBytes("fieldAndParameterDefaultValueData").Span;
         if (dataIndex >= blob.Length) return false;
         var s = blob[dataIndex..];
         var compressed = _md.Version.Major >= 29;
         try
         {
-            value = t.Type switch
+            value = kind switch
             {
                 Il2CppTypeEnum.Boolean => s[0] != 0,
                 Il2CppTypeEnum.U1 => s[0],

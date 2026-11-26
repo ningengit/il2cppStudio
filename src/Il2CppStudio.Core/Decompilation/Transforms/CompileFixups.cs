@@ -144,6 +144,7 @@ public static class CompileFixups
                 dir.ReplaceWith(dir.Expression.Detach());
 
         FixRemainingCompilePatterns(tree, in flags);
+        FoldReinterpretFloatLocals(tree);
         FixLeakedTypeParameters(tree);
         PurgeDiscardsAndDeadStatements(tree);
         EmptyIfRemover.Apply(tree);
@@ -236,12 +237,27 @@ public static class CompileFixups
                         "Reinterpret", target.TypeArguments.Last().Clone()),
                     asInner.Detach()));
             }
-            else if (target.MemberName == "Reinterpret" && args.Count == 1 && target.TypeArguments.Count == 1
-                && target.TypeArguments.First() is ComposedType { PointerRank: > 0 } ptrT)
+            else if (target.MemberName == "Reinterpret" && args.Count == 1 && target.TypeArguments.Count == 1)
             {
-                call.ReplaceWith(new CastExpression(ptrT.Clone(), new InvocationExpression(
-                    new MemberReferenceExpression(target.Target.Detach(), "Reinterpret", new SimpleType("nint")),
-                    args[0].Detach())));
+                var tArg = target.TypeArguments.First();
+                if (tArg is ComposedType { PointerRank: > 0 } ptrT)
+                {
+                    call.ReplaceWith(new CastExpression(ptrT.Clone(), new InvocationExpression(
+                        new MemberReferenceExpression(target.Target.Detach(), "Reinterpret", new SimpleType("nint")),
+                        args[0].Detach())));
+                }
+                else if (IsSingleAstType(tArg) && TryEvalConstInt(args[0], out var floatBits))
+                {
+                    var f = BitConverter.Int32BitsToSingle(unchecked((int)floatBits));
+                    if (!float.IsNaN(f) && !float.IsInfinity(f))
+                        call.ReplaceWith(new PrimitiveExpression(f));
+                }
+                else if (IsDoubleAstType(tArg) && TryEvalConstInt(args[0], out var doubleBits))
+                {
+                    var d = BitConverter.Int64BitsToDouble(doubleBits);
+                    if (!double.IsNaN(d) && !double.IsInfinity(d))
+                        call.ReplaceWith(new PrimitiveExpression(d));
+                }
             }
             else if (target.MemberName == "Write" && args.Count == 2 && IsUnsafeTarget(target.Target))
             {
@@ -1657,6 +1673,22 @@ public static class CompileFixups
         _ => false,
     };
 
+    private static bool IsSingleAstType(AstType? type) => type switch
+    {
+        PrimitiveType { Keyword: "float" } => true,
+        SimpleType { TypeArguments.Count: 0, Identifier: "Single" or "float" } => true,
+        MemberType { TypeArguments.Count: 0, MemberName: "Single", Target: SimpleType { TypeArguments.Count: 0, Identifier: "System" or "global::System" } or MemberType { MemberName: "System", Target: SimpleType { Identifier: "global" } } } => true,
+        _ => false,
+    };
+
+    private static bool IsDoubleAstType(AstType? type) => type switch
+    {
+        PrimitiveType { Keyword: "double" } => true,
+        SimpleType { TypeArguments.Count: 0, Identifier: "Double" or "double" } => true,
+        MemberType { TypeArguments.Count: 0, MemberName: "Double", Target: SimpleType { TypeArguments.Count: 0, Identifier: "System" or "global::System" } or MemberType { MemberName: "System", Target: SimpleType { Identifier: "global" } } } => true,
+        _ => false,
+    };
+
     private static bool IsUnsafeTarget(Expression expr) => expr switch
     {
         TypeReferenceExpression { Type: SimpleType { TypeArguments.Count: 0, Identifier: var id } } => id.EndsWith("Unsafe", StringComparison.Ordinal),
@@ -1710,6 +1742,118 @@ public static class CompileFixups
                     u.ReplaceWith(innerPe.Detach());
                 else if (u.Expression is not ParenthesizedExpression)
                     u.Expression = new ParenthesizedExpression(innerMinus.Detach());
+            }
+        }
+    }
+
+    private static void FoldReinterpretFloatLocals(SyntaxTree tree)
+    {
+        foreach (var method in AstWalk.Collect<MethodDeclaration>(tree, static m => !m.Body.IsNull))
+        {
+            var decls = new Dictionary<string, (VariableDeclarationStatement Stmt, VariableInitializer Init, bool IsDouble)>(StringComparer.Ordinal);
+            foreach (var vds in AstWalk.Collect<VariableDeclarationStatement>(method.Body))
+            {
+                if (vds.Variables.Count != 1) continue;
+                var v = vds.Variables.Single();
+                var kw = (vds.Type as PrimitiveType)?.Keyword;
+                if (kw is "int" or "long")
+                    decls[v.Name] = (vds, v, kw == "long");
+            }
+            if (decls.Count == 0) continue;
+
+            var writes = new Dictionary<string, List<(AssignmentExpression Assign, long Bits)>>(StringComparer.Ordinal);
+            var reads = new Dictionary<string, List<(InvocationExpression Call, bool IsDouble)>>(StringComparer.Ordinal);
+            var invalid = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var id in AstWalk.Collect<IdentifierExpression>(method.Body))
+            {
+                if (id.TypeArguments.Count > 0 || !decls.ContainsKey(id.Identifier)) continue;
+                var name = id.Identifier;
+                if (invalid.Contains(name)) continue;
+
+                if (id.Parent is AssignmentExpression ae && ae.Left == id && ae.Operator == AssignmentOperatorType.Assign
+                    && TryEvalConstInt(ae.Right, out var bits))
+                {
+                    (writes.TryGetValue(name, out var wl) ? wl : writes[name] = []).Add((ae, bits));
+                    continue;
+                }
+                if (id.Parent is InvocationExpression inv && inv.Arguments.Count == 1 && inv.Arguments.Single() == id
+                    && inv.Target is MemberReferenceExpression { MemberName: "Reinterpret" } mr
+                    && mr.Target.ToString().EndsWith("NativeIntrinsics", StringComparison.Ordinal))
+                {
+                    var ta = mr.TypeArguments.FirstOrDefault();
+                    if (IsSingleAstType(ta) || IsDoubleAstType(ta))
+                    {
+                        (reads.TryGetValue(name, out var rl) ? rl : reads[name] = []).Add((inv, IsDoubleAstType(ta)));
+                        continue;
+                    }
+                }
+                invalid.Add(name);
+            }
+
+            foreach (var (name, (stmt, init, _)) in decls)
+            {
+                var rlist = reads.GetValueOrDefault(name);
+                var wlist = writes.GetValueOrDefault(name);
+                if (rlist is null || rlist.Count == 0 || wlist is null || wlist.Count == 0) continue;
+                var toDouble = rlist[0].IsDouble;
+                if (rlist.Any(r => r.IsDouble != toDouble)) continue;
+                if (init.Initializer is not ({ IsNull: true } or DefaultValueExpression or PrimitiveExpression { Value: 0 or 0L }))
+                    continue;
+
+                if (!invalid.Contains(name))
+                {
+                    var newType = new PrimitiveType(toDouble ? "double" : "float");
+                    stmt.Type = newType;
+                    if (init.Initializer is DefaultValueExpression dve)
+                        dve.Type = newType.Clone();
+                    else if (init.Initializer is PrimitiveExpression pe)
+                        pe.ReplaceWith(new PrimitiveExpression(toDouble ? 0.0 : 0.0f));
+
+                    foreach (var (ae, bits) in wlist)
+                        ae.Right = toDouble
+                            ? new PrimitiveExpression(BitConverter.Int64BitsToDouble(bits))
+                            : new PrimitiveExpression(BitConverter.Int32BitsToSingle(unchecked((int)bits)));
+                    foreach (var (call, _) in rlist)
+                        call.ReplaceWith(new IdentifierExpression(name));
+                    continue;
+                }
+
+                // When the compiler reuses the local later (e.g. num3 = transforms.Length; after the switch in UiManager.Start),
+                // promote only the prefix before the first non-const write if all reads in that prefix are Reinterpret calls.
+                var order = new Dictionary<AstNode, int>();
+                var seq = 0;
+                AstWalk.ForEachNode(method.Body, n => order[n] = seq++);
+                var lastReadPos = rlist.Max(r => order.GetValueOrDefault(r.Call, -1));
+                var allRefs = AstWalk.Collect<IdentifierExpression>(method.Body, id => id.Identifier == name && id.TypeArguments.Count == 0).ToList();
+                var cutoff = allRefs
+                    .Where(id => id.Parent is AssignmentExpression a && a.Left == id && !wlist.Any(w => w.Assign == a))
+                    .Select(id => order.GetValueOrDefault(id, int.MaxValue))
+                    .DefaultIfEmpty(int.MaxValue)
+                    .Min();
+                if (cutoff <= lastReadPos) continue;
+                if (allRefs.Any(id => order.GetValueOrDefault(id, int.MaxValue) < cutoff
+                    && !(id.Parent is AssignmentExpression a && a.Left == id && wlist.Any(w => w.Assign == a))
+                    && !(id.Parent is InvocationExpression inv && rlist.Any(r => r.Call == inv))))
+                    continue;
+
+                var preWrites = wlist.Where(w => order.GetValueOrDefault(w.Assign, int.MaxValue) < cutoff).ToList();
+                if (preWrites.Count == 0) continue;
+                var usedNames = decls.Keys.ToHashSet(StringComparer.Ordinal);
+                var freshName = name + "Float";
+                while (!usedNames.Add(freshName)) freshName += "_";
+                var freshType = new PrimitiveType(toDouble ? "double" : "float");
+                var freshDecl = new VariableDeclarationStatement(freshType, freshName, new DefaultValueExpression(freshType.Clone()));
+                stmt.Parent?.InsertChildBefore(stmt, freshDecl, BlockStatement.StatementRole);
+                foreach (var (ae, bits) in preWrites)
+                {
+                    ae.Left = new IdentifierExpression(freshName);
+                    ae.Right = toDouble
+                        ? new PrimitiveExpression(BitConverter.Int64BitsToDouble(bits))
+                        : new PrimitiveExpression(BitConverter.Int32BitsToSingle(unchecked((int)bits)));
+                }
+                foreach (var (call, _) in rlist)
+                    call.ReplaceWith(new IdentifierExpression(freshName));
             }
         }
     }

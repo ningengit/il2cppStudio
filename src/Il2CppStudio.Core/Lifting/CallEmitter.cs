@@ -185,6 +185,14 @@ public sealed class CallEmitter(
             ctx.IL.Add(CilOpCodes.Ldtoken, typeSig.ToTypeDefOrRef());
             return;
         }
+        // RuntimeHelpers.InitializeArray(..., RuntimeFieldHandle): FieldInfo/FieldRva marker becomes ldtoken <Field>.
+        if (type.FullName == "System.RuntimeFieldHandle"
+            && v is MarkerExpr { Marker: MarkerKind.FieldInfo, Usage: { Kind: MetadataUsageKind.FieldInfo or MetadataUsageKind.FieldRva } fu }
+            && mem.ResolveFieldRefDescriptor(fu.Index) is { } fieldRef)
+        {
+            ctx.IL.Add(CilOpCodes.Ldtoken, fieldRef);
+            return;
+        }
         Expr.EmitAs(ctx, v, type);
     }
 
