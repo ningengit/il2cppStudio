@@ -23,6 +23,8 @@ public static class UnityInlineRecognizer
             InlinePureComponentTemps(tree);
             CollapseIdentityVectorCreate(tree);
         }
+        if (flags.HasTruncate)
+            CollapseBankersRound(tree);
         RemoveRepeatedDefault(tree);
         if (flags.HasVectorOps)
         {
@@ -189,6 +191,656 @@ public static class UnityInlineRecognizer
             if (decl.NextSibling is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: IdentifierExpression l, Right: DefaultValueExpression } } next
                 && l.Identifier == v.Name && AstWalk.IsAttachedTo(next, tree))
                 next.Remove();
+        }
+    }
+
+    // ------------------------------------------------------------------ inlined IEEE banker's rounding (Mathf.RoundToInt / Math.Round)
+
+    private static void CollapseBankersRound(SyntaxTree tree)
+    {
+        var useMathf = HasUnityEngineContext(tree);
+        foreach (var entity in AstWalk.Collect<EntityDeclaration>(tree))
+        {
+            var methodBody = entity switch
+            {
+                MethodDeclaration m => m.Body,
+                ConstructorDeclaration c => c.Body,
+                Accessor a => a.Body,
+                _ => BlockStatement.Null,
+            };
+            if (methodBody.IsNull) continue;
+
+            var progress = true;
+            while (progress)
+            {
+                progress = false;
+                var blocks = new List<BlockStatement> { methodBody };
+                AstWalk.CollectInto(methodBody, blocks);
+                foreach (var block in blocks)
+                {
+                    if (!ReferenceEquals(block, methodBody) && !AstWalk.IsAttachedTo(block, methodBody)) continue;
+                    if (TryCollapseBlockBankersRound(methodBody, block, useMathf))
+                    {
+                        progress = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    private static bool HasUnityEngineContext(SyntaxTree tree)
+    {
+        foreach (var u in tree.Children.OfType<UsingDeclaration>())
+            if (u.Namespace == "UnityEngine") return true;
+        return AstWalk.HasAny(tree, static n =>
+            n is IdentifierExpression { Identifier: "UnityEngine" or "Mathf" }
+            || n is SimpleType { Identifier: "UnityEngine" or "Mathf" });
+    }
+
+    private static bool TryCollapseBlockBankersRound(BlockStatement methodBody, BlockStatement block, bool useMathf)
+    {
+        var stmts = block.Statements.ToList();
+        for (var i = 0; i + 2 < stmts.Count; i++)
+        {
+            if (!TryMatchAssignOrDecl(stmts[i], out var truncVar, out var truncRhs)
+                || !TryMatchMathCall(truncRhs, "Truncate", out var srcExpr)
+                || Unparen(srcExpr) is not IdentifierExpression srcId)
+                continue;
+
+            var skippedDecls = new HashSet<string>(StringComparer.Ordinal);
+            var idx = i + 1;
+            SkipEmptyDecls(stmts, ref idx, skippedDecls);
+            if (idx >= stmts.Count
+                || !TryMatchAssignOrDecl(stmts[idx], out var diffVar, out var diffRhs)
+                || !IsDiffSub(diffRhs, srcId.Identifier, truncVar))
+                continue;
+            var diffStmt = stmts[idx];
+            var diffDeclaredRes = diffStmt is VariableDeclarationStatement;
+
+            idx++;
+            SkipEmptyDecls(stmts, ref idx, skippedDecls);
+            Statement? copyStmt = null;
+            string? copyVar = null;
+            var copyRefName = srcId.Identifier;
+            if (idx < stmts.Count
+                && TryMatchAssignOrDecl(stmts[idx], out var cVar, out var cRhs)
+                && Unparen(cRhs) is IdentifierExpression cId && cId.Identifier == srcId.Identifier)
+            {
+                copyStmt = stmts[idx];
+                copyVar = cVar;
+                copyRefName = cVar;
+                idx++;
+                SkipEmptyDecls(stmts, ref idx, skippedDecls);
+            }
+
+            if (idx >= stmts.Count || stmts[idx] is not IfElseStatement ifs)
+                continue;
+            if (!TryMatchBankersBranch(ifs, diffVar, copyRefName, out var resVar, out var tieLabel))
+                continue;
+            diffDeclaredRes &= resVar == diffVar;
+
+            var tieLabelStmt = AstWalk.Collect<LabelStatement>(methodBody, ls => ls.Label == tieLabel).FirstOrDefault();
+            if (tieLabelStmt is null || !TryMatchTieLabelBlock(tieLabelStmt, resVar, out var tieAssignStmt, out var tieGotoStmt, out var joinLabel))
+                continue;
+
+            var deadCandidates = new HashSet<string>(skippedDecls, StringComparer.Ordinal) { truncVar, diffVar };
+            if (copyVar is not null) deadCandidates.Add(copyVar);
+            CollectAssignedLocals(ifs, deadCandidates);
+            CollectAssignedLocals(tieAssignStmt, deadCandidates);
+
+            var postIfGoto = ifs.NextSibling as GotoStatement;
+            if (postIfGoto is not null && joinLabel is not null && postIfGoto.Label != joinLabel)
+                postIfGoto = null;
+
+            // Inline preceding `srcVar = <rhs>;` if srcVar is overwritten or never read again before overwrite.
+            Expression argExpr = srcId.Clone();
+            Statement? prevSrcAssign = null;
+            var inLoop = IsLoopBody(block);
+            if (i > 0 && TryMatchPureSrcAssign(stmts[i - 1], srcId.Identifier, out var prevRhs)
+                && IsVarDeadAfter(stmts[idx], methodBody, srcId.Identifier, joinLabel)
+                && (!inLoop || !ContainsIdentifierBefore(block, i - 1, srcId.Identifier)))
+            {
+                prevSrcAssign = stmts[i - 1];
+                argExpr = prevRhs.Clone();
+                deadCandidates.Add(srcId.Identifier);
+            }
+            // One-step unwrap for `int t = Random.Range(...); float src = t;`
+            if (Unparen(argExpr) is IdentifierExpression innerSrc
+                && prevSrcAssign?.PrevSibling is Statement innerPrev
+                && TryMatchPureSrcAssign(innerPrev, innerSrc.Identifier, out var innerRhs)
+                && IsVarDeadAfter(stmts[idx], methodBody, innerSrc.Identifier, joinLabel)
+                && (!inLoop || !ContainsIdentifierBefore(block, i - 2, innerSrc.Identifier)))
+            {
+                innerPrev.Remove();
+                argExpr = innerRhs.Clone();
+                deadCandidates.Add(innerSrc.Identifier);
+            }
+
+            var srcIsDouble = IsDeclaredAsDouble(methodBody, srcId.Identifier)
+                || (Unparen(argExpr) is IdentifierExpression argIdCheck && IsDeclaredAsDouble(methodBody, argIdCheck.Identifier));
+
+            var anchorNext = ifs.NextSibling;
+            var insertAnchor = stmts[i];
+
+            // Remove the inlined rounding block.
+            prevSrcAssign?.Remove();
+            diffStmt.Remove();
+            copyStmt?.Remove();
+            ifs.Remove();
+
+            // Remove tieLabel + parity check + trailing goto if no other goto jumps to tieLabel.
+            if (!HasGotoTarget(methodBody, tieLabel))
+            {
+                tieAssignStmt.Remove();
+                tieGotoStmt?.Remove();
+                tieLabelStmt.Remove();
+            }
+
+            // If postIfGoto falls directly through to joinLabel, drop the goto and check the label.
+            var fellThroughJoin = false;
+            if (postIfGoto is not null && joinLabel is not null
+                && postIfGoto.NextSibling is LabelStatement nextLbl && nextLbl.Label == joinLabel)
+            {
+                anchorNext = nextLbl.NextSibling as Statement;
+                postIfGoto.Remove();
+                postIfGoto = null;
+                fellThroughJoin = true;
+            }
+            else if (postIfGoto is null && anchorNext is LabelStatement adjLbl && adjLbl.Label == joinLabel)
+            {
+                anchorNext = adjLbl.NextSibling as Statement;
+                fellThroughJoin = true;
+            }
+
+            LabelStatement? joinLabelStmt = joinLabel is not null
+                ? AstWalk.Collect<LabelStatement>(methodBody, ls => ls.Label == joinLabel).FirstOrDefault()
+                : null;
+            if (joinLabelStmt is not null && !HasGotoTarget(methodBody, joinLabel!))
+            {
+                if (ReferenceEquals(anchorNext, joinLabelStmt))
+                    anchorNext = joinLabelStmt.NextSibling as Statement;
+                joinLabelStmt.Remove();
+                joinLabelStmt = null;
+            }
+
+            // Decide whether we can fold directly into the immediately following consumer statement
+            // (ignoring any trailing uninitialized temp declarations), or emit `resVar = Mathf.RoundToInt(argExpr);` / `Math.Round(argExpr);`.
+            var anchorStmt = anchorNext as Statement;
+            while (anchorStmt is not null && IsEmptyDecl(anchorStmt))
+                anchorStmt = anchorStmt.NextSibling as Statement;
+            var nextNonEmpty = insertAnchor.NextSibling as Statement;
+            while (nextNonEmpty is not null && IsEmptyDecl(nextNonEmpty))
+                nextNonEmpty = nextNonEmpty.NextSibling as Statement;
+
+            var wantMathfInt = useMathf && !srcIsDouble && HasIntConsumer(block, anchorStmt, joinLabelStmt, resVar);
+            Expression roundCall = wantMathfInt
+                ? new InvocationExpression(new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Mathf")), "RoundToInt"), argExpr)
+                : new InvocationExpression(new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Math")), "Round"), argExpr);
+
+            var canInlineConsumer = wantMathfInt
+                && postIfGoto is null
+                && nextNonEmpty is not null
+                && ReferenceEquals(nextNonEmpty, anchorStmt)
+                && IsSoleIntConsumer(nextNonEmpty, resVar, methodBody, block);
+
+            if (canInlineConsumer && FoldOverflowGuardsInNode(anchorStmt!, resVar, roundCall))
+            {
+                deadCandidates.Add(resVar);
+                insertAnchor.Remove();
+            }
+            else
+            {
+                var trailingResDecl = false;
+                if (!diffDeclaredRes)
+                {
+                    for (var s = insertAnchor.NextSibling as Statement; s is not null && IsEmptyDecl(s); s = s.NextSibling as Statement)
+                    {
+                        if (s is VariableDeclarationStatement vd && vd.Variables.Count == 1 && vd.Variables.Single().Name == resVar)
+                        {
+                            vd.Remove();
+                            trailingResDecl = true;
+                            break;
+                        }
+                    }
+                }
+                Statement replacement = diffDeclaredRes || trailingResDecl
+                    ? new VariableDeclarationStatement(new PrimitiveType("double"), resVar, roundCall)
+                    : new ExpressionStatement(new AssignmentExpression(new IdentifierExpression(resVar), roundCall));
+                block.Statements.InsertBefore(insertAnchor, replacement);
+                insertAnchor.Remove();
+
+                // Fold overflow guards on resVar in the remaining statements of this block and at joinLabel.
+                for (var s = replacement.NextSibling as Statement; s is not null; s = s.NextSibling as Statement)
+                {
+                    FoldOverflowGuardsInNode(s, resVar, null);
+                    if (ContainsUnconditionalAssign(s, resVar) || s is ReturnStatement or ThrowStatement) break;
+                }
+                if (!fellThroughJoin && joinLabelStmt is not null)
+                {
+                    for (var s = joinLabelStmt.NextSibling as Statement; s is not null && s is not LabelStatement; s = s.NextSibling as Statement)
+                    {
+                        FoldOverflowGuardsInNode(s, resVar, null);
+                        if (ContainsUnconditionalAssign(s, resVar) || s is ReturnStatement or ThrowStatement or GotoStatement) break;
+                    }
+                }
+            }
+
+            PruneDeadLocalsAndLabels(methodBody, deadCandidates);
+            return true;
+        }
+        return false;
+    }
+
+    private static Expression Unparen(Expression e)
+    {
+        while (e is ParenthesizedExpression p) e = p.Expression;
+        return e;
+    }
+
+    private static bool IsEmptyDecl(Statement s) =>
+        s is VariableDeclarationStatement vd && vd.Variables.All(v => v.Initializer.IsNull);
+
+    private static void SkipEmptyDecls(List<Statement> stmts, ref int idx, HashSet<string> deadCandidates)
+    {
+        while (idx < stmts.Count && stmts[idx] is VariableDeclarationStatement vd && vd.Variables.All(v => v.Initializer.IsNull))
+        {
+            foreach (var v in vd.Variables) deadCandidates.Add(v.Name);
+            idx++;
+        }
+    }
+
+    private static bool IsLoopBody(BlockStatement block) =>
+        block.Parent is WhileStatement or DoWhileStatement or ForStatement or ForeachStatement;
+
+    private static bool TryMatchAssignOrDecl(Statement stmt, out string name, out Expression rhs)
+    {
+        switch (stmt)
+        {
+            case ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: IdentifierExpression id, Right: { } r } }:
+                name = id.Identifier;
+                rhs = r;
+                return true;
+            case VariableDeclarationStatement { Variables.Count: 1 } vd when !vd.Variables.Single().Initializer.IsNull:
+                var v = vd.Variables.Single();
+                name = v.Name;
+                rhs = v.Initializer;
+                return true;
+            default:
+                name = "";
+                rhs = null!;
+                return false;
+        }
+    }
+
+    private static bool TryMatchPureSrcAssign(Statement stmt, string expectedVar, out Expression rhs)
+    {
+        if (TryMatchAssignOrDecl(stmt, out var name, out rhs)
+            && name == expectedVar
+            && !AstWalk.HasAny(rhs, n => n is IdentifierExpression id && id.Identifier == expectedVar))
+            return true;
+        rhs = null!;
+        return false;
+    }
+
+    private static bool TryMatchMathCall(Expression expr, string memberName, out Expression arg)
+    {
+        if (Unparen(expr) is InvocationExpression { Arguments.Count: 1, Target: MemberReferenceExpression mr } inv
+            && mr.MemberName == memberName
+            && mr.Target is TypeReferenceExpression or IdentifierExpression { Identifier: "Math" })
+        {
+            arg = inv.Arguments.Single();
+            return true;
+        }
+        arg = null!;
+        return false;
+    }
+
+    private static bool IsDiffSub(Expression rhs, string srcVar, string truncVar)
+    {
+        if (Unparen(rhs) is not BinaryOperatorExpression { Operator: BinaryOperatorType.Subtract } sub) return false;
+        var left = StripDoubleCast(Unparen(sub.Left));
+        return left is IdentifierExpression lid && lid.Identifier == srcVar
+            && Unparen(sub.Right) is IdentifierExpression rid && rid.Identifier == truncVar;
+    }
+
+    private static Expression StripDoubleCast(Expression e) =>
+        Unparen(e) is CastExpression { Type: PrimitiveType { Keyword: "double" } } ce ? Unparen(ce.Expression) : Unparen(e);
+
+    private static IfElseStatement? UnwrapSingleIf(Statement? stmt) => stmt switch
+    {
+        IfElseStatement ifs => ifs,
+        BlockStatement { Statements.Count: 1 } bs => bs.Statements.Single() as IfElseStatement,
+        _ => null,
+    };
+
+    private static bool TryMatchBankersBranch(
+        IfElseStatement ifs, string diffVar, string copyVar, out string resVar, out string tieLabel)
+    {
+        resVar = "";
+        tieLabel = "";
+        var tIf = UnwrapSingleIf(ifs.TrueStatement);
+        var fIf = UnwrapSingleIf(ifs.FalseStatement);
+        if (tIf is null || fIf is null) return false;
+
+        if (TryMatchHalfBranch(tIf, diffVar, copyVar, isCeiling: true, out var r1, out var l1)
+            && TryMatchHalfBranch(fIf, diffVar, copyVar, isCeiling: false, out var r2, out var l2)
+            && r1 == r2 && l1 == l2)
+        {
+            resVar = r1;
+            tieLabel = l1;
+            return true;
+        }
+        if (TryMatchHalfBranch(tIf, diffVar, copyVar, isCeiling: false, out r1, out l1)
+            && TryMatchHalfBranch(fIf, diffVar, copyVar, isCeiling: true, out r2, out l2)
+            && r1 == r2 && l1 == l2)
+        {
+            resVar = r1;
+            tieLabel = l1;
+            return true;
+        }
+        return false;
+    }
+
+    private static bool TryMatchHalfBranch(
+        IfElseStatement inner, string diffVar, string copyVar, bool isCeiling, out string resVar, out string tieLabel)
+    {
+        resVar = "";
+        tieLabel = "";
+        if (Unparen(inner.Condition) is not BinaryOperatorExpression { Operator: BinaryOperatorType.InEquality } ne) return false;
+        var hasDiff = Unparen(ne.Left) is IdentifierExpression d && d.Identifier == diffVar;
+        if (!hasDiff) return false;
+        var expectedHalf = isCeiling ? -0.5 : 0.5;
+        if (!TryGetDoubleLiteral(ne.Right, out var halfVal) || !halfVal.Equals(expectedHalf)) return false;
+
+        var roundStmt = inner.TrueStatement switch
+        {
+            BlockStatement { Statements.Count: 1 } bs => bs.Statements.Single() as ExpressionStatement,
+            ExpressionStatement es => es,
+            _ => null,
+        };
+        if (roundStmt?.Expression is not AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: IdentifierExpression rId, Right: { } callExpr })
+            return false;
+        if (!TryMatchMathCall(callExpr, isCeiling ? "Ceiling" : "Floor", out var innerArg)) return false;
+        if (Unparen(innerArg) is not BinaryOperatorExpression { Operator: BinaryOperatorType.Add } add
+            || Unparen(add.Left) is not IdentifierExpression cId || cId.Identifier != copyVar
+            || !TryGetDoubleLiteral(add.Right, out var addHalf) || !addHalf.Equals(expectedHalf))
+            return false;
+
+        if (inner.FalseStatement is not BlockStatement { Statements.Count: >= 2 } tieBlock) return false;
+        if (tieBlock.Statements.LastOrDefault() is not GotoStatement gs) return false;
+        resVar = rId.Identifier;
+        tieLabel = gs.Label;
+        return true;
+    }
+
+    private static bool TryMatchTieLabelBlock(
+        LabelStatement labelStmt, string resVar, out ExpressionStatement tieAssignStmt, out GotoStatement? tieGotoStmt, out string? joinLabel)
+    {
+        tieAssignStmt = null!;
+        tieGotoStmt = null;
+        joinLabel = null;
+        if (labelStmt.NextSibling is not ExpressionStatement
+            {
+                Expression: AssignmentExpression
+                {
+                    Operator: AssignmentOperatorType.Assign,
+                    Left: IdentifierExpression lid,
+                    Right: var rawRight
+                }
+            } es || lid.Identifier != resVar || Unparen(rawRight) is not ConditionalExpression condExpr)
+            return false;
+        if (!AstWalk.HasAny(condExpr.Condition, static n => n is BinaryOperatorExpression { Operator: BinaryOperatorType.BitwiseAnd } ba && Unparen(ba.Right) is PrimitiveExpression { Value: 1 or 1L or 1u or 1UL }))
+            return false;
+        tieAssignStmt = es;
+        if (es.NextSibling is GotoStatement gs)
+        {
+            tieGotoStmt = gs;
+            joinLabel = gs.Label;
+        }
+        else if (es.NextSibling is LabelStatement nextLbl)
+        {
+            joinLabel = nextLbl.Label;
+        }
+        return true;
+    }
+
+    private static void CollectAssignedLocals(AstNode root, HashSet<string> dest)
+    {
+        AstWalk.Visit<AssignmentExpression>(root, a =>
+        {
+            if (a.Left is IdentifierExpression id) dest.Add(id.Identifier);
+        });
+    }
+
+    private static bool HasGotoTarget(BlockStatement methodBody, string label) =>
+        AstWalk.HasAny(methodBody, n => n is GotoStatement g && g.Label == label);
+
+    private static bool ContainsIdentifierBefore(BlockStatement block, int beforeExclusive, string name)
+    {
+        var idx = 0;
+        foreach (var s in block.Statements)
+        {
+            if (idx >= beforeExclusive) break;
+            if (AstWalk.HasAny(s, n => n is IdentifierExpression id && id.Identifier == name))
+                return true;
+            idx++;
+        }
+        return false;
+    }
+
+    private static bool IsVarDeadAfter(Statement afterStmt, BlockStatement methodBody, string varName, string? joinLabel)
+    {
+        // Walk forward in enclosing block(s) and optional joinLabel; safe iff we hit an unconditional assign/return before any read.
+        for (var s = afterStmt.NextSibling as Statement; s is not null; s = s.NextSibling as Statement)
+        {
+            if (ContainsUnconditionalAssign(s, varName)) return true;
+            if (AstWalk.HasAny(s, n => n is IdentifierExpression id && id.Identifier == varName)) return false;
+            if (s is ReturnStatement or ThrowStatement) return true;
+            if (s is GotoStatement) break;
+        }
+        if (afterStmt.Parent is BlockStatement parentBlock && !ReferenceEquals(parentBlock, methodBody))
+        {
+            var outer = parentBlock.Parent as Statement;
+            while (outer is BlockStatement) outer = outer.Parent as Statement;
+            if (outer is IfElseStatement ifs && outer.Parent is BlockStatement)
+                return IsVarDeadAfter(ifs, methodBody, varName, joinLabel);
+            return false;
+        }
+        if (joinLabel is not null)
+        {
+            var lbl = AstWalk.Collect<LabelStatement>(methodBody, ls => ls.Label == joinLabel).FirstOrDefault();
+            if (lbl is not null)
+            {
+                for (var s = lbl.NextSibling as Statement; s is not null; s = s.NextSibling as Statement)
+                {
+                    if (ContainsUnconditionalAssign(s, varName)) return true;
+                    if (AstWalk.HasAny(s, n => n is IdentifierExpression id && id.Identifier == varName)) return false;
+                    if (s is ReturnStatement or ThrowStatement) return true;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static bool ContainsUnconditionalAssign(Statement s, string varName) =>
+        s is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: IdentifierExpression id, Right: var rhs } }
+        && id.Identifier == varName
+        && !AstWalk.HasAny(rhs, n => n is IdentifierExpression r && r.Identifier == varName);
+
+    private static bool IsDeclaredAsDouble(BlockStatement methodBody, string varName)
+    {
+        foreach (var vd in AstWalk.Collect<VariableDeclarationStatement>(methodBody))
+        {
+            if (vd.Type is PrimitiveType { Keyword: "double" }
+                && vd.Variables.Any(v => v.Name == varName))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool HasIntConsumer(BlockStatement block, Statement? afterStmt, LabelStatement? joinLabelStmt, string resVar)
+    {
+        for (var s = afterStmt; s is not null; s = s.NextSibling as Statement)
+        {
+            if (HasIntCastOrGuard(s, resVar)) return true;
+            if (ContainsUnconditionalAssign(s, resVar) || s is ReturnStatement or ThrowStatement) break;
+        }
+        if (joinLabelStmt is not null)
+        {
+            for (var s = joinLabelStmt.NextSibling as Statement; s is not null && s is not LabelStatement; s = s.NextSibling as Statement)
+            {
+                if (HasIntCastOrGuard(s, resVar)) return true;
+                if (ContainsUnconditionalAssign(s, resVar) || s is ReturnStatement or ThrowStatement or GotoStatement) break;
+            }
+        }
+        return false;
+    }
+
+    private static bool HasIntCastOrGuard(AstNode scope, string resVar) =>
+        AstWalk.HasAny(scope, n =>
+            n is CastExpression { Type: PrimitiveType { Keyword: "int" } } ce && Unparen(ce.Expression) is IdentifierExpression id && id.Identifier == resVar);
+
+    private static bool IsSoleIntConsumer(Statement consumer, string resVar, BlockStatement methodBody, BlockStatement block)
+    {
+        if (!HasIntCastOrGuard(consumer, resVar)) return false;
+        // Require exactly one occurrence of resVar inside consumer (apart from the +Inf guard condition itself).
+        var restHasRef = false;
+        for (var s = consumer.NextSibling as Statement; s is not null; s = s.NextSibling as Statement)
+        {
+            if (ContainsUnconditionalAssign(s, resVar)) break;
+            if (AstWalk.HasAny(s, n => n is IdentifierExpression id && id.Identifier == resVar)) { restHasRef = true; break; }
+            if (s is ReturnStatement or ThrowStatement) break;
+        }
+        if (restHasRef) return false;
+        // Also ensure resVar is not read elsewhere outside this block (unless overwritten at block/other branch).
+        if (!ReferenceEquals(block, methodBody))
+        {
+            var outer = block.Parent as Statement;
+            while (outer is not null && outer.Parent is not BlockStatement) outer = outer.Parent as Statement;
+            if (outer is IfElseStatement ifs)
+                return IsVarDeadAfter(ifs, methodBody, resVar, null);
+            return false;
+        }
+        return true;
+    }
+
+    private static bool FoldOverflowGuardsInNode(AstNode scope, string resVar, Expression? inlineIntExpr)
+    {
+        var folded = false;
+        foreach (var cond in AstWalk.Collect<ConditionalExpression>(scope))
+        {
+            if (!AstWalk.IsAttachedTo(cond, scope)) continue;
+            if (!IsResNotPosInf(cond.Condition, resVar)) continue;
+            if (!IsMinIntFallback(cond.FalseExpression)) continue;
+            var replacement = cond.TrueExpression;
+            if (inlineIntExpr is not null)
+            {
+                var intCasts = AstWalk.Collect<CastExpression>(replacement, c =>
+                    c.Type is PrimitiveType { Keyword: "int" } && Unparen(c.Expression) is IdentifierExpression id && id.Identifier == resVar);
+                if (intCasts.Count != 1) continue;
+                intCasts[0].ReplaceWith(inlineIntExpr.Clone());
+            }
+            cond.ReplaceWith(replacement.Detach());
+            folded = true;
+        }
+        foreach (var bin in AstWalk.Collect<BinaryOperatorExpression>(scope))
+        {
+            if (!AstWalk.IsAttachedTo(bin, scope)) continue;
+            if (bin.Operator == BinaryOperatorType.ConditionalOr)
+            {
+                Expression? keep = IsResEqPosInf(bin.Left, resVar) ? bin.Right
+                                 : IsResEqPosInf(bin.Right, resVar) ? bin.Left : null;
+                if (keep is null) continue;
+                if (inlineIntExpr is not null)
+                {
+                    var intCasts = AstWalk.Collect<CastExpression>(keep, c =>
+                        c.Type is PrimitiveType { Keyword: "int" } && Unparen(c.Expression) is IdentifierExpression id && id.Identifier == resVar);
+                    if (intCasts.Count != 1) continue;
+                    intCasts[0].ReplaceWith(inlineIntExpr.Clone());
+                }
+                bin.ReplaceWith(keep.Detach());
+                folded = true;
+            }
+            else if (bin.Operator == BinaryOperatorType.ConditionalAnd)
+            {
+                Expression? keep = IsResNotPosInf(bin.Left, resVar) ? bin.Right
+                                 : IsResNotPosInf(bin.Right, resVar) ? bin.Left : null;
+                if (keep is null) continue;
+                if (inlineIntExpr is not null)
+                {
+                    var intCasts = AstWalk.Collect<CastExpression>(keep, c =>
+                        c.Type is PrimitiveType { Keyword: "int" } && Unparen(c.Expression) is IdentifierExpression id && id.Identifier == resVar);
+                    if (intCasts.Count != 1) continue;
+                    intCasts[0].ReplaceWith(inlineIntExpr.Clone());
+                }
+                bin.ReplaceWith(keep.Detach());
+                folded = true;
+            }
+        }
+        return folded;
+    }
+
+    private static bool IsResNotPosInf(Expression cond, string resVar) =>
+        Unparen(cond) is BinaryOperatorExpression { Operator: BinaryOperatorType.InEquality } ne
+        && ((Unparen(ne.Left) is IdentifierExpression l && l.Identifier == resVar && IsPosInfinityExpr(ne.Right))
+            || (Unparen(ne.Right) is IdentifierExpression r && r.Identifier == resVar && IsPosInfinityExpr(ne.Left)));
+
+    private static bool IsResEqPosInf(Expression cond, string resVar) =>
+        Unparen(cond) is BinaryOperatorExpression { Operator: BinaryOperatorType.Equality } eq
+        && ((Unparen(eq.Left) is IdentifierExpression l && l.Identifier == resVar && IsPosInfinityExpr(eq.Right))
+            || (Unparen(eq.Right) is IdentifierExpression r && r.Identifier == resVar && IsPosInfinityExpr(eq.Left)));
+
+    private static bool IsPosInfinityExpr(Expression e) =>
+        Unparen(e) is MemberReferenceExpression
+        {
+            MemberName: "PositiveInfinity",
+            Target: TypeReferenceExpression { Type: PrimitiveType { Keyword: "double" } or SimpleType { Identifier: "Double" } }
+                or IdentifierExpression { Identifier: "double" or "Double" }
+        }
+        || (Unparen(e) is InvocationExpression { Arguments.Count: 1, Target: MemberReferenceExpression { MemberName: "Reinterpret" } } inv
+            && Unparen(inv.Arguments.Single()) is PrimitiveExpression { Value: 9218868437227405312L });
+
+    private static bool IsMinIntFallback(Expression e)
+    {
+        e = Unparen(e);
+        if (e is MemberReferenceExpression { MemberName: "MinValue" }) return true;
+        if (TryGetDoubleLiteral(e, out var d) && d < -2e9) return true;
+        return false;
+    }
+
+    private static bool TryGetDoubleLiteral(Expression e, out double value)
+    {
+        switch (Unparen(e))
+        {
+            case PrimitiveExpression { Value: double d }: value = d; return true;
+            case PrimitiveExpression { Value: float f }: value = f; return true;
+            case UnaryOperatorExpression { Operator: UnaryOperatorType.Minus } u when TryGetDoubleLiteral(u.Expression, out var inner):
+                value = -inner;
+                return true;
+            default:
+                value = 0;
+                return false;
+        }
+    }
+
+    private static void PruneDeadLocalsAndLabels(BlockStatement methodBody, HashSet<string> deadCandidates)
+    {
+        var remainingIds = new HashSet<string>(StringComparer.Ordinal);
+        AstWalk.Visit<IdentifierExpression>(methodBody, id => remainingIds.Add(id.Identifier));
+        foreach (var d in AstWalk.Collect<VariableDeclarationStatement>(methodBody))
+        {
+            if (d.Variables.Count != 1) continue;
+            var v = d.Variables.Single();
+            if (deadCandidates.Contains(v.Name)
+                && (v.Initializer.IsNull || v.Initializer is DefaultValueExpression)
+                && !remainingIds.Contains(v.Name))
+                d.Remove();
+        }
+        foreach (var lbl in AstWalk.Collect<LabelStatement>(methodBody))
+        {
+            if (!HasGotoTarget(methodBody, lbl.Label))
+                lbl.Remove();
         }
     }
 }

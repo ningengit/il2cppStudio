@@ -19,7 +19,8 @@
             BorderThickness="2"
             CornerRadius="8"
             Margin="12">
-      <TextBlock Text="Drop a game folder, APK, XAPK, IPA, NSP, PKG, PRX, WASM, Mach-O, or global-metadata.dat to load"
+      <TextBlock Text="Drop a game folder, APK, XAPK, APKS, APKM, IPA, NSP, PKG, PRX, WASM, Mach-O, or global-metadata.dat to load"
+                 IsHitTestVisible="False"
                  HorizontalAlignment="Center"
                  VerticalAlignment="Center"
                  FontSize="16"

@@ -2,20 +2,28 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 using Il2CppStudio.Gui.ViewModels;
 
 namespace Il2CppStudio.Gui.Views;
 
 public sealed partial class MainWindow : Window
 {
+    private int _dragToken;
+
     public MainWindow()
     {
         InitializeComponent();
         Opened += (_, _) => FitToScreen();
-        AddHandler(DragDrop.DragOverEvent, OnDragOver);
-        AddHandler(DragDrop.DragLeaveEvent, OnDragLeave);
-        AddHandler(DragDrop.DropEvent, OnDrop);
+        AddHandler(DragDrop.DragEnterEvent, OnDragOver, RoutingStrategies.Tunnel, handledEventsToo: true);
+        AddHandler(DragDrop.DragOverEvent, OnDragOver, RoutingStrategies.Tunnel, handledEventsToo: true);
+        AddHandler(DragDrop.DragLeaveEvent, OnDragLeave, RoutingStrategies.Tunnel | RoutingStrategies.Bubble, handledEventsToo: true);
+        AddHandler(DragDrop.DropEvent, OnDrop, RoutingStrategies.Tunnel, handledEventsToo: true);
+        Deactivated += (_, _) => { ++_dragToken; HideDropOverlay(); };
+        PointerMoved += (_, _) => { if (DropOverlay.IsVisible) { ++_dragToken; HideDropOverlay(); } };
     }
+
+    private void HideDropOverlay() => DropOverlay.IsVisible = false;
 
     /// <summary>
     /// Keeps the whole window — including the OS title bar with minimize/maximize/close — on screen. With display
@@ -39,27 +47,34 @@ public sealed partial class MainWindow : Window
 
     private void OnDragOver(object? sender, DragEventArgs e)
     {
+        ++_dragToken;
         if (ExtractSupportedDropPath(e) is not null)
         {
             e.DragEffects = DragDropEffects.Copy;
             DropOverlay.IsVisible = true;
+            e.Handled = true;
         }
         else
         {
             e.DragEffects = DragDropEffects.None;
-            DropOverlay.IsVisible = false;
+            HideDropOverlay();
         }
-        e.Handled = true;
     }
 
     private void OnDragLeave(object? sender, RoutedEventArgs e)
     {
-        DropOverlay.IsVisible = false;
+        var token = ++_dragToken;
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_dragToken == token)
+                HideDropOverlay();
+        }, DispatcherPriority.Input);
     }
 
     private async void OnDrop(object? sender, DragEventArgs e)
     {
-        DropOverlay.IsVisible = false;
+        ++_dragToken;
+        HideDropOverlay();
         var path = ExtractSupportedDropPath(e);
         if (path is null || DataContext is not MainViewModel vm) return;
         e.Handled = true;
@@ -94,6 +109,8 @@ public sealed partial class MainWindow : Window
         var ext = Path.GetExtension(name);
         return ext.Equals(".apk", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".xapk", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".apks", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".apkm", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".ipa", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".nsp", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".pkg", StringComparison.OrdinalIgnoreCase)
@@ -103,6 +120,7 @@ public sealed partial class MainWindow : Window
             || ext.Equals(".dll", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".so", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".dylib", StringComparison.OrdinalIgnoreCase)
-            || ext.Equals(".dat", StringComparison.OrdinalIgnoreCase);
+            || ext.Equals(".dat", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".jsgz", StringComparison.OrdinalIgnoreCase);
     }
 }

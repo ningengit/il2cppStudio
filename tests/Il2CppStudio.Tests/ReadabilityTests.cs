@@ -212,5 +212,24 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
         Assert.Contains("100f", dpScalerCs);
         Assert.Contains("96f", dpScalerCs);
         Assert.DoesNotContain("m_ReferencePixelsPerUnit = 0L;", dpScalerCs);
+
+        // Inlined IEEE banker's rounding (Mathf.RoundToInt) + dead label/temp pruning
+        var aiLocCs = ws.Render(Assert.Single(ws.FindTypes("AILocationSelectorScript")), null, CodeView.CSharp);
+        Assert.Contains("Mathf.RoundToInt(", aiLocCs);
+        Assert.DoesNotContain("goto IL_", aiLocCs);
+        Assert.DoesNotContain("Math.Truncate", aiLocCs);
+
+        var ambienceCs = ws.Render(Assert.Single(ws.FindTypes("AmbienceScript")), null, CodeView.CSharp);
+        Assert.Contains("Mathf.RoundToInt(", ambienceCs);
+        Assert.DoesNotContain("goto IL_", ambienceCs);
+        Assert.DoesNotContain("double num6 = default(double);", ambienceCs);
+
+        var debugFirstCs = ws.Render(Assert.Single(ws.FindTypes("DebugFirstPrizeScript")), null, CodeView.CSharp);
+        Assert.Contains("Mathf.RoundToInt(", debugFirstCs);
+        Assert.DoesNotContain("goto IL_", debugFirstCs);
+        Assert.DoesNotContain("double num5 = default(double);", debugFirstCs);
+
+        Assert.Contains("Mathf.RoundToInt(", bullyCs);
+        Assert.DoesNotContain("9218868437227405312L", bullyCs);
     }
 }

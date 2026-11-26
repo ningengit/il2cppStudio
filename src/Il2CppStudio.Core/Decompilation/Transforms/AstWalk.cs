@@ -16,7 +16,8 @@ internal readonly record struct TreeFlags(
     bool HasCompilerGeneratedTypes,
     bool HasBodies,
     bool HasStringEquals,
-    bool HasVectorOps);
+    bool HasVectorOps,
+    bool HasTruncate = false);
 
 /// <summary>
 /// Low-allocation pre-order AST traversal helpers walking <see cref="AstNode.FirstChild"/> and
@@ -29,7 +30,7 @@ internal static class AstWalk
         bool hasNativeIntrinsics = false, hasCallNative = false, hasSqrt = false, hasYield = false,
              hasPointerSyntax = false, hasPointerField = false, hasGetEnumerator = false,
              hasUsingDeclarations = false, hasCompilerGen = false, hasBodies = false,
-             hasStringEquals = false, hasVectorOps = false;
+             hasStringEquals = false, hasVectorOps = false, hasTruncate = false;
 
         var stack = new Stack<AstNode>(64);
         stack.Push(tree);
@@ -81,6 +82,7 @@ internal static class AstWalk
                             hasNativeIntrinsics = true;
                             break;
                         case "Sqrt": hasSqrt = true; break;
+                        case "Truncate": hasTruncate = true; break;
                         case "GetEnumerator": hasGetEnumerator = true; break;
                         case "Equals": hasStringEquals = true; break;
                         case "x" or "y" or "z" or "w" or "r" or "m00" or "sqrMagnitude" or "magnitude" or "normalized"
@@ -118,7 +120,7 @@ internal static class AstWalk
             hasNativeIntrinsics, hasCallNative, hasSqrt, hasYield,
             hasPointerSyntax, hasPointerField, hasGetEnumerator,
             hasUsingDeclarations, hasCompilerGen, hasBodies,
-            hasStringEquals, hasVectorOps);
+            hasStringEquals, hasVectorOps, hasTruncate);
     }
 
     private static bool IsStubOnly(BlockStatement bs)
