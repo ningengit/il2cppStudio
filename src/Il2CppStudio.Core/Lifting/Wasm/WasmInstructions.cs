@@ -454,7 +454,7 @@ internal sealed partial class WasmMethodEmit
             if (td >= 0 && VTableResolver.Resolve(_md, td, m.Index) is { } t)
             {
                 var spec = ExactInstantiation(t.MethodIndex, t.SpecIndex, args);
-                if (TryEmitDirectManaged(t.MethodIndex, spec, args, ft)) return;
+                if (TryEmitDirectManaged(t.MethodIndex, spec, args, ft, exactWasmArity: true)) return;
             }
         }
         EmitNativeFallback($"wasm_indirect_{typeIdx}", args, ft);
@@ -526,14 +526,21 @@ internal sealed partial class WasmMethodEmit
         return specIndex;
     }
 
-    private bool TryEmitDirectManaged(int methodIndex, int specIndex, WValue[] args, WasmFuncType ft)
+    private bool TryEmitDirectManaged(int methodIndex, int specIndex, WValue[] args, WasmFuncType ft, bool exactWasmArity = false)
     {
         var target = _stubs.MethodRefFor(_module, methodIndex, specIndex);
         if (target is null) return false;
         var callee = MethodShape.Create(_md, _reg, _stubs, _mem, _module, methodIndex, specIndex);
         var argPos = callee.HasReturnBuffer ? 1 : 0;
+        var requiredArgs = (callee.HasReturnBuffer ? 1 : 0) + (!callee.IsStatic ? 1 : 0) + callee.Parameters.Count;
+        if (args.Length < requiredArgs) return false;
+        if (exactWasmArity && args.Length != requiredArgs && args.Length != requiredArgs + 1) return false;
         if (!callee.IsStatic && argPos < args.Length)
             CallEmitter.RebindReceiverGeneric(ref target, ref callee, args[argPos].Expr, _md, _reg, _stubs, _mem, _module, methodIndex, specIndex);
+        if (target.Signature is not MethodSignature targetSig
+            || targetSig.ParameterTypes.Count != callee.Parameters.Count
+            || targetSig.HasThis != !callee.IsStatic)
+            return false;
 
         // Pending object_new followed by .ctor -> newobj
         if (!callee.IsStatic && argPos < args.Length && args[argPos].Expr is NewObjExpr { IsMaterialized: false } pending

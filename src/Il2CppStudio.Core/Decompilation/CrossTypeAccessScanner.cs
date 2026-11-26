@@ -28,11 +28,11 @@ public static class CrossTypeAccessScanner
             switch (sig)
             {
                 case TypeDefOrRefSignature tdor:
-                    if (tdor.Type is TypeDefinition td && td.IsNested && (callerType is null || !Encloses(td, callerType)))
+                    if (tdor.Type is TypeDefinition td && td.IsNested && (callerType is null || !Encloses(td.DeclaringType ?? td, callerType)))
                         AddNestedOwners(td);
                     break;
                 case GenericInstanceTypeSignature gi:
-                    if (gi.GenericType is TypeDefinition gtd && gtd.IsNested && (callerType is null || !Encloses(gtd, callerType)))
+                    if (gi.GenericType is TypeDefinition gtd && gtd.IsNested && (callerType is null || !Encloses(gtd.DeclaringType ?? gtd, callerType)))
                         AddNestedOwners(gtd);
                     foreach (var ta in gi.TypeArguments)
                         ScanTypeSig(ta, callerType);
@@ -74,23 +74,29 @@ public static class CrossTypeAccessScanner
                 {
                     if (operand is TypeSpecification ts)
                         ScanTypeSig(ts.Signature, callerType);
-                    else if (operand is TypeDefinition td && td.IsNested && (callerType is null || !Encloses(td, callerType)))
+                    else if (operand is TypeDefinition td && td.IsNested && (callerType is null || !Encloses(td.DeclaringType ?? td, callerType)))
                         AddNestedOwners(td);
                     continue;
                 }
 
-                var (owner, token, isPrivate) = operand switch
+                var (owner, token, isPrivate, isProtected) = operand switch
                 {
                     FieldDefinition f => (f.DeclaringType, f.MetadataToken.ToUInt32(),
-                        (f.Attributes & FieldAttributes.FieldAccessMask) is not (FieldAttributes.Public or FieldAttributes.Assembly or FieldAttributes.FamilyOrAssembly)),
+                        (f.Attributes & FieldAttributes.FieldAccessMask) is FieldAttributes.Private or FieldAttributes.PrivateScope,
+                        (f.Attributes & FieldAttributes.FieldAccessMask) is FieldAttributes.Family or FieldAttributes.FamilyAndAssembly),
                     MethodDefinition m when m.Name != "Finalize" => (m.DeclaringType, m.MetadataToken.ToUInt32(),
-                        (m.Attributes & MethodAttributes.MemberAccessMask) is not (MethodAttributes.Public or MethodAttributes.Assembly or MethodAttributes.FamilyOrAssembly)),
-                    _ => (null, 0u, false),
+                        (m.Attributes & MethodAttributes.MemberAccessMask) is MethodAttributes.Private or MethodAttributes.CompilerControlled,
+                        (m.Attributes & MethodAttributes.MemberAccessMask) is MethodAttributes.Family or MethodAttributes.FamilyAndAssembly),
+                    _ => (null, 0u, false, false),
                 };
-                if (owner is null || !isPrivate || (callerType is not null && Encloses(owner, callerType))) continue;
+                if (owner is null || (!isPrivate && !isProtected)) continue;
+                if (callerType is not null && Encloses(owner, callerType)) continue;
+                if (isProtected && callerType is not null && InheritsFrom(callerType, owner)) continue;
                 tokens.Add(token);
-                AddNestedOwners(owner);
+                if (!owner.IsNested || callerType is null || !Encloses(owner.DeclaringType!, callerType))
+                    AddNestedOwners(owner);
                 if (owner.DeclaringType is { } outer && owner.Name?.Value is { } ownerName && ParseCoroutineMethod(ownerName) is { } factoryName
+                    && (callerType is null || !Encloses(outer, callerType))
                     && outer.Methods.FirstOrDefault(m => m.Name == factoryName) is { } factoryMethod
                     && (factoryMethod.Attributes & MethodAttributes.MemberAccessMask) is not (MethodAttributes.Public or MethodAttributes.Assembly or MethodAttributes.FamilyOrAssembly))
                     tokens.Add(factoryMethod.MetadataToken.ToUInt32());
@@ -176,6 +182,28 @@ public static class CrossTypeAccessScanner
     {
         for (var t = caller; t is not null; t = t.DeclaringType)
             if (t == owner) return true;
+        return false;
+    }
+
+    /// <summary>True when <paramref name="caller"/> (or an enclosing type) derives from <paramref name="owner"/> (protected access is legal).</summary>
+    private static bool InheritsFrom(TypeDefinition caller, TypeDefinition owner)
+    {
+        for (var t = caller; t is not null; t = t.DeclaringType)
+        {
+            var cur = t;
+            for (var hop = 0; hop < 32 && cur is not null; hop++)
+            {
+                var bt = cur.BaseType switch
+                {
+                    TypeDefinition btd => btd,
+                    TypeSpecification { Signature: GenericInstanceTypeSignature { GenericType: TypeDefinition bgtd } } => bgtd,
+                    _ => null,
+                };
+                if (bt is null) break;
+                if (bt == owner) return true;
+                cur = bt;
+            }
+        }
         return false;
     }
 }

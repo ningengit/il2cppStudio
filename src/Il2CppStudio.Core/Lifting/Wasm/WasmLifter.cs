@@ -84,6 +84,7 @@ public sealed class WasmLifter(NativeSymbolizer sym, StubAssemblyBuilder stubs, 
             emit.Run(funcType, locals, insns);
             body.Instructions.OptimizeMacros();
             method.CilMethodBody = body;
+            body.ComputeMaxStack();
             stub.MarkLifted(methodIndex);
             var result = new LiftResult(methodIndex, true, insns.Count, body.Instructions.Count, emit.Unresolved, 0, emit.Elided, null)
             {

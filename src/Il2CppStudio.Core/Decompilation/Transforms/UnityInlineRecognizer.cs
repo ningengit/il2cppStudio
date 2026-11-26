@@ -47,12 +47,12 @@ public static class UnityInlineRecognizer
         }
         if (t.MemberName == "Internal_ToEulerRad")
         {
-            var q = inv.Arguments.Single().Detach();
-            var deg2Rad = new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Mathf")), "Deg2Rad");
+            var rawArg = inv.Arguments.Single();
+            var q = (rawArg is DirectionExpression dir ? dir.Expression : rawArg).Detach();
             inv.ReplaceWith(new BinaryOperatorExpression(
                 new MemberReferenceExpression(q, "eulerAngles"),
                 BinaryOperatorType.Multiply,
-                deg2Rad));
+                new PrimitiveExpression(0.017453292f)));
             return;
         }
         if (t.MemberName == "Euler")
@@ -117,7 +117,31 @@ public static class UnityInlineRecognizer
         var origArg = inv.Arguments.Single();
         var arg = origArg;
         VariableDeclarationStatement? tempDecl = null;
-        if (arg is IdentifierExpression id && FindSingleUseTemp(inv, id.Identifier) is { } d) { tempDecl = d; arg = d.Variables.Single().Initializer; }
+        ExpressionStatement? prevAssign = null;
+        if (arg is IdentifierExpression id)
+        {
+            if (FindSingleUseTemp(inv, id.Identifier) is { } d)
+            {
+                tempDecl = d;
+                arg = d.Variables.Single().Initializer;
+            }
+            else if (FindEnclosingStatement(inv) is { } enclosingStmt
+                && enclosingStmt.PrevSibling is ExpressionStatement
+                {
+                    Expression: AssignmentExpression
+                    {
+                        Operator: AssignmentOperatorType.Assign,
+                        Left: IdentifierExpression lhs,
+                        Right: ObjectCreateExpression { Type: SimpleType { Identifier: "Vector3" } } prevVec
+                    }
+                } prevEs
+                && lhs.Identifier == id.Identifier)
+            {
+                arg = prevVec;
+                if (!IsReadAfter(enclosingStmt, id.Identifier))
+                    prevAssign = prevEs;
+            }
+        }
         Expression? euler = null;
         if (arg is ObjectCreateExpression { Type: SimpleType { Identifier: "Vector3" } } create && create.Arguments.Count == 3)
         {
@@ -131,11 +155,11 @@ public static class UnityInlineRecognizer
         }
         if (euler is null)
         {
-            var rad2Deg = new MemberReferenceExpression(new TypeReferenceExpression(new SimpleType("Mathf")), "Rad2Deg");
             euler = new InvocationExpression(
                 new MemberReferenceExpression(t.Target.Clone(), "Euler"),
-                new BinaryOperatorExpression(origArg.Detach(), BinaryOperatorType.Multiply, rad2Deg));
+                new BinaryOperatorExpression(origArg.Detach(), BinaryOperatorType.Multiply, new PrimitiveExpression(57.29578f)));
             tempDecl = null;
+            prevAssign = null;
         }
         if (inv.Parent is ExpressionStatement es
             && es.NextSibling is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: MemberReferenceExpression { MemberName: "rotation" } rotLhs, Right: DefaultValueExpression } } nextRot)
@@ -146,6 +170,23 @@ public static class UnityInlineRecognizer
         else
             inv.ReplaceWith(euler);
         tempDecl?.Remove();
+        prevAssign?.Remove();
+    }
+
+    private static Statement? FindEnclosingStatement(AstNode node)
+    {
+        for (AstNode? a = node.Parent; a is not null; a = a.Parent)
+            if (a is Statement s && s.Parent is BlockStatement)
+                return s;
+        return null;
+    }
+
+    private static bool IsReadAfter(Statement stmt, string name)
+    {
+        for (var s = stmt.NextSibling; s is not null; s = s.NextSibling)
+            if (AstWalk.Collect<IdentifierExpression>(s, i => i.Identifier == name).Count > 0)
+                return true;
+        return false;
     }
 
     /// <summary><c>a * ((float)Math.PI / 180f)</c> → <c>a</c>.</summary>

@@ -397,5 +397,31 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
         var singletonCs = ws.Render(ws.FindTypes("Singleton`1").First(), null, CodeView.CSharp);
         Assert.Contains("where T : Component", singletonCs);
         Assert.Contains("[RuntimeInitializeOnLoadMethod]", singletonCs);
+
+        // Group 5: Precise AccessRelaxer visibility & stripped-const Rad2Deg fallback
+        Assert.Contains("private IEnumerator RebindCoroutine(", controlsCs);
+        Assert.DoesNotContain("internal IEnumerator RebindCoroutine", controlsCs);
+        Assert.Contains("private IEnumerator BootAnimation()", gcCs);
+        Assert.Contains("private IEnumerator Teleporter()", gcCs);
+        Assert.Contains("private IEnumerator CheatText(", mathCs);
+        Assert.Contains("private IEnumerator BootTimer()", playerCs);
+        Assert.Contains("private IEnumerator LogDissappear()", debugCs);
+        Assert.Contains("private IEnumerator Start()", envMapCs);
+
+        Assert.Contains("protected virtual void Awake()", singletonCs);
+        Assert.DoesNotContain("protected internal", singletonCs);
+        Assert.Contains("protected override void Awake()", inputMgrCs);
+        Assert.DoesNotContain("protected internal", inputMgrCs);
+
+        Assert.Contains("internal int audioInQueue;", audioQCs);
+        var doorCs = ws.Render(Assert.Single(ws.FindTypes("DoorScript")), null, CodeView.CSharp);
+        Assert.Contains("internal bool bDoorLocked;", doorCs);
+
+        var vertexShakeACs = ws.Render(Assert.Single(ws.FindTypes("VertexShakeA")), null, CodeView.CSharp);
+        Assert.Contains("Quaternion.Euler(", vertexShakeACs);
+        Assert.DoesNotContain("Mathf.Rad2Deg", vertexShakeACs);
+        var vertexShakeBCs = ws.Render(Assert.Single(ws.FindTypes("VertexShakeB")), null, CodeView.CSharp);
+        Assert.Contains("Quaternion.Euler(", vertexShakeBCs);
+        Assert.DoesNotContain("Mathf.Rad2Deg", vertexShakeBCs);
     }
 }
