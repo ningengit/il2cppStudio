@@ -16,6 +16,7 @@ public sealed class AddressExpr(Expr target) : Expr
     {
         switch (target)
         {
+            case LocalExpr l when l.Type is ByReferenceTypeSignature: ctx.IL.Add(CilOpCodes.Ldloc, l.Local); break;
             case LocalExpr l: ctx.IL.Add(CilOpCodes.Ldloca, l.Local); break;
             case ArgExpr a when a.Type is ByReferenceTypeSignature: ctx.IL.Add(CilOpCodes.Ldarg, a.Parameter); break;
             case ArgExpr a: ctx.IL.Add(CilOpCodes.Ldarga, a.Parameter); break;
@@ -98,6 +99,7 @@ public sealed class MemoryResolver
     private readonly ModuleDefinition _module;
     private readonly Dictionary<string, int> _typeDefByName;
     private readonly Dictionary<int, List<ResolvedField>> _fieldsCache = [];
+    private readonly Dictionary<(int TypeDef, string OwnerFullName), List<ResolvedField>> _genericFieldsCache = [];
     public Action<EmitContext, Expr, Expr>? BeforeFieldStored { get; set; }
     public Action<Expr, Expr>? OnFieldStored { get; set; }
 
@@ -132,13 +134,47 @@ public sealed class MemoryResolver
     {
         var t = _stubs.ToSig(_module, f.TypeIndex);
         // Substitute class generic parameters when the owner is a closed generic instance.
-        if (t is GenericParameterSignature { ParameterType: GenericParameterType.Type } gp && ownerSig is GenericInstanceTypeSignature gi
-            && gp.Index < gi.TypeArguments.Count)
-            return gi.TypeArguments[gp.Index];
+        if (ownerSig is GenericInstanceTypeSignature gi)
+            return SubstituteGenericType(t, gi);
         return t;
     }
 
+    private static TypeSignature SubstituteGenericType(TypeSignature t, GenericInstanceTypeSignature gi) => t switch
+    {
+        GenericParameterSignature { ParameterType: GenericParameterType.Type } gp when gp.Index < gi.TypeArguments.Count =>
+            gi.TypeArguments[gp.Index],
+        GenericInstanceTypeSignature n when n.TypeArguments.Any(ContainsGenericTypeParam) =>
+            new GenericInstanceTypeSignature(n.GenericType, n.IsValueType, n.TypeArguments.Select(a => SubstituteGenericType(a, gi)).ToArray()),
+        SzArrayTypeSignature sz when ContainsGenericTypeParam(sz.BaseType) =>
+            new SzArrayTypeSignature(SubstituteGenericType(sz.BaseType, gi)),
+        ByReferenceTypeSignature br when ContainsGenericTypeParam(br.BaseType) =>
+            new ByReferenceTypeSignature(SubstituteGenericType(br.BaseType, gi)),
+        PointerTypeSignature ptr when ContainsGenericTypeParam(ptr.BaseType) =>
+            new PointerTypeSignature(SubstituteGenericType(ptr.BaseType, gi)),
+        _ => t,
+    };
+
+    private static bool ContainsGenericTypeParam(TypeSignature t) => t switch
+    {
+        GenericParameterSignature { ParameterType: GenericParameterType.Type } => true,
+        GenericInstanceTypeSignature g => g.TypeArguments.Any(ContainsGenericTypeParam),
+        SzArrayTypeSignature sz => ContainsGenericTypeParam(sz.BaseType),
+        ByReferenceTypeSignature br => ContainsGenericTypeParam(br.BaseType),
+        PointerTypeSignature ptr => ContainsGenericTypeParam(ptr.BaseType),
+        _ => false,
+    };
+
     public IFieldDescriptor? FieldRef(ResolvedField f) => _stubs.FieldRefFor(_module, f.FieldIndex, f.DeclaringTypeDef);
+
+    public IFieldDescriptor? FieldRef(ResolvedField f, TypeSignature? ownerSig)
+    {
+        var fr = FieldRef(f);
+        if (fr is null) return null;
+        if (ownerSig is GenericInstanceTypeSignature gi && f.DeclaringTypeDef == TypeDefOf(gi)
+            && fr.Signature is FieldSignature fs)
+            return new MemberReference(new TypeSpecification(gi), fr.Name, fs);
+        return fr;
+    }
 
     public IFieldDescriptor? ResolveFieldRefDescriptor(int fieldRefIndex)
     {
@@ -180,6 +216,101 @@ public sealed class MemoryResolver
         return list;
     }
 
+    /// <summary>Fields of a type, computing natural-alignment layout for closed generic instantiations whose open definition has unknown offsets.</summary>
+    public IReadOnlyList<ResolvedField> FieldsOf(int typeDef, TypeSignature? ownerSig)
+    {
+        var baseFields = FieldsOf(typeDef);
+        if (ownerSig is not GenericInstanceTypeSignature)
+            return baseFields;
+        var totalInstanceFields = 0;
+        var countSeen = new HashSet<int>();
+        var countCur = typeDef;
+        while ((uint)countCur < (uint)_md.TypeDefinitions.Length && countSeen.Add(countCur))
+        {
+            var cdef = _md.TypeDefinitions[countCur];
+            for (var k = 0; k < cdef.FieldCount; k++)
+            {
+                var fd = _md.Fields[cdef.FieldStart + k];
+                var isStaticOrLiteral = _reg.TryGetType(fd.TypeIndex, out var ft) && (ft.Attrs & 0x50) != 0;
+                if (!isStaticOrLiteral) totalInstanceFields++;
+            }
+            if (cdef.ParentIndex < 0 || !_reg.TryGetType(cdef.ParentIndex, out var cparent)) break;
+            countCur = _names.ResolveTypeDefIndex(cparent);
+        }
+        if (baseFields.Where(f => !f.IsStatic).Select(f => f.Offset).Distinct().Count() >= totalInstanceFields)
+            return baseFields;
+        var cacheKey = (typeDef, ownerSig.FullName);
+        if (_genericFieldsCache.TryGetValue(cacheKey, out var cached)) return cached;
+
+        var list = new List<ResolvedField>();
+        var seen = new HashSet<int>();
+        var current = typeDef;
+        var cursor = 0;
+        var initializedCursor = false;
+        while ((uint)current < (uint)_md.TypeDefinitions.Length && seen.Add(current))
+        {
+            var def = _md.TypeDefinitions[current];
+            if (!initializedCursor)
+            {
+                cursor = def.IsValueType ? 0 : ObjectHeaderSize;
+                initializedCursor = true;
+            }
+            for (var k = 0; k < def.FieldCount; k++)
+            {
+                var fi = def.FieldStart + k;
+                var fd = _md.Fields[fi];
+                var isStatic = _reg.TryGetType(fd.TypeIndex, out var ft) && (ft.Attrs & 0x10) != 0;
+                var isLiteral = (ft.Attrs & 0x40) != 0;
+                if (isLiteral || isStatic) continue;
+                var fType = FieldType(new ResolvedField(fi, current, 0, fd.TypeIndex, false), ownerSig);
+                var off = _reg.GetFieldOffset(current, k);
+                var normOff = off >= 0 ? (def.IsValueType ? off - ObjectHeaderSize : off) : -1;
+                if (normOff >= 0 && (list.Count == 0 || normOff > 0))
+                {
+                    off = normOff;
+                }
+                else
+                {
+                    var align = FieldAlignment(fType);
+                    cursor = (cursor + align - 1) / align * align;
+                    off = cursor;
+                }
+                var fsz = Math.Max(1, ValueSize(fType));
+                cursor = Math.Max(cursor, off + fsz);
+                list.Add(new ResolvedField(fi, current, off, fd.TypeIndex, false));
+            }
+            if (def.ParentIndex < 0 || !_reg.TryGetType(def.ParentIndex, out var parent)) break;
+            current = _names.ResolveTypeDefIndex(parent);
+        }
+        _genericFieldsCache[cacheKey] = list;
+        return list;
+    }
+
+    private int FieldAlignment(TypeSignature t, int depth = 0)
+    {
+        if (depth >= 8) return _ptr;
+        switch (Expr.KindOf(t))
+        {
+            case ValueKind.I4:
+                return Math.Min(_ptr, ValueSize(t, depth));
+            case ValueKind.R4:
+                return Math.Min(_ptr, 4);
+            case ValueKind.Struct:
+                var td = TypeDefOf(t);
+                if (td < 0) return _ptr;
+                var maxAlign = 1;
+                foreach (var f in FieldsOf(td, t))
+                {
+                    if (f.IsStatic) continue;
+                    var fa = FieldAlignment(FieldType(f, t), depth + 1);
+                    if (fa > maxAlign) maxAlign = fa;
+                }
+                return Math.Min(_ptr, maxAlign);
+            default:
+                return _ptr;
+        }
+    }
+
     private bool IsEnumType(TypeSignature sig) =>
         TypeDefOf(sig) is var td and >= 0 && (uint)td < (uint)_md.TypeDefinitions.Length && _md.TypeDefinitions[td].IsEnum;
 
@@ -197,30 +328,31 @@ public sealed class MemoryResolver
     }
 
     /// <summary>Field of a value type that starts at <paramref name="offset"/>, descending into nested structs.</summary>
-    public Expr? StructField(Expr structValue, int typeDef, long offset, int depth = 0)
+    public Expr? StructField(Expr structValue, int typeDef, long offset, int depth = 0, int desiredSize = 0)
     {
         if (depth > 6) return null;
         if ((uint)typeDef < (uint)_md.TypeDefinitions.Length && _md.TypeDefinitions[typeDef].IsEnum) return null;
-        var fields = FieldsOf(typeDef).Where(f => !f.IsStatic).OrderBy(f => f.Offset).ToList();
+        var fields = FieldsOf(typeDef, structValue.Type).Where(f => !f.IsStatic).OrderBy(f => f.Offset).ToList();
         foreach (var f in fields)
         {
             var ft = FieldType(f, structValue.Type);
             var size = ValueSize(ft);
-            if (f.Offset == offset && FieldRef(f) is { } fr)
+            if (f.Offset == offset && FieldRef(f, structValue.Type) is { } fr)
             {
                 var fe = new FieldExpr(structValue, fr, ft);
-                // Offset 0 of a nested struct: prefer the innermost scalar.
+                // Offset 0 of a nested struct: prefer the innermost scalar unless caller asked for the whole nested struct size.
                 var inner = TypeDefOf(ft);
                 return inner >= 0 && _md.TypeDefinitions[inner].IsValueType && Expr.KindOf(ft) == ValueKind.Struct
-                    ? StructField(fe, inner, 0, depth + 1) ?? fe
+                    && (desiredSize == 0 || desiredSize < size)
+                    ? StructField(fe, inner, 0, depth + 1, desiredSize) ?? fe
                     : fe;
             }
-            if (offset > f.Offset && offset < f.Offset + size && FieldRef(f) is { } nr)
+            if (offset > f.Offset && offset < f.Offset + size && FieldRef(f, structValue.Type) is { } nr)
             {
                 if (Expr.KindOf(ft) == ValueKind.Struct)
                 {
                     var inner = TypeDefOf(ft);
-                    if (inner >= 0) return StructField(new FieldExpr(structValue, nr, ft), inner, offset - f.Offset, depth + 1);
+                    if (inner >= 0) return StructField(new FieldExpr(structValue, nr, ft), inner, offset - f.Offset, depth + 1, desiredSize);
                 }
                 if (Expr.KindOf(ft) is ValueKind.I4 or ValueKind.I8)
                 {
@@ -250,20 +382,27 @@ public sealed class MemoryResolver
             case ValueKind.Struct:
                 var td = TypeDefOf(t);
                 if (td < 0) return _ptr;
-                var regSize = _reg.GetValueTypeSize(td);
-                if (regSize > 0) return regSize;
+                if (t is not GenericInstanceTypeSignature)
+                {
+                    var regSize = _reg.GetValueTypeSize(td);
+                    if (regSize > 0) return regSize;
+                }
                 if (depth >= 8) return _ptr;
                 var computed = 0;
-                foreach (var f in FieldsOf(td))
+                var maxAlign = 1;
+                foreach (var f in FieldsOf(td, t))
                 {
                     if (f.IsStatic) continue;
-                    var fsz = Math.Max(1, ValueSize(FieldType(f, t), depth + 1));
-                    var align = Math.Min(_ptr, fsz >= 8 ? 8 : fsz >= 4 ? 4 : fsz >= 2 ? 2 : 1);
+                    var fType = FieldType(f, t);
+                    var fsz = Math.Max(1, ValueSize(fType, depth + 1));
+                    var align = FieldAlignment(fType, depth + 1);
+                    if (align > maxAlign) maxAlign = align;
                     computed = (computed + align - 1) / align * align;
                     if (f.Offset > computed) computed = f.Offset;
                     computed += fsz;
                 }
-                return computed > 0 ? (computed + _ptr - 1) / _ptr * _ptr : _ptr;
+                var structAlign = Math.Min(_ptr, maxAlign);
+                return computed > 0 ? (computed + structAlign - 1) / structAlign * structAlign : _ptr;
             default: return _ptr;
         }
     }
@@ -349,7 +488,7 @@ public sealed class MemoryResolver
         if (baseExpr is AddressExpr { Target: var addrTarget } && TypeDefOf(addrTarget.Type) is var std and >= 0)
         {
             if (index is not null) return null;
-            var field = StructField(addrTarget, std, disp);
+            var field = StructField(addrTarget, std, disp, desiredSize: size);
             if (field is not null && (size <= ValueSize(field.Type!) || size <= 4))
             {
                 if (field.Type is not null && ValueSize(field.Type) > size && Expr.KindOf(field.Type) is ValueKind.I4 or ValueKind.I8)
@@ -372,14 +511,14 @@ public sealed class MemoryResolver
             if (TypeDefOf(elem) is var btd and >= 0 && Expr.KindOf(elem) == ValueKind.Struct && !IsEnumType(elem))
             {
                 var indStruct = new IndirectStructExpr(elem, baseExpr);
-                var field = StructField(indStruct, btd, disp);
+                var field = StructField(indStruct, btd, disp, desiredSize: size);
                 if (field is not null && (size <= ValueSize(field.Type!) || size <= 4)) return field;
                 return new StructChunkExpr(indStruct, (int)disp, size);
             }
         }
         if (baseExpr is IndirectStructExpr indirect && index is null && TypeDefOf(indirect.Type) is var itd and >= 0)
         {
-            var field = StructField(indirect, itd, disp);
+            var field = StructField(indirect, itd, disp, desiredSize: size);
             if (field is not null && (size <= ValueSize(field.Type!) || size <= 4)) return field;
             return new StructChunkExpr(indirect, (int)disp, size);
         }
@@ -491,7 +630,7 @@ public sealed class MemoryResolver
     private Expr StructFieldOrChunk(Expr structValue, TypeSignature structType, int offset, int size)
     {
         var td = TypeDefOf(structType);
-        if (td >= 0 && StructField(structValue, td, offset) is { } f && size <= Math.Max(4, ValueSize(f.Type!))) return f;
+        if (td >= 0 && StructField(structValue, td, offset, desiredSize: size) is { } f && size <= Math.Max(4, ValueSize(f.Type!))) return f;
         return new StructChunkExpr(structValue, offset, size);
     }
 
@@ -860,7 +999,7 @@ public sealed class MemoryResolver
     private bool StoreZeros(EmitContext ctx, Expr target, int td, long disp, int size)
     {
         var any = false;
-        foreach (var f in FieldsOf(td).Where(f => !f.IsStatic && f.Offset >= disp && f.Offset < disp + size))
+        foreach (var f in FieldsOf(td, target.Type).Where(f => !f.IsStatic && f.Offset >= disp && f.Offset < disp + size))
         {
             if (StructField(target, td, f.Offset) is not FieldExpr part || part.Type is not { } pt) continue;
             var k = Expr.KindOf(pt);
@@ -879,7 +1018,7 @@ public sealed class MemoryResolver
         var srcTd = TypeDefOf(chunk.Source.Type);
         if (srcTd < 0) return false;
         var copied = false;
-        foreach (var f in FieldsOf(targetTypeDef).Where(f => !f.IsStatic && f.Offset >= offset && f.Offset < offset + size))
+        foreach (var f in FieldsOf(targetTypeDef, target.Type).Where(f => !f.IsStatic && f.Offset >= offset && f.Offset < offset + size))
         {
             var srcField = StructField(chunk.Source, srcTd, chunk.Offset + (f.Offset - offset));
             var dstField = StructField(target, targetTypeDef, f.Offset);

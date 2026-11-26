@@ -33,6 +33,11 @@ public static class VectorOperatorRecognizer
                     ok = Swap(template.Clone(), "x", lanes[i]).ToString() == args[i].ToString();
                 if (!ok || Strip(template.Clone(), st.Identifier) is not { } vectorExpr || Kind(vectorExpr, st.Identifier) != OperandKind.Vector) continue;
                 if (!AstWalk.HasAny(template, n => n is MemberReferenceExpression m && m.MemberName == "x" && IsVector(m.Target, st.Identifier))) continue;
+                foreach (var n in vectorExpr.DescendantsAndSelf)
+                    if (n is BinaryOperatorExpression or UnaryOperatorExpression or ParenthesizedExpression)
+                        n.RemoveAnnotations<ResolveResult>();
+                if (create.Annotation<ResolveResult>() is { } createRes)
+                    vectorExpr.AddAnnotation(createRes);
                 create.ReplaceWith(vectorExpr);
             }
         }
@@ -144,7 +149,10 @@ public static class VectorOperatorRecognizer
                         if (a == next) { isInNext = true; break; }
                     if (!isInNext) continue;
                     if (!Ordered(block, decl, next, v.Name)) continue;
-                    uses[0].ReplaceWith(v.Initializer.Detach());
+                    var rep = v.Initializer.Detach();
+                    if (rep is BinaryOperatorExpression && uses[0].Parent is BinaryOperatorExpression or UnaryOperatorExpression or MemberReferenceExpression)
+                        rep = new ParenthesizedExpression(rep);
+                    uses[0].ReplaceWith(rep);
                     decl.Remove();
                     changed = true;
                     break;

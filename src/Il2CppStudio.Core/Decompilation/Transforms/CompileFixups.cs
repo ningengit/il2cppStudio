@@ -144,6 +144,10 @@ public static class CompileFixups
                 dir.ReplaceWith(dir.Expression.Detach());
 
         FixRemainingCompilePatterns(tree, in flags);
+        UnwrapReinterpretBool(tree);
+        StripRedundantZeroFieldStores(tree);
+        HoistRefAssignTargetLocals(tree);
+        StripImmutableKeyValuePairFieldStores(tree);
         FoldReinterpretFloatLocals(tree);
         FixLeakedTypeParameters(tree);
         PurgeDiscardsAndDeadStatements(tree);
@@ -1218,6 +1222,25 @@ public static class CompileFixups
                 || HasAccessibleMember(tType, mr.MemberName, enclosingTd0)
                 || tType.GetNestedTypes().Any(nt => nt.Name == mr.MemberName))
                 continue;
+            if (tType.FullName == "System.Collections.Generic.KeyValuePair"
+                && mr.MemberName is "key" or "_key" or "value" or "_value")
+            {
+                var prop = mr.MemberName is "key" or "_key" ? "Key" : "Value";
+                if (HasAccessibleMember(tType, prop, enclosingTd0))
+                {
+                    mr.MemberName = prop;
+                    mr.RemoveAnnotations<ResolveResult>();
+                    continue;
+                }
+            }
+            if (tType.Namespace == "System.Collections.Generic" && tType.Name == "Enumerator"
+                && mr.MemberName is "current" or "_current"
+                && HasAccessibleMember(tType, "Current", enclosingTd0))
+            {
+                mr.MemberName = "Current";
+                mr.RemoveAnnotations<ResolveResult>();
+                continue;
+            }
             if (mr.Parent is DirectionExpression dir)
             {
                 AstType dirType = dir.Parent is InvocationExpression invD && invD.Annotation<InvocationResolveResult>()?.Member is IMethod mD
@@ -1855,6 +1878,252 @@ public static class CompileFixups
                 foreach (var (call, _) in rlist)
                     call.ReplaceWith(new IdentifierExpression(freshName));
             }
+        }
+    }
+
+    private static void UnwrapReinterpretBool(SyntaxTree tree)
+    {
+        foreach (var inv in AstWalk.Collect<InvocationExpression>(tree))
+        {
+            if (inv.Parent is null || !IsReinterpretCall(inv) || inv.Arguments.Count != 1) continue;
+            var targetType = (inv.Target as MemberReferenceExpression)?.TypeArguments.FirstOrDefault();
+            if (targetType is not PrimitiveType { Keyword: "int" or "uint" or "long" }) continue;
+            if (UnwrapParens(inv.Arguments.Single()) is InvocationExpression innerInv
+                && IsReinterpretCall(innerInv) && innerInv.Arguments.Count == 1
+                && IsBoolZeroOneConditional(UnwrapParens(innerInv.Arguments.Single()), out _))
+            {
+                inv.ReplaceWith(innerInv.Arguments.Single().Detach());
+            }
+        }
+
+        foreach (var cmp in AstWalk.Collect<BinaryOperatorExpression>(tree, static b =>
+            b.Operator is BinaryOperatorType.Equality or BinaryOperatorType.InEquality))
+        {
+            if (cmp.Parent is null) continue;
+            if (!TryEvalConstInt(cmp.Right, out var cmpVal) || cmpVal != 0) continue;
+            var lhs = UnwrapParens(cmp.Left);
+            Expression? innerCond = null;
+            if (lhs is BinaryOperatorExpression { Operator: BinaryOperatorType.BitwiseAnd } bitAnd
+                && TryEvalConstInt(bitAnd.Right, out var mask) && mask == 1)
+            {
+                var andLeft = UnwrapParens(bitAnd.Left);
+                if (IsBoolZeroOneConditional(andLeft, out var c1)) innerCond = c1;
+                else if (andLeft is InvocationExpression rInv && IsReinterpretCall(rInv) && rInv.Arguments.Count == 1
+                    && IsBoolZeroOneConditional(UnwrapParens(rInv.Arguments.Single()), out var c2))
+                    innerCond = c2;
+            }
+            if (innerCond is null) continue;
+            if (cmp.Operator == BinaryOperatorType.Equality)
+            {
+                var arg = innerCond.Detach();
+                if (arg is BinaryOperatorExpression or ConditionalExpression or AssignmentExpression)
+                    arg = new ParenthesizedExpression(arg);
+                cmp.ReplaceWith(new UnaryOperatorExpression(UnaryOperatorType.Not, arg));
+            }
+            else
+            {
+                cmp.ReplaceWith(innerCond.Detach());
+            }
+        }
+
+        static bool IsBoolZeroOneConditional(Expression e, out Expression cond)
+        {
+            if (e is ConditionalExpression ce && TryEvalConstInt(ce.TrueExpression, out var tv) && tv == 1
+                && TryEvalConstInt(ce.FalseExpression, out var fv) && fv == 0)
+            {
+                cond = ce.Condition;
+                return true;
+            }
+            cond = null!;
+            return false;
+        }
+    }
+
+    private static void StripRedundantZeroFieldStores(SyntaxTree tree)
+    {
+        foreach (var block in AstWalk.Collect<BlockStatement>(tree))
+        {
+            var stmts = block.Statements.ToList();
+            for (var i = 0; i < stmts.Count; i++)
+            {
+                // Case A: `T x = default(T);` followed by `x.field = 0;`
+                if (stmts[i] is VariableDeclarationStatement { Variables.Count: 1 } vds
+                    && vds.Type is not ComposedType { HasRefSpecifier: true }
+                    && vds.Variables.Single() is { Initializer: DefaultValueExpression } dv)
+                {
+                    var k = i + 1;
+                    while (k < stmts.Count && IsZeroFieldStoreOn(stmts[k], dv.Name))
+                    {
+                        stmts[k].Remove();
+                        k++;
+                    }
+                    i = k - 1;
+                    continue;
+                }
+
+                // Case B: contiguous run of `x.field = 0;` directly before a statement passing `out x` with no other ref to `x`.
+                if (TryGetZeroFieldStoreTarget(stmts[i], out var targetName))
+                {
+                    var end = i + 1;
+                    while (end < stmts.Count && IsZeroFieldStoreOn(stmts[end], targetName))
+                        end++;
+                    if (end < stmts.Count && IsSoleOutParamUseInStatement(stmts[end], targetName))
+                    {
+                        for (var k = i; k < end; k++)
+                            stmts[k].Remove();
+                        i = end - 1;
+                    }
+                }
+            }
+        }
+
+        static bool IsZeroFieldStoreOn(Statement s, string localName) =>
+            TryGetZeroFieldStoreTarget(s, out var target) && target == localName;
+
+        static bool TryGetZeroFieldStoreTarget(Statement s, out string localName)
+        {
+            localName = "";
+            if (s is not ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: MemberReferenceExpression mr, Right: var rhs } })
+                return false;
+            if (!IsZeroLiteralExpr(rhs)) return false;
+            Expression cur = mr;
+            while (cur is MemberReferenceExpression m)
+            {
+                if (m.Annotation<MemberResolveResult>()?.Member is IProperty) return false;
+                cur = m.Target;
+            }
+            if (cur is not IdentifierExpression rootId) return false;
+            localName = rootId.Identifier;
+            return true;
+        }
+
+        static bool IsZeroLiteralExpr(Expression e)
+        {
+            e = UnwrapParens(e);
+            return e switch
+            {
+                PrimitiveExpression { Value: 0 or 0L or 0u or 0UL or 0f or 0d or false or (byte)0 or (sbyte)0 or (short)0 or (ushort)0 } => true,
+                NullReferenceExpression => true,
+                DefaultValueExpression => true,
+                CastExpression c => IsZeroLiteralExpr(c.Expression),
+                MemberReferenceExpression { MemberName: "None" or "Empty" } mr when mr.Annotation<MemberResolveResult>()?.Member is IField { IsConst: true } f && f.GetConstantValue() is 0 => true,
+                _ => false,
+            };
+        }
+
+        static bool IsSoleOutParamUseInStatement(Statement stmt, string localName)
+        {
+            Expression? headExpr = stmt switch
+            {
+                IfElseStatement ifs => ifs.Condition,
+                ExpressionStatement es => es.Expression,
+                ReturnStatement rs => rs.Expression,
+                VariableDeclarationStatement vd => vd.Variables.FirstOrDefault()?.Initializer,
+                _ => null,
+            };
+            if (headExpr is null || headExpr.IsNull) return false;
+            var ids = AstWalk.Collect<IdentifierExpression>(headExpr, id => id.Identifier == localName);
+            return ids.Count == 1
+                && ids[0].Parent is DirectionExpression { FieldDirection: FieldDirection.Out };
+        }
+    }
+
+    private static void HoistRefAssignTargetLocals(SyntaxTree tree)
+    {
+        foreach (var assign in AstWalk.Collect<AssignmentExpression>(tree))
+        {
+            if (assign.Operator != AssignmentOperatorType.Assign
+                || assign.Left is not IdentifierExpression refId
+                || assign.Right is not DirectionExpression { FieldDirection: FieldDirection.Ref, Expression: var refTarget })
+                continue;
+
+            var cur = UnwrapParens(refTarget);
+            while (cur is MemberReferenceExpression mr)
+                cur = UnwrapParens(mr.Target);
+            if (cur is not IdentifierExpression targetId) continue;
+
+            var refDecl = FindEnclosingVarDecl(assign, refId.Identifier);
+            var targetDecl = FindEnclosingVarDecl(assign, targetId.Identifier);
+            if (refDecl?.Parent is not BlockStatement refBlock || targetDecl?.Parent is not BlockStatement targetBlock)
+                continue;
+            if (!targetBlock.Ancestors.Contains(refBlock) || targetDecl.Variables.Count != 1)
+                continue;
+
+            var targetVar = targetDecl.Variables.Single();
+            if (refBlock.Statements.OfType<VariableDeclarationStatement>()
+                .Any(v => v.Variables.Any(vi => vi.Name == targetVar.Name)))
+                continue;
+
+            var anchor = targetBlock.AncestorsAndSelf.OfType<Statement>().FirstOrDefault(s => s.Parent == refBlock)
+                ?? refBlock.Statements.FirstOrDefault();
+            if (targetVar.Initializer.IsNull || targetVar.Initializer is DefaultValueExpression)
+            {
+                targetDecl.Remove();
+                if (anchor is not null) refBlock.Statements.InsertBefore(anchor, targetDecl);
+                else refBlock.Statements.Add(targetDecl);
+            }
+            else
+            {
+                var init = targetVar.Initializer.Detach();
+                var hoisted = new VariableDeclarationStatement(
+                    targetDecl.Type.Clone(), targetVar.Name, new DefaultValueExpression(targetDecl.Type.Clone()));
+                targetDecl.ReplaceWith(new ExpressionStatement(new AssignmentExpression(
+                    new IdentifierExpression(targetVar.Name), init)));
+                if (anchor is not null) refBlock.Statements.InsertBefore(anchor, hoisted);
+                else refBlock.Statements.Add(hoisted);
+            }
+        }
+
+        static VariableDeclarationStatement? FindEnclosingVarDecl(AstNode origin, string name)
+        {
+            for (AstNode? n = origin; n is not null; n = n.Parent)
+            {
+                if (n is BlockStatement b)
+                {
+                    foreach (var vds in b.Statements.OfType<VariableDeclarationStatement>())
+                        if (vds.Variables.Any(v => v.Name == name))
+                            return vds;
+                }
+            }
+            return null;
+        }
+    }
+
+    private static void StripImmutableKeyValuePairFieldStores(SyntaxTree tree)
+    {
+        foreach (var es in AstWalk.Collect<ExpressionStatement>(tree))
+        {
+            if (es.Parent is null
+                || es.Expression is not AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: MemberReferenceExpression lhs })
+                continue;
+
+            var hitImmutableKvpValue = false;
+            for (var cur = UnwrapParens(lhs.Target); cur is MemberReferenceExpression mr; cur = UnwrapParens(mr.Target))
+            {
+                if (mr.MemberName != "Value") continue;
+                if (mr.Annotation<MemberResolveResult>()?.Member is IProperty { DeclaringTypeDefinition.Name: "KeyValuePair", ReturnType.IsReferenceType: false }
+                    || (mr.Target is IdentifierExpression tid && IsKeyValuePairLocal(mr, tid.Identifier)))
+                {
+                    hitImmutableKvpValue = true;
+                    break;
+                }
+            }
+            if (hitImmutableKvpValue) es.Remove();
+        }
+
+        static bool IsKeyValuePairLocal(AstNode origin, string name)
+        {
+            for (AstNode? n = origin; n is not null; n = n.Parent)
+            {
+                if (n is BlockStatement b)
+                {
+                    foreach (var vds in b.Statements.OfType<VariableDeclarationStatement>())
+                        if (vds.Variables.Any(v => v.Name == name))
+                            return vds.Type is SimpleType { Identifier: "KeyValuePair" }
+                                or MemberType { MemberName: "KeyValuePair" };
+                }
+            }
+            return false;
         }
     }
 }

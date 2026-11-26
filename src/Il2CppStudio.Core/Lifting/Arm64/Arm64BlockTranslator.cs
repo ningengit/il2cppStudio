@@ -12,7 +12,7 @@ using Il2CppStudio.Core.Registration;
 
 namespace Il2CppStudio.Core.Lifting.Arm64;
 
-internal enum Arm64HelperKind { Unknown, NoReturn, WriteBarrier, ClassInit, ObjectNew, ArrayCheck }
+internal enum Arm64HelperKind { Unknown, NoReturn, WriteBarrier, ClassInit, ObjectNew, ArrayCheck, Unbox }
 
 internal sealed class Arm64BlockTranslator
 {
@@ -640,6 +640,13 @@ internal sealed class Arm64BlockTranslator
                 Expr result;
                 if (m == Arm64Mnemonic.UBFX)
                 {
+                    if (width == 32 && lsb is 0 or 32 && src.Kind == ValueKind.Struct && src.Type is not null
+                        && _mem.TypeDefOf(src.Type) is >= 0 and var uTd
+                        && _mem.StructField(src, uTd, lsb / 8, desiredSize: 4) is { } uf)
+                    {
+                        SetReg(Arm64Lifter.RegKey(dst), uf);
+                        return;
+                    }
                     var shifted = lsb > 0 ? new BinaryExpr(CilOpCodes.Shr_Un, src, new ConstExpr(lsb, ValueKind.I4), k) : src;
                     result = width < bits ? new BinaryExpr(CilOpCodes.And, shifted, new ConstExpr(mask, k), k) : shifted;
                 }
@@ -802,6 +809,13 @@ internal sealed class Arm64BlockTranslator
                     var combined = new long[tl.Values.Length];
                     for (var vi = 0; vi < combined.Length; vi++) combined[vi] = tl.Values[vi] | tr.Values[vi];
                     SetReg(Arm64Lifter.RegKey(dst), new RodataTableLookupExpr(tl.Index, combined, Math.Max(tl.Size, tr.Size), false, tl.Type!, _body));
+                    return;
+                }
+                if (m == Arm64Mnemonic.LSR && r is ConstExpr { Value: 32 } && l.Kind == ValueKind.Struct && l.Type is not null
+                    && _mem.TypeDefOf(l.Type) is >= 0 and var sTd
+                    && _mem.StructField(l, sTd, 4, desiredSize: 4) is { } hiField)
+                {
+                    SetReg(Arm64Lifter.RegKey(dst), hiField);
                     return;
                 }
                 var cil = m switch
@@ -1295,7 +1309,7 @@ internal sealed class Arm64BlockTranslator
                 return localExpr;
             if (isFloat && size == 8 && _mem.TryLoadFloatPair(new AddressExpr(localExpr), fieldOff) is { } stackPair)
                 return stackPair;
-            if (_mem.TypeDefOf(entry.Type) is >= 0 and var td && _mem.StructField(localExpr, td, fieldOff) is { } fe
+            if (_mem.TypeDefOf(entry.Type) is >= 0 and var td && _mem.StructField(localExpr, td, fieldOff, desiredSize: size) is { } fe
                 && (fe.Type is null || _mem.ValueSize(fe.Type) >= size))
                 return fe;
             return new StructChunkExpr(localExpr, fieldOff, size);
@@ -1364,6 +1378,33 @@ internal sealed class Arm64BlockTranslator
                 return;
             }
         }
+        if (value is StructChunkExpr { Offset: 0, Source: LocalExpr wholeLocal }
+            && Expr.KindOf(wholeLocal.Local.VariableType) == ValueKind.Struct)
+        {
+            var srcType = wholeLocal.Local.VariableType;
+            var srcSize = Math.Max(1, _mem.ValueSize(srcType));
+            var dstLoc = NewLocal(srcType);
+            wholeLocal.Emit(ctx);
+            ctx.IL.Add(CilOpCodes.Stloc, dstLoc);
+            ClearSlotRange(key, srcSize);
+            _stackStructs[key] = (dstLoc, srcType, srcSize);
+            _copiedStructSources[key] = wholeLocal;
+            return;
+        }
+        if (value is StructChunkExpr { Source: var chunkSrc, Offset: var chunkOff }
+            && chunkSrc.Type is not null && _mem.TypeDefOf(chunkSrc.Type) is >= 0 and var cTd
+            && _mem.StructField(chunkSrc, cTd, chunkOff, desiredSize: int.MaxValue) is { Type: { } subType } subStruct
+            && Expr.KindOf(subType) == ValueKind.Struct
+            && Math.Max(1, _mem.ValueSize(subType)) is var subSize && subSize >= size)
+        {
+            var dstLoc = NewLocal(subType);
+            subStruct.Emit(ctx);
+            ctx.IL.Add(CilOpCodes.Stloc, dstLoc);
+            ClearSlotRange(key, subSize);
+            _stackStructs[key] = (dstLoc, subType, subSize);
+            _copiedStructSources[key] = chunkSrc;
+            return;
+        }
         _slots[key] = value;
     }
 
@@ -1422,7 +1463,7 @@ internal sealed class Arm64BlockTranslator
                 }
             }
             var addrExpr = new AddressExpr(localExpr);
-            foreach (var f in _mem.FieldsOf(td))
+            foreach (var f in _mem.FieldsOf(td, type))
             {
                 if (f.IsStatic) continue;
                 var ft = _mem.FieldType(f, type);
@@ -1600,6 +1641,25 @@ internal sealed class Arm64BlockTranslator
             ctx.IL.Add(CilOpCodes.Throw);
             return;
         }
+        if (detectedKind == Arm64HelperKind.Unbox)
+        {
+            var unboxUsage = (GetRegRaw(1) as MarkerExpr)?.Usage
+                ?? ((GetRegRaw(1) as MarkerExpr)?.Base as MarkerExpr)?.Usage
+                ?? (_flagRight as MarkerExpr)?.Usage
+                ?? ((_flagRight as MarkerExpr)?.Base as MarkerExpr)?.Usage;
+            if (unboxUsage is { Kind: MetadataUsageKind.TypeInfo } uu
+                && _stubs.ToSig(_module, uu.Index) is { IsValueType: true } unboxSig)
+            {
+                Elided++;
+                Expr.EmitAs(ctx, GetRegRaw(0), _f.Object);
+                ctx.IL.Add(CilOpCodes.Unbox_Any, unboxSig.ToTypeDefOrRef());
+                var unboxedLoc = NewLocal(unboxSig);
+                ctx.IL.Add(CilOpCodes.Stloc, unboxedLoc);
+                ClobberVolatiles();
+                _regs[0] = new AddressExpr(new LocalExpr(unboxedLoc));
+                return;
+            }
+        }
         if (detectedKind is Arm64HelperKind.WriteBarrier or Arm64HelperKind.ClassInit or Arm64HelperKind.ArrayCheck)
         {
             Elided++;
@@ -1776,8 +1836,29 @@ internal sealed class Arm64BlockTranslator
             if (implName.Contains("wbarrier", StringComparison.OrdinalIgnoreCase)) return Arm64HelperKind.WriteBarrier;
             if (implName.Contains("runtime_class_init", StringComparison.OrdinalIgnoreCase)) return Arm64HelperKind.ClassInit;
             if (implName == "il2cpp_object_new") return Arm64HelperKind.ObjectNew;
+            if (implName == "il2cpp_object_unbox") return Arm64HelperKind.Unbox;
         }
         var scanVa = impl;
+        var unboxProbe = reader.Slice(impl, 24);
+        if (unboxProbe.Length >= 8)
+        {
+            var probeIdx = 0;
+            Arm64Instruction? firstOp = null;
+            for (var off = 0; off + 4 <= unboxProbe.Length; off += 4)
+            {
+                var pIns = Arm64Instruction.Decode(BinaryPrimitives.ReadUInt32LittleEndian(unboxProbe.Slice(off, 4)));
+                if (pIns.Id == Arm64InstructionId.Invalid) break;
+                if (pIns.Mnemonic is Arm64Mnemonic.BTI or Arm64Mnemonic.PACIASP or Arm64Mnemonic.HINT or Arm64Mnemonic.NOP) continue;
+                if (probeIdx == 0) { firstOp = pIns; probeIdx++; continue; }
+                if (probeIdx == 1 && firstOp is { Mnemonic: Arm64Mnemonic.ADD, OperandCount: >= 3 } a0
+                    && a0.GetOperand(0).Kind == Arm64OperandKind.Register && ((Arm64RegisterOperand)a0.GetOperand(0)).Value is { Kind: Arm64RegisterKind.X, Index: 0 }
+                    && a0.GetOperand(1).Kind == Arm64OperandKind.Register && ((Arm64RegisterOperand)a0.GetOperand(1)).Value is { Kind: Arm64RegisterKind.X, Index: 0 }
+                    && a0.GetOperand(2).Kind == Arm64OperandKind.Immediate && ((Arm64ImmediateOperand)a0.GetOperand(2)).Value == 16
+                    && pIns.Mnemonic == Arm64Mnemonic.RET)
+                    return Arm64HelperKind.Unbox;
+                break;
+            }
+        }
         var head = reader.Slice(scanVa, 160);
         if (head.Length >= 8)
         {
@@ -2177,6 +2258,11 @@ internal sealed class Arm64BlockTranslator
                 ctx.IL.Add(CilOpCodes.Ldloca, loc);
                 return;
             }
+            if (e is AddressExpr || e.Type is ByReferenceTypeSignature)
+            {
+                e.Emit(ctx);
+                return;
+            }
             if (e is LocalExpr or ArgExpr or FieldExpr or StaticFieldExpr or ArrayElementExpr)
                 new AddressExpr(e).Emit(ctx);
             else
@@ -2568,10 +2654,17 @@ internal sealed class Arm64BlockTranslator
             }
             if (!RegisterTracker.IsStorable(e))
             {
+                if (e is StackAddrPlaceholder spAddr && hasJoinSucc
+                    && TryFindStackStruct(spAddr.Key, out var ssStart, out var ssEntry)
+                    && ssStart == spAddr.Key)
+                {
+                    e = new AddressExpr(new LocalExpr(ssEntry.Local));
+                }
                 var addrElemType = e switch
                 {
                     AddressExpr { Target: FieldExpr { Type: { } ft and not ByReferenceTypeSignature } } => ft,
                     AddressExpr { Target: ArrayElementExpr { Type: { } aet and not ByReferenceTypeSignature } } => aet,
+                    AddressExpr { Target: LocalExpr { Local.VariableType: { } lt and not ByReferenceTypeSignature } } => lt,
                     _ => null,
                 };
                 var needsBaseRebase = e is AddressExpr { Target: FieldExpr }
@@ -2652,8 +2745,21 @@ internal sealed class Arm64BlockTranslator
                     _slots[sk] = RewriteLocal(_slots[sk], local, snapExpr);
             }
 
-            Expr.EmitAs(ctx, e, local.VariableType);
-            ctx.IL.Add(CilOpCodes.Stloc, local);
+            if (Expr.KindOf(local.VariableType) is ValueKind.I4 or ValueKind.I8 && e.Kind == ValueKind.Struct
+                && TryEmitPackedSmallStruct(ctx, e, local.VariableType))
+            {
+                ctx.IL.Add(CilOpCodes.Stloc, local);
+            }
+            else if (Expr.KindOf(local.VariableType) == ValueKind.Struct && _mem.ValueSize(local.VariableType) <= 8
+                && e.Kind is ValueKind.I4 or ValueKind.I8 && TryEmitUnpackedSmallStruct(ctx, local.VariableType, e))
+            {
+                ctx.IL.Add(CilOpCodes.Stloc, local);
+            }
+            else
+            {
+                Expr.EmitAs(ctx, e, local.VariableType);
+                ctx.IL.Add(CilOpCodes.Stloc, local);
+            }
             var isGot = _gotValues.Contains(e) || (e is LocalExpr gel && _gotLocals.Contains(gel.Local));
             if (isGot)
                 _gotLocals.Add(local);
@@ -2907,7 +3013,7 @@ internal sealed class Arm64BlockTranslator
         }
     }
 
-    private static bool SameSpillFamily(TypeSignature existing, TypeSignature candidate, Expr e)
+    private bool SameSpillFamily(TypeSignature existing, TypeSignature candidate, Expr e)
     {
         if (existing is ByReferenceTypeSignature && candidate is ByReferenceTypeSignature)
             return SignatureComparer.Default.Equals(existing, candidate);
@@ -2915,6 +3021,8 @@ internal sealed class Arm64BlockTranslator
         var ck = Expr.KindOf(candidate);
         if (ek == ValueKind.Ref && e is ConstExpr { Value: 0 }) return true;
         if (ek is ValueKind.I4 or ValueKind.I8 && ck is ValueKind.I4 or ValueKind.I8) return true;
+        if (ek is ValueKind.I4 or ValueKind.I8 && ck == ValueKind.Struct && _mem.ValueSize(candidate) <= 8) return true;
+        if (ek == ValueKind.Struct && _mem.ValueSize(existing) <= 8 && ck is ValueKind.I4 or ValueKind.I8) return true;
         if (ek is ValueKind.R4 or ValueKind.R8 && ck is ValueKind.R4 or ValueKind.R8) return true;
         return ek == ValueKind.Ref && ck == ValueKind.Ref && (existing.ElementType == AsmResolver.PE.DotNet.Metadata.Tables.ElementType.Object || SignatureComparer.Default.Equals(existing, candidate));
     }
@@ -2973,8 +3081,13 @@ internal sealed class Arm64BlockTranslator
 
     private Expr NarrowIfW(in Arm64RegisterOperand rop, Expr e)
     {
+        if (rop.Value.Kind == Arm64RegisterKind.W && e is StructChunkExpr sc && sc.Source.Type is not null
+            && _mem.TypeDefOf(sc.Source.Type) is >= 0 and var scTd
+            && _mem.StructField(sc.Source, scTd, sc.Offset, desiredSize: 4) is { } scField
+            && (scField.Type is null || _mem.ValueSize(scField.Type) <= 4))
+            return scField;
         if (rop.Value.Kind == Arm64RegisterKind.W && e.Kind == ValueKind.Struct && e.Type is not null
-            && _mem.TypeDefOf(e.Type) is >= 0 and var std && _mem.StructField(e, std, 0) is { } f0
+            && _mem.TypeDefOf(e.Type) is >= 0 and var std && _mem.StructField(e, std, 0, desiredSize: 4) is { } f0
             && (f0.Type is null || _mem.ValueSize(f0.Type) <= 4))
             return f0;
         if (rop.Value.Kind != Arm64RegisterKind.W || e.Kind != ValueKind.I8 || e is StructChunkExpr) return e;
@@ -3202,11 +3315,48 @@ internal sealed class Arm64BlockTranslator
         SetReg(key, new PackedFloatsExpr(lane0, lane1, _f.Single));
     }
 
+    private bool TryEmitPackedSmallStruct(EmitContext ctx, Expr structVal, TypeSignature targetIntType)
+    {
+        if (structVal.Type is not { } structType) return false;
+        var td = _mem.TypeDefOf(structType);
+        if (td < 0 || _mem.ValueSize(structType) > 8) return false;
+        var fields = _mem.FieldsOf(td, structType).Where(f => !f.IsStatic).OrderBy(f => f.Offset).ToList();
+        if (fields.Count == 0) return false;
+        Expr srcExpr = structVal;
+        if (srcExpr is not LocalExpr)
+        {
+            var tmp = NewLocal(structType);
+            Expr.EmitAs(ctx, structVal, structType);
+            ctx.IL.Add(CilOpCodes.Stloc, tmp);
+            srcExpr = new LocalExpr(tmp);
+        }
+        Expr? packed = null;
+        foreach (var f in fields)
+        {
+            var ft = _mem.FieldType(f, structType);
+            var fsz = Math.Max(1, _mem.ValueSize(ft));
+            if (_mem.StructField(srcExpr, td, f.Offset, desiredSize: fsz) is not { } fe)
+                return false;
+            Expr part = fe.Kind == ValueKind.I8 ? fe : new ConvExpr(fe, _f.Int64);
+            if (fsz < 8)
+            {
+                var mask = (1L << (fsz * 8)) - 1L;
+                part = new BinaryExpr(CilOpCodes.And, part, new ConstExpr(mask, ValueKind.I8), ValueKind.I8);
+            }
+            if (f.Offset > 0)
+                part = new BinaryExpr(CilOpCodes.Shl, part, new ConstExpr((int)(f.Offset * 8), ValueKind.I4), ValueKind.I8);
+            packed = packed is null ? part : new BinaryExpr(CilOpCodes.Or, packed, part, ValueKind.I8);
+        }
+        if (packed is null) return false;
+        Expr.EmitAs(ctx, packed, targetIntType);
+        return true;
+    }
+
     private bool TryEmitUnpackedSmallStruct(EmitContext ctx, TypeSignature structType, Expr packedVal)
     {
         var td = _mem.TypeDefOf(structType);
         if (td < 0 || _mem.ValueSize(structType) > 8) return false;
-        var fields = _mem.FieldsOf(td).Where(f => !f.IsStatic).OrderBy(f => f.Offset).ToList();
+        var fields = _mem.FieldsOf(td, structType).Where(f => !f.IsStatic).OrderBy(f => f.Offset).ToList();
         if (fields.Count == 0) return false;
         var packedLocal = packedVal is LocalExpr ple && ple.Local.VariableType.ElementType is AsmResolver.PE.DotNet.Metadata.Tables.ElementType.I8 or AsmResolver.PE.DotNet.Metadata.Tables.ElementType.U8
             ? ple

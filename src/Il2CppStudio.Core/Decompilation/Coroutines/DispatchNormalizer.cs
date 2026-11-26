@@ -10,7 +10,7 @@ namespace Il2CppStudio.Core.Decompilation.Coroutines;
 /// </summary>
 public static class DispatchNormalizer
 {
-    public static void Normalize(BlockStatement block, ISet<string> aliases, bool nested, int offset = 0)
+    public static void Normalize(BlockStatement block, ISet<string> aliases, bool nested, int offset = 0, BlockStatement? rootBody = null, List<Statement>? liftedTails = null)
     {
         var stmts = block.Statements.ToList();
         var k = 0;
@@ -18,20 +18,71 @@ public static class DispatchNormalizer
         for (; k < stmts.Count; k++)
         {
             if (AliasDelta(stmts[k], aliases) is { } d) { offset += d; stmts[k].Remove(); continue; }
-            if (stmts[k] is VariableDeclarationStatement) continue;
+            if (stmts[k] is VariableDeclarationStatement vd
+                && vd.Variables.All(v => v.Initializer.IsNull || v.Initializer is DefaultValueExpression)) continue;
             if (stmts[k] is not IfElseStatement ifs || !StateEvaluator.IsStateOnly(ifs.Condition, aliases)) break;
             Shift(ifs.Condition, aliases, offset);
-            NormalizeArm(ifs.TrueStatement, aliases, offset);
-            if (!ifs.FalseStatement.IsNull) NormalizeArm(ifs.FalseStatement, aliases, offset);
+            NormalizeArm(ifs.TrueStatement, aliases, offset, rootBody, liftedTails);
+            if (!ifs.FalseStatement.IsNull) NormalizeArm(ifs.FalseStatement, aliases, offset, rootBody, liftedTails);
         }
         // Remaining statements may read the alias with the accumulated offset.
         for (var r = k; r < stmts.Count; r++) Shift(stmts[r], aliases, offset);
+        if (nested && liftedTails is not null && k == 1 && stmts.Count > 1 && stmts[0] is IfElseStatement leadIf && StateEvaluator.IsStateOnly(leadIf.Condition, aliases))
+            SplitLeadingStateIfWithTail(block, leadIf, stmts.Skip(1).ToList(), liftedTails);
     }
 
-    private static void NormalizeArm(Statement arm, ISet<string> aliases, int offset)
+    private static void NormalizeArm(Statement arm, ISet<string> aliases, int offset, BlockStatement? rootBody, List<Statement>? liftedTails)
     {
-        if (arm is BlockStatement b) { Normalize(b, aliases, nested: true, offset); MergeNested(b, aliases); }
+        if (arm is BlockStatement b) { Normalize(b, aliases, nested: true, offset, rootBody, liftedTails); MergeNested(b, aliases); }
         else Shift(arm, aliases, offset);
+    }
+
+    private static void SplitLeadingStateIfWithTail(BlockStatement block, IfElseStatement leadIf, List<Statement> tail, List<Statement> liftedTails)
+    {
+        if (tail.Count == 0 || tail.All(s => s is VariableDeclarationStatement vd && vd.Variables.All(v => v.Initializer.IsNull)))
+            return;
+        if (leadIf.FalseStatement.IsNull && !DispatchLayout.CanFallThrough(Last(leadIf.TrueStatement)))
+            return; // MergeNested will fold the remainder into leadIf.FalseStatement cleanly.
+        if (!CanReachAfterIf(leadIf)) return;
+        var label = $"dispatch_tail_{liftedTails.Count}";
+        AppendGotoOnFallthrough(leadIf, label);
+        liftedTails.Add(new LabelStatement { Label = label });
+        foreach (var s in tail) liftedTails.Add(s.Detach());
+        if (DispatchLayout.CanFallThrough(liftedTails[^1]))
+            liftedTails.Add(new GotoStatement(DispatchLayout.RestLabel));
+    }
+
+    private static bool CanReachAfterIf(IfElseStatement ifs) =>
+        ifs.FalseStatement.IsNull || DispatchLayout.CanFallThrough(ifs.TrueStatement) || DispatchLayout.CanFallThrough(ifs.FalseStatement);
+
+    private static void AppendGotoOnFallthrough(Statement stmt, string label)
+    {
+        switch (stmt)
+        {
+            case IfElseStatement ifs:
+                AppendGotoOnFallthrough(ifs.TrueStatement, label);
+                if (ifs.FalseStatement.IsNull)
+                    ifs.FalseStatement = new BlockStatement { Statements = { new GotoStatement(label) } };
+                else
+                    AppendGotoOnFallthrough(ifs.FalseStatement, label);
+                break;
+            case BlockStatement b:
+                if (!DispatchLayout.CanFallThrough(b.Statements.LastOrDefault())) return;
+                if (b.Statements.LastOrDefault() is IfElseStatement innerIf)
+                    AppendGotoOnFallthrough(innerIf, label);
+                else
+                    b.Statements.Add(new GotoStatement(label));
+                break;
+            default:
+                if (DispatchLayout.CanFallThrough(stmt))
+                {
+                    var blk = new BlockStatement();
+                    stmt.ReplaceWith(blk);
+                    blk.Statements.Add(stmt);
+                    blk.Statements.Add(new GotoStatement(label));
+                }
+                break;
+        }
     }
 
     /// <summary>Folds non-falling sequential state tests of a nested block into one else-if chain.</summary>

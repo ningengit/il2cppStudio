@@ -28,8 +28,9 @@ public static class UnityInlineRecognizer
         RemoveRepeatedDefault(tree);
         if (flags.HasVectorOps)
         {
+            SimplifyDegRadRoundtrips(tree);
             foreach (var inv in AstWalk.Collect<InvocationExpression>(tree, static i =>
-                i.Arguments.Count == 1 && i.Target is MemberReferenceExpression { MemberName: "Internal_FromEulerRad" or "Internal_ToEulerRad" or "Internal_MakePositive" }))
+                i.Arguments.Count == 1 && i.Target is MemberReferenceExpression { MemberName: "Internal_FromEulerRad" or "Internal_ToEulerRad" or "Internal_MakePositive" or "Euler" }))
                 TryQuaternionInternal(inv);
         }
     }
@@ -54,7 +55,59 @@ public static class UnityInlineRecognizer
                 deg2Rad));
             return;
         }
+        if (t.MemberName == "Euler")
+        {
+            TrySimplifyEulerRad2Deg(inv, t);
+            return;
+        }
         TryEuler(inv);
+    }
+
+    private static void TrySimplifyEulerRad2Deg(InvocationExpression inv, MemberReferenceExpression t)
+    {
+        if (Unparen(inv.Arguments.Single()) is not BinaryOperatorExpression { Operator: BinaryOperatorType.Multiply } mult
+            || !IsRad2Deg(mult.Right))
+            return;
+        var arg = Unparen(mult.Left);
+        VariableDeclarationStatement? tempDecl = null;
+        if (arg is IdentifierExpression id && FindSingleUseTemp(inv, id.Identifier) is { } d)
+        {
+            tempDecl = d;
+            arg = Unparen(d.Variables.Single().Initializer);
+        }
+        Expression? euler = null;
+        if (arg is ObjectCreateExpression { Type: SimpleType { Identifier: "Vector3" } } create && create.Arguments.Count == 3)
+        {
+            var stripped = create.Arguments.Select(StripDeg2Rad).ToList();
+            if (!stripped.Any(s => s is null))
+                euler = new InvocationExpression(new MemberReferenceExpression(t.Target.Clone(), "Euler"), stripped.Select(s => s!.Clone()));
+        }
+        else if (StripDeg2Rad(arg) is { } directDeg)
+        {
+            euler = new InvocationExpression(new MemberReferenceExpression(t.Target.Clone(), "Euler"), directDeg.Clone());
+        }
+        if (euler is null) return;
+        inv.ReplaceWith(euler);
+        tempDecl?.Remove();
+    }
+
+    private static void SimplifyDegRadRoundtrips(SyntaxTree tree)
+    {
+        foreach (var bin in AstWalk.Collect<BinaryOperatorExpression>(tree, static b => b.Operator == BinaryOperatorType.Multiply))
+        {
+            if (bin.Parent is null) continue;
+            if (Unparen(bin.Left) is BinaryOperatorExpression { Operator: BinaryOperatorType.Multiply } inner
+                && ((IsDeg2Rad(inner.Right) && IsRad2Deg(bin.Right)) || (IsRad2Deg(inner.Right) && IsDeg2Rad(bin.Right))))
+            {
+                bin.ReplaceWith(inner.Left.Detach());
+            }
+        }
+    }
+
+    private static bool IsRad2Deg(Expression e)
+    {
+        var s = Unparen(e).ToString().Replace(" ", "");
+        return s is "Mathf.Rad2Deg" or "57.29578f" or "57.295776f" or "(180f/(float)Math.PI)" or "180f/(float)Math.PI";
     }
 
     private static void TryEuler(InvocationExpression inv)

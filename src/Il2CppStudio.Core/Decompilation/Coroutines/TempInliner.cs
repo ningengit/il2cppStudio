@@ -62,7 +62,7 @@ public static class TempInliner
                 }
                 if (cursor is null || WritesBefore(ScopeOfUse(cursor, use), use, names)) continue;
                 var replacement = v.Initializer.Detach();
-                if (replacement is BinaryOperatorExpression && use.Parent is BinaryOperatorExpression or UnaryOperatorExpression)
+                if (replacement is BinaryOperatorExpression && use.Parent is BinaryOperatorExpression or UnaryOperatorExpression or MemberReferenceExpression)
                     replacement = new ParenthesizedExpression(replacement);
                 use.ReplaceWith(replacement);
                 decl.Remove();

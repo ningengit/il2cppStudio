@@ -108,6 +108,8 @@ public static class DefiniteAssignment
             }
         }
 
+        BindDummyRefInitsToLocalTargets(blocks);
+
         foreach (var method in methods)
         {
             if (method.Body.IsNull) continue;
@@ -134,5 +136,58 @@ public static class DefiniteAssignment
         arrCreate.Arguments.Add(new PrimitiveExpression(1));
         foreach (var spec in ct.ArraySpecifiers) arrCreate.AdditionalArraySpecifiers.Add((ArraySpecifier)spec.Clone());
         return new DirectionExpression(FieldDirection.Ref, new IndexerExpression(arrCreate, new PrimitiveExpression(0)));
+    }
+
+    private static void BindDummyRefInitsToLocalTargets(List<BlockStatement> blocks)
+    {
+        foreach (var block in blocks)
+        {
+            if (block.Ancestors.Any(a => a is MethodDeclaration { ReturnType: ComposedType { HasRefSpecifier: true } }
+                or PropertyDeclaration { ReturnType: ComposedType { HasRefSpecifier: true } }
+                or IndexerDeclaration { ReturnType: ComposedType { HasRefSpecifier: true } }))
+                continue;
+
+            var refDecls = block.Statements.OfType<VariableDeclarationStatement>()
+                .Where(d => d.Type is ComposedType { HasRefSpecifier: true } && d.Variables.Count == 1
+                    && IsDummyRefInit(d.Variables.Single().Initializer))
+                .ToList();
+            if (refDecls.Count == 0) continue;
+
+            foreach (var refDecl in refDecls)
+            {
+                var rv = refDecl.Variables.Single();
+                foreach (var assign in block.Descendants.OfType<AssignmentExpression>())
+                {
+                    if (assign.Operator != AssignmentOperatorType.Assign
+                        || assign.Left is not IdentifierExpression lid || lid.Identifier != rv.Name
+                        || assign.Right is not DirectionExpression { FieldDirection: FieldDirection.Ref, Expression: var rhs })
+                        continue;
+
+                    var cur = rhs;
+                    while (cur is ParenthesizedExpression pe) cur = pe.Expression;
+                    while (cur is MemberReferenceExpression mr)
+                    {
+                        cur = mr.Target;
+                        while (cur is ParenthesizedExpression pe2) cur = pe2.Expression;
+                    }
+                    if (cur is not IdentifierExpression targetId) continue;
+
+                    var stmts = block.Statements.ToList();
+                    var refIdx = stmts.IndexOf(refDecl);
+                    var targetIdx = stmts.FindIndex(s => s is VariableDeclarationStatement { Type: not ComposedType { HasRefSpecifier: true } } td
+                        && td.Variables.Any(v => v.Name == targetId.Identifier));
+                    if (targetIdx < 0) continue;
+
+                    var targetDecl = (VariableDeclarationStatement)stmts[targetIdx];
+                    if (targetIdx > refIdx)
+                    {
+                        targetDecl.Remove();
+                        block.Statements.InsertBefore(refDecl, targetDecl);
+                    }
+                    rv.Initializer = new DirectionExpression(FieldDirection.Ref, new IdentifierExpression(targetId.Identifier));
+                    break;
+                }
+            }
+        }
     }
 }

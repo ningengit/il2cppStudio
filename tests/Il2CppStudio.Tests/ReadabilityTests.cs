@@ -202,10 +202,11 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
         Assert.Contains("!= 13", inputMgrCs);
         Assert.DoesNotContain("/ 8", inputMgrCs);
 
-        // Coroutine factory, IEnumerator.Reset metadata-init recognition, 16-byte SIMD field init
+        // Coroutine factory reconstruction (state machine class hidden), 16-byte SIMD field init
         var defSettingsCs = ws.Render(Assert.Single(ws.FindTypes("DefaultSettingsScript")), null, CodeView.CSharp);
-        Assert.Contains("new _CloseOptions_d__1(0)", defSettingsCs);
-        Assert.Contains("throw new NotSupportedException();", defSettingsCs);
+        Assert.Contains("coroutine reconstructed from <CloseOptions>d__1.MoveNext", defSettingsCs);
+        Assert.Contains("yield return new WaitForEndOfFrame();", defSettingsCs);
+        Assert.DoesNotContain("_CloseOptions_d__1", defSettingsCs);
         Assert.DoesNotContain("throw null;", defSettingsCs);
         Assert.DoesNotContain("sub_E6F90C", defSettingsCs);
 
@@ -339,26 +340,46 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
         Assert.Contains("Math.Max(stamina - staminaDrop", moveCs);
         Assert.Contains("Vector3.up", playerCs);
         Assert.Contains("yield return null;", gcCs);
-        Assert.Contains("case 2:", gcCs);
-        Assert.Contains("case 3:", gcCs);
-        Assert.Contains("= 2;", gcCs);
-        Assert.Contains("= 3;", gcCs);
-        Assert.Contains("__1__state = num;", gcCs);
+        Assert.Contains("coroutine reconstructed from <BootAnimation>d__19.MoveNext", gcCs);
+        Assert.DoesNotContain("_BootAnimation_d__19", gcCs);
+        Assert.Contains("yield break;", gcCs);
+
+        Assert.Contains("coroutine reconstructed from <CheatText>d__11.MoveNext", mathCs);
+        Assert.Contains("yield return new WaitForEndOfFrame();", mathCs);
+        Assert.DoesNotContain("_CheatText_d__11", mathCs);
+
+        Assert.Contains("coroutine reconstructed from <RebindCoroutine>d__15.MoveNext", controlsCs);
+        Assert.DoesNotContain("_RebindCoroutine_d__15", controlsCs);
+
+        Assert.Contains("Quaternion.Euler(", playerCs);
+        Assert.Contains("eulerAngles", playerCs);
+        Assert.DoesNotContain("0.017453292f", playerCs);
+
+        Assert.Contains("ref RaycastHit reference = ref hitInfo2;", gcCs);
+        Assert.Contains("reference = ref hitInfo2;", gcCs);
+        Assert.DoesNotContain("m_FaceID = 0", gcCs);
 
         var envMapCs = ws.Render(Assert.Single(ws.FindTypes("EnvMapAnimator")), null, CodeView.CSharp);
         Assert.Contains("Vector3.one", envMapCs);
 
         // Group 3: Struct/enumerator recovery, interface diamonds, HasFieldRva / InitializeArray
         Assert.Contains("KeyboardMapping.GetEnumerator()", inputMgrCs);
-        Assert.Contains("enumerator2.MoveNext()", inputMgrCs);
+        Assert.Contains("enumerator.MoveNext()", inputMgrCs);
+        Assert.DoesNotContain("enumerator2 = enumerator;", inputMgrCs);
+        Assert.Contains("enumerator.Current", inputMgrCs);
+        Assert.Contains("enumerator.Current.Key", inputMgrCs);
+        Assert.DoesNotContain("current.Value.secondaryKey =", inputMgrCs);
         Assert.Contains("new List<KeyCode>(simulatedKeys.Keys).GetEnumerator()", inputMgrCs);
 
         var debugCs = ws.Render(Assert.Single(ws.FindTypes("DebugScript")), null, CodeView.CSharp);
         Assert.Contains("enumerator.MoveNext()", debugCs);
+        Assert.Contains("(KeyCode)enumerator.Current", debugCs);
+        Assert.DoesNotContain("sub_E6F804", debugCs);
         Assert.Contains("Dispose();", debugCs);
         Assert.DoesNotContain("arm64_indirect", debugCs);
 
         Assert.Contains("15, 30, 45, 60, 99", principalCs);
+        Assert.DoesNotContain("_outSlot", principalCs);
         var monoScriptCs = ws.FindTypes("UnitySourceGeneratedAssemblyMonoScriptTypes_v1")
             .Select(t => ws.Render(t, null, CodeView.CSharp))
             .First(s => s.Contains("new byte[6521]"));

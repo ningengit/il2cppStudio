@@ -59,10 +59,23 @@ public static class YieldRewriter
             {
                 foreach (var g in body.Descendants.OfType<GotoStatement>().Where(g => g.Label == retLbl.Label).ToList())
                 {
-                    if (g.PrevSibling is ExpressionStatement { Expression: AssignmentExpression { Left: IdentifierExpression l1, Right: PrimitiveExpression { Value: 1 } } } s1 && l1.Identifier == name)
+                    if (g.PrevSibling is ExpressionStatement { Expression: AssignmentExpression { Left: IdentifierExpression l1, Right: PrimitiveExpression { Value: int gv } } } s1 && l1.Identifier == name)
                     {
                         s1.Remove();
-                        g.ReplaceWith(new ReturnStatement(new PrimitiveExpression(true)));
+                        g.ReplaceWith(new ReturnStatement(new PrimitiveExpression(gv != 0)));
+                    }
+                    else if (g.PrevSibling is IfElseStatement { TrueStatement: BlockStatement gtb, FalseStatement: BlockStatement gfb })
+                    {
+                        foreach (var b in new[] { gtb, gfb })
+                        {
+                            var lastWrite = b.Statements.OfType<ExpressionStatement>().LastOrDefault(s => s.Expression is AssignmentExpression { Left: IdentifierExpression l, Right: PrimitiveExpression { Value: int } } && l.Identifier == name);
+                            if (lastWrite?.Expression is AssignmentExpression { Right: PrimitiveExpression { Value: int v } })
+                            {
+                                if (DispatchLayout.CanFallThrough(b)) b.Statements.Add(new ReturnStatement(new PrimitiveExpression(v != 0)));
+                                lastWrite.Remove();
+                            }
+                        }
+                        g.Remove();
                     }
                     else g.ReplaceWith(new ReturnStatement(new PrimitiveExpression(false)));
                 }
@@ -86,15 +99,53 @@ public static class YieldRewriter
         }
     }
 
+    public static void InlineSharedStateReturns(BlockStatement body)
+    {
+        foreach (var lbl in body.Descendants.OfType<LabelStatement>().ToList())
+        {
+            if (lbl.NextSibling is not ExpressionStatement s1
+                || !IsFieldStore(s1, StateMachineInfo.StateField, out var rhs)
+                || rhs is not IdentifierExpression stateVar
+                || s1.NextSibling is not ReturnStatement { Expression: PrimitiveExpression { Value: true } } ret)
+                continue;
+            var gotos = body.Descendants.OfType<GotoStatement>().Where(g => g.Label == lbl.Label).ToList();
+            if (gotos.Count == 0) continue;
+            var pairs = new List<(ExpressionStatement Assign, GotoStatement Goto, int StateVal)>(gotos.Count);
+            var ok = true;
+            foreach (var g in gotos)
+            {
+                if (g.PrevSibling is ExpressionStatement { Expression: AssignmentExpression { Operator: AssignmentOperatorType.Assign, Left: IdentifierExpression lid, Right: PrimitiveExpression { Value: int kv } } } assign
+                    && lid.Identifier == stateVar.Identifier && kv >= 0)
+                {
+                    pairs.Add((assign, g, kv));
+                }
+                else
+                {
+                    ok = false;
+                    break;
+                }
+            }
+            if (!ok) continue;
+            var fallsIn = DispatchLayout.CanFallThrough(lbl.PrevSibling as Statement);
+            foreach (var (assign, g, kv) in pairs)
+            {
+                var stateAssign = new ExpressionStatement(new AssignmentExpression(
+                    new IdentifierExpression(StateMachineInfo.StateField),
+                    new PrimitiveExpression(kv)));
+                assign.ReplaceWith(stateAssign);
+                g.ReplaceWith(new ReturnStatement(new PrimitiveExpression(true)));
+            }
+            if (!fallsIn)
+            {
+                lbl.Remove();
+                s1.Remove();
+                ret.Remove();
+            }
+        }
+    }
+
     private static void InlineSharedReturns(BlockStatement body)
     {
-        foreach (var s in body.Descendants.OfType<ExpressionStatement>().Where(s => IsFieldStore(s, StateMachineInfo.CurrentField, out _)).ToList())
-        {
-            if (s.NextSibling is IfElseStatement { TrueStatement: BlockStatement tb } ifs
-                && tb.Descendants.OfType<ReturnStatement>().Any(r => r.Expression is PrimitiveExpression { Value: true })
-                && !tb.Descendants.OfType<ExpressionStatement>().Any(x => IsFieldStore(x, StateMachineInfo.CurrentField, out _)))
-                tb.Statements.InsertBefore(tb.Statements.First(), s.Clone());
-        }
         foreach (var lbl in body.Descendants.OfType<LabelStatement>().ToList())
         {
             if (lbl.NextSibling is not ReturnStatement { Expression: PrimitiveExpression { Value: bool } } ret) continue;
@@ -104,6 +155,18 @@ public static class YieldRewriter
             foreach (var g in gotos) g.ReplaceWith(ret.Clone());
             lbl.Remove();
             if (!fallsIn) ret.Remove();
+        }
+        foreach (var s in body.Descendants.OfType<ExpressionStatement>().Where(s => IsFieldStore(s, StateMachineInfo.CurrentField, out _)).ToList())
+        {
+            if (s.NextSibling is not IfElseStatement ifs) continue;
+            foreach (var b in new[] { ifs.TrueStatement as BlockStatement, ifs.FalseStatement as BlockStatement })
+            {
+                if (b is not null
+                    && b.Statements.Count > 0
+                    && b.Descendants.OfType<ReturnStatement>().Any(r => r.Expression is PrimitiveExpression { Value: true })
+                    && !b.Descendants.OfType<ExpressionStatement>().Any(x => IsFieldStore(x, StateMachineInfo.CurrentField, out _)))
+                    b.Statements.InsertBefore(b.Statements.First(), s.Clone());
+            }
         }
         foreach (var ret in body.Descendants.OfType<ReturnStatement>().Where(r => r.Expression is PrimitiveExpression { Value: true }).ToList())
         {

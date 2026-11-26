@@ -28,6 +28,7 @@ public static class CoroutineTransform
 
             var body = (BlockStatement)info.MoveNext.Body.Clone();
             YieldRewriter.NormalizeBoolResultReturn(body);
+            YieldRewriter.InlineSharedStateReturns(body);
             var labels = new Dictionary<long, string>();
             var layout = DispatchLayout.Build(body, YieldRewriter.ResumeStates(body), labels);
             if (layout is null) { report?.Invoke(type.Name, "state dispatch at the top of MoveNext not recognized"); continue; }
