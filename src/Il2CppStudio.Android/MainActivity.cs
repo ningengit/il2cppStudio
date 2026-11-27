@@ -49,9 +49,20 @@ public class MainActivity : AvaloniaMainActivity
                 for (var i = 0; i < vg.ChildCount; i++)
                 {
                     if (vg.GetChildAt(i) is AvaloniaView av)
-                        av.LayoutParameters = new global::Android.Views.ViewGroup.LayoutParams(
-                            global::Android.Views.ViewGroup.LayoutParams.MatchParent,
-                            global::Android.Views.ViewGroup.LayoutParams.MatchParent);
+                    {
+                        if (av.LayoutParameters is { } lp)
+                        {
+                            lp.Width = global::Android.Views.ViewGroup.LayoutParams.MatchParent;
+                            lp.Height = global::Android.Views.ViewGroup.LayoutParams.MatchParent;
+                            av.LayoutParameters = lp;
+                        }
+                        else
+                        {
+                            av.LayoutParameters = new global::Android.Widget.FrameLayout.LayoutParams(
+                                global::Android.Views.ViewGroup.LayoutParams.MatchParent,
+                                global::Android.Views.ViewGroup.LayoutParams.MatchParent);
+                        }
+                    }
                 }
             }
             if (!OperatingSystem.IsAndroidVersionAtLeast(35))
