@@ -85,7 +85,7 @@ public sealed partial class MainWindow : Window
 
     private static string? ExtractSupportedDropPath(DragEventArgs e)
     {
-        var items = e.Data.GetFiles();
+        var items = e.DataTransfer.TryGetFiles();
         if (items is null) return null;
         foreach (var item in items)
         {
