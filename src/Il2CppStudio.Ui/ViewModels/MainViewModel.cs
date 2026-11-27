@@ -215,12 +215,24 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         else
         {
-            _perfMonitor.StartCsvLogging();
-            _runtimeLog.StartFileLogging(_perfMonitor.LogDirectory);
-            IsCsvLogging = true;
-            CsvLogButtonText = "Stop CSV Log";
-            _perfMonitor.SampleNow(writeCsvIfEnabled: true);
-            Status = $"CSV performance log writing to {_perfMonitor.LogDirectory}.";
+            try
+            {
+                _perfMonitor.StartCsvLogging();
+                _runtimeLog.StartFileLogging(_perfMonitor.LogDirectory);
+                IsCsvLogging = true;
+                CsvLogButtonText = "Stop CSV Log";
+                _perfMonitor.SampleNow(writeCsvIfEnabled: true);
+                Status = $"CSV performance log writing to {_perfMonitor.LogDirectory}.";
+            }
+            catch (Exception ex)
+            {
+                _perfMonitor.StopCsvLogging();
+                _runtimeLog.StopFileLogging();
+                IsCsvLogging = false;
+                CsvLogButtonText = "Start CSV Log";
+                _runtimeLog.RecordWarning("MainViewModel.ToggleCsvLogging", ex.Message, ex);
+                Status = $"Could not start CSV logging: {ex.Message}";
+            }
         }
     }
 

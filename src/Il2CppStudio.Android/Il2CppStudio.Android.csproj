@@ -35,7 +35,7 @@
     <PackageReference Include="Avalonia.Android" />
   </ItemGroup>
 
-  <!-- Syntax highlighting uses the managed Il2CppSyntaxHighlighter; preserve AvaloniaEdit for reflection-based XAML/control instantiation. -->
+  <!-- Syntax highlighting uses DarkPlusSyntaxHighlighter on Android; preserve AvaloniaEdit for reflection-based XAML/control instantiation. -->
   <ItemGroup>
     <TrimmerRootAssembly Include="AvaloniaEdit" />
   </ItemGroup>

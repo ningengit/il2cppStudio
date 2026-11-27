@@ -176,6 +176,14 @@ public sealed partial class MainView : UserControl, IUiServices
         _attachedVm = vm;
         vm.Ui = this;
         vm.PropertyChanged += OnVmPropertyChanged;
+        if (!string.Equals(CppEditor.Text, vm.CppText, StringComparison.Ordinal))
+            CppEditor.Text = vm.CppText;
+        if (!string.Equals(IlEditor.Text, vm.IlText, StringComparison.Ordinal))
+            IlEditor.Text = vm.IlText;
+        if (!string.Equals(CSharpEditor.Text, vm.CSharpText, StringComparison.Ordinal))
+            CSharpEditor.Text = vm.CSharpText;
+        if (!string.Equals(InspectionEditor.Text, vm.InspectionText, StringComparison.Ordinal))
+            InspectionEditor.Text = vm.InspectionText;
         if (_pendingDiagnostics.Count > 0)
         {
             var queued = _pendingDiagnostics.ToArray();

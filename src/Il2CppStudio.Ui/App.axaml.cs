@@ -34,6 +34,12 @@ public sealed class App : Application
             if (desktop.Args is { Length: > 0 } args && (Directory.Exists(args[0]) || File.Exists(args[0])))
                 _ = vm.LoadFolderAsync(args[0]);
         }
+        else if (ApplicationLifetime is IActivityApplicationLifetime activityLifetime)
+        {
+            var vm = new MainViewModel();
+            HookUiUnhandledExceptions(vm);
+            activityLifetime.MainViewFactory = () => new MainView { DataContext = vm };
+        }
         else if (ApplicationLifetime is ISingleViewApplicationLifetime singleView)
         {
             var vm = new MainViewModel();

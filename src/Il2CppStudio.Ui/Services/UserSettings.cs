@@ -1,12 +1,11 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Il2CppStudio.Gui.Services;
 
 /// <summary>Persists user-provided local tool settings (e.g. remembered Switch keyset path) without storing keys.</summary>
 public sealed class UserSettings
 {
-    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
-
     public string? SwitchKeysetPath { get; set; }
 
     public static string SettingsFilePath
@@ -27,7 +26,7 @@ public sealed class UserSettings
             var path = SettingsFilePath;
             if (!File.Exists(path)) return new UserSettings();
             var json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<UserSettings>(json, JsonOptions) ?? new UserSettings();
+            return JsonSerializer.Deserialize(json, UserSettingsJsonContext.Default.UserSettings) ?? new UserSettings();
         }
         catch
         {
@@ -41,7 +40,7 @@ public sealed class UserSettings
         {
             var path = SettingsFilePath;
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllText(path, JsonSerializer.Serialize(this, JsonOptions));
+            File.WriteAllText(path, JsonSerializer.Serialize(this, UserSettingsJsonContext.Default.UserSettings));
         }
         catch
         {
@@ -49,3 +48,7 @@ public sealed class UserSettings
         }
     }
 }
+
+[JsonSourceGenerationOptions(WriteIndented = true)]
+[JsonSerializable(typeof(UserSettings))]
+internal sealed partial class UserSettingsJsonContext : JsonSerializerContext;

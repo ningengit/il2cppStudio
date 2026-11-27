@@ -93,12 +93,27 @@ public sealed class RuntimeDiagnosticsLog : IDisposable
     {
         get
         {
-            var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            if (string.IsNullOrWhiteSpace(baseDir))
-                baseDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            var baseDir = OperatingSystem.IsAndroid()
+                ? TryGetFolder(Environment.SpecialFolder.LocalApplicationData)
+                  ?? TryGetFolder(Environment.SpecialFolder.ApplicationData)
+                : TryGetFolder(Environment.SpecialFolder.ApplicationData)
+                  ?? TryGetFolder(Environment.SpecialFolder.LocalApplicationData);
             if (string.IsNullOrWhiteSpace(baseDir))
                 baseDir = Path.GetTempPath();
             return Path.Combine(baseDir, "Il2CppStudio", "perf-logs");
+        }
+    }
+
+    private static string? TryGetFolder(Environment.SpecialFolder folder)
+    {
+        try
+        {
+            var path = Environment.GetFolderPath(folder);
+            return string.IsNullOrWhiteSpace(path) ? null : path;
+        }
+        catch
+        {
+            return null;
         }
     }
 

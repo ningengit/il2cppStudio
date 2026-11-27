@@ -73,6 +73,12 @@ public sealed class PerformanceMonitorService : IDisposable
     private long _lastLinuxDiskIoMs;
     private bool _linuxSelfIoDenied;
     private bool _linuxDiskStatsDenied;
+    private bool _linuxCpuStatDenied;
+    private bool _linuxMemInfoDenied;
+    private bool _processPeakUnsupported;
+    private bool _processThreadsDenied;
+    private bool _diskFreeDenied;
+    private double _peakProcessMb;
 
     public PerformanceMonitorService(RuntimeDiagnosticsLog? diagnostics = null, string? logDirectory = null)
     {
@@ -275,16 +281,48 @@ public sealed class PerformanceMonitorService : IDisposable
             ? Math.Max(0.001, (double)(wallNow - _lastWallTimestamp) / Stopwatch.Frequency)
             : 1.0;
 
-        double procMb = 0, peakMb = 0, privMb = 0, procCpuPct = 0;
+        double procMb = 0, peakMb = _peakProcessMb, privMb = 0, procCpuPct = 0;
         int threads = 0;
         try
         {
             _process.Refresh();
             procMb = _process.WorkingSet64 / BytesPerMb;
-            peakMb = _process.PeakWorkingSet64 / BytesPerMb;
-            privMb = _process.PrivateMemorySize64 / BytesPerMb;
-            threads = _process.Threads.Count;
+            _peakProcessMb = Math.Max(_peakProcessMb, procMb);
+            peakMb = _peakProcessMb;
+        }
+        catch { }
 
+        if (!_processPeakUnsupported)
+        {
+            try
+            {
+                var osPeakMb = _process.PeakWorkingSet64 / BytesPerMb;
+                if (osPeakMb > 0)
+                {
+                    _peakProcessMb = Math.Max(_peakProcessMb, osPeakMb);
+                    peakMb = _peakProcessMb;
+                }
+                else
+                {
+                    _processPeakUnsupported = true;
+                }
+            }
+            catch
+            {
+                _processPeakUnsupported = true;
+            }
+        }
+
+        try { privMb = _process.PrivateMemorySize64 / BytesPerMb; } catch { }
+
+        if (!_processThreadsDenied)
+        {
+            try { threads = _process.Threads.Count; }
+            catch { _processThreadsDenied = true; }
+        }
+
+        try
+        {
             var cpuNow = _process.TotalProcessorTime;
             if (_hasBaseline)
             {
@@ -310,7 +348,7 @@ public sealed class PerformanceMonitorService : IDisposable
         }
         else if (OperatingSystem.IsLinux() || OperatingSystem.IsAndroid())
         {
-            CollectLinuxMetrics(elapsedSec, ref sysCpuPct, ref ramUsedMb, ref ramTotalMb, ref ramPct, ref diskReadMbS, ref diskWriteMbS, ref diskBusyPct);
+            CollectLinuxMetrics(elapsedSec, procMb, ref sysCpuPct, ref ramUsedMb, ref ramTotalMb, ref ramPct, ref diskReadMbS, ref diskWriteMbS, ref diskBusyPct);
         }
         else if (OperatingSystem.IsMacOS())
         {
@@ -409,6 +447,7 @@ public sealed class PerformanceMonitorService : IDisposable
 
     private void CollectLinuxMetrics(
         double elapsedSec,
+        double procMb,
         ref double sysCpuPct,
         ref double ramUsedMb,
         ref double ramTotalMb,
@@ -422,6 +461,10 @@ public sealed class PerformanceMonitorService : IDisposable
             ramTotalMb = totalKb / 1024.0;
             ramUsedMb = Math.Max(0, totalKb - availKb) / 1024.0;
             ramPct = totalKb > 0 ? Math.Clamp((double)(totalKb - availKb) / totalKb * 100.0, 0.0, 100.0) : 0.0;
+        }
+        else
+        {
+            CollectMacMetrics(ref ramUsedMb, ref ramTotalMb, ref ramPct, procMb);
         }
 
         if (TryReadLinuxCpuStat(out var totalTicks, out var idleTicks))
@@ -476,10 +519,23 @@ public sealed class PerformanceMonitorService : IDisposable
         }
     }
 
-    private static double ProbeDiskFreeGb(string logDir)
+    private double ProbeDiskFreeGb(string logDir)
     {
+        if (_diskFreeDenied) return 0.0;
         try
         {
+            if (OperatingSystem.IsAndroid())
+            {
+                if (TryProbeDriveFreeGb(logDir, out var freeGb)
+                    || TryProbeDriveFreeGb(Path.GetTempPath(), out freeGb)
+                    || TryProbeDriveFreeGb("/data", out freeGb))
+                {
+                    return freeGb;
+                }
+                _diskFreeDenied = true;
+                return 0.0;
+            }
+
             double totalBytes = 0;
             var hasFixed = false;
             foreach (var d in DriveInfo.GetDrives())
@@ -495,15 +551,42 @@ public sealed class PerformanceMonitorService : IDisposable
             }
             if (hasFixed) return totalBytes / BytesPerGb;
 
-            var root = Path.GetPathRoot(logDir);
-            if (!string.IsNullOrEmpty(root))
-            {
-                var di = new DriveInfo(root);
-                if (di.IsReady) return di.AvailableFreeSpace / BytesPerGb;
-            }
+            if (TryProbeDriveFreeGb(logDir, out var rootFreeGb))
+                return rootFreeGb;
         }
         catch { }
         return 0.0;
+    }
+
+    private static bool TryProbeDriveFreeGb(string? path, out double freeGb)
+    {
+        freeGb = 0.0;
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        try
+        {
+            var probePath = path;
+            if (!OperatingSystem.IsWindows())
+            {
+                // Walk up to the nearest existing ancestor so uninstalled app log directories still resolve the mount.
+                while (!string.IsNullOrEmpty(probePath) && !Directory.Exists(probePath) && !File.Exists(probePath))
+                    probePath = Path.GetDirectoryName(probePath);
+                if (string.IsNullOrEmpty(probePath))
+                    probePath = Path.GetPathRoot(path);
+            }
+            else
+            {
+                probePath = Path.GetPathRoot(path);
+            }
+            if (string.IsNullOrEmpty(probePath)) return false;
+            var di = new DriveInfo(probePath);
+            if (!di.IsReady) return false;
+            freeGb = di.AvailableFreeSpace / BytesPerGb;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     // ------------------------------------------------------------------ CSV writer
@@ -557,11 +640,11 @@ public sealed class PerformanceMonitorService : IDisposable
 
     // ------------------------------------------------------------------ Linux / Android /proc readers
 
-    private static bool TryReadLinuxMemInfo(out long totalKb, out long availKb)
+    private bool TryReadLinuxMemInfo(out long totalKb, out long availKb)
     {
         totalKb = 0;
         availKb = 0;
-        if (!File.Exists("/proc/meminfo")) return false;
+        if (_linuxMemInfoDenied || !File.Exists("/proc/meminfo")) return false;
         try
         {
             long freeKb = 0, buffersKb = 0, cachedKb = 0;
@@ -587,6 +670,7 @@ public sealed class PerformanceMonitorService : IDisposable
         }
         catch
         {
+            _linuxMemInfoDenied = true;
             return false;
         }
     }
@@ -601,11 +685,11 @@ public sealed class PerformanceMonitorService : IDisposable
         return long.TryParse(span, NumberStyles.Integer, CultureInfo.InvariantCulture, out var val) ? val : 0;
     }
 
-    private static bool TryReadLinuxCpuStat(out long totalTicks, out long idleTicks)
+    private bool TryReadLinuxCpuStat(out long totalTicks, out long idleTicks)
     {
         totalTicks = 0;
         idleTicks = 0;
-        if (!File.Exists("/proc/stat")) return false;
+        if (_linuxCpuStatDenied || !File.Exists("/proc/stat")) return false;
         try
         {
             using var sr = new StreamReader("/proc/stat");
@@ -627,6 +711,7 @@ public sealed class PerformanceMonitorService : IDisposable
         }
         catch
         {
+            _linuxCpuStatDenied = true;
             return false;
         }
     }

@@ -29,15 +29,24 @@ public class MainActivity : AvaloniaMainActivity
         if (FindViewById(global::Android.Resource.Id.Content) is { } contentView)
         {
             contentView.SetBackgroundColor(global::Android.Graphics.Color.ParseColor("#1E1E1E"));
-            _insetsListener = new SystemBarsInsetsListener();
-            ViewCompat.SetOnApplyWindowInsetsListener(contentView, _insetsListener);
-            ViewCompat.RequestApplyInsets(contentView);
+            if (!OperatingSystem.IsAndroidVersionAtLeast(35))
+            {
+                _insetsListener = new SystemBarsInsetsListener();
+                ViewCompat.SetOnApplyWindowInsetsListener(contentView, _insetsListener);
+                ViewCompat.RequestApplyInsets(contentView);
+            }
         }
     }
 
     protected override void OnDestroy()
     {
-        _insetsListener = null;
+        if (_insetsListener is not null)
+        {
+            if (FindViewById(global::Android.Resource.Id.Content) is { } contentView)
+                ViewCompat.SetOnApplyWindowInsetsListener(contentView, null);
+            _insetsListener.Dispose();
+            _insetsListener = null;
+        }
         base.OnDestroy();
     }
 
