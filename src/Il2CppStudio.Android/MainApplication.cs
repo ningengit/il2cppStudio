@@ -1,7 +1,9 @@
 using System.IO.Compression;
+using System.Text;
 using Android.App;
 using Android.Content.PM;
 using Android.Runtime;
+using Android.Util;
 using Avalonia;
 using Avalonia.Android;
 using Il2CppStudio.Gui;
@@ -12,9 +14,63 @@ namespace Il2CppStudio.Android;
 [Application]
 public class MainApplication : AvaloniaAndroidApplication<App>
 {
+    private static int s_crashHooksRegistered;
+
     public MainApplication(IntPtr javaReference, JniHandleOwnership transfer)
         : base(javaReference, transfer)
     {
+    }
+
+    public override void OnCreate()
+    {
+        if (Interlocked.Exchange(ref s_crashHooksRegistered, 1) == 0)
+        {
+            AndroidEnvironment.UnhandledExceptionRaiser += (_, e) =>
+                LogFatalException("AndroidEnvironment.UnhandledExceptionRaiser", e.Exception);
+            AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+                LogFatalException("AppDomain.UnhandledException", e.ExceptionObject as Exception, e.ExceptionObject?.ToString());
+        }
+
+        try
+        {
+            base.OnCreate();
+        }
+        catch (Exception ex)
+        {
+            LogFatalException("MainApplication.OnCreate", ex);
+            throw;
+        }
+    }
+
+    private static void LogFatalException(string source, Exception? ex, string? fallback = null)
+    {
+        try
+        {
+            var sb = new StringBuilder();
+            sb.Append("FATAL [").Append(source).Append("]: ");
+            if (ex is not null)
+            {
+                sb.AppendLine(ex.ToString());
+                var depth = 0;
+                for (var cur = ex.InnerException; cur is not null; cur = cur.InnerException)
+                {
+                    depth++;
+                    sb.Append("--- InnerException #").Append(depth).Append(" (").Append(cur.GetType().FullName).Append("): ")
+                      .AppendLine(cur.Message);
+                    if (!string.IsNullOrWhiteSpace(cur.StackTrace))
+                        sb.AppendLine(cur.StackTrace);
+                }
+            }
+            else
+            {
+                sb.AppendLine(fallback ?? "(null exception)");
+            }
+            Log.Error("Il2CppStudio", sb.ToString());
+        }
+        catch
+        {
+            // Never mask the original exception if logging itself fails.
+        }
     }
 
     protected override AppBuilder CustomizeAppBuilder(AppBuilder builder)

@@ -40,6 +40,16 @@
     <TrimmerRootAssembly Include="AvaloniaEdit" />
   </ItemGroup>
 
+  <!-- Clear cached prelink/linked/R2R assemblies whenever NuGet packages change so older-timestamped upgraded DLLs (e.g. SkiaSharp 3.119.4) are never skipped by incremental MSBuild copy checks. -->
+  <Target Name="CleanStaleAndroidLinkCachesOnAssetsChange"
+          BeforeTargets="BeforeBuild"
+          Inputs="$(ProjectAssetsFile)"
+          Outputs="$(IntermediateOutputPath)prelink-assets.stamp"
+          Condition="'$(ProjectAssetsFile)' != '' and Exists('$(ProjectAssetsFile)')">
+    <RemoveDir Directories="$(IntermediateOutputPath)prelink;$(IntermediateOutputPath)linked;$(IntermediateOutputPath)R2R;$(IntermediateOutputPath)afterlink" />
+    <WriteLinesToFile File="$(IntermediateOutputPath)prelink-assets.stamp" Lines="synced" Overwrite="true" />
+  </Target>
+
   <Target Name="CopyReleaseApkToDist"
           AfterTargets="Build"
           Condition="'$(Configuration)' == 'Release' and '$(BuildingInsideVisualStudio)' != 'true' and Exists('$(ApkFileSigned)')">
