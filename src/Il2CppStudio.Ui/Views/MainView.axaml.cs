@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Controls.Platform;
 using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
@@ -19,10 +20,6 @@ namespace Il2CppStudio.Gui.Views;
 
 public sealed partial class MainView : UserControl, IUiServices
 {
-    private static readonly object s_tmHookLock = new();
-    private static WeakReference<MainView>? s_activeView;
-    private static bool s_tmHookRegistered;
-
     private MainViewModel? _attachedVm;
     private IInsetsManager? _insetsManager;
     private TaskCompletionSource<string?>? _promptTcs;
@@ -81,16 +78,6 @@ public sealed partial class MainView : UserControl, IUiServices
             return;
         }
 
-        lock (s_tmHookLock)
-        {
-            s_activeView = new WeakReference<MainView>(this);
-            if (!s_tmHookRegistered)
-            {
-                TextMate.RegisterExceptionHandler(OnStaticTextMateException);
-                s_tmHookRegistered = true;
-            }
-        }
-
         // Probe TextMate + Oniguruma end-to-end before installing on editors; on targets without native libonigwrap
         // (e.g., Android arm64), DllNotFoundException only fires on first TokenizeLine rather than InstallTextMate().
         try
@@ -104,8 +91,11 @@ public sealed partial class MainView : UserControl, IUiServices
             if (probe?.Tokens is not { Length: > 0 })
                 throw new InvalidOperationException("TextMate probe produced no tokens.");
 
-            _cppTextMate = Highlight(CppEditor, options, ".cpp");
-            _csTextMate = Highlight(CSharpEditor, options, ".cs");
+            void OnTextMateException(Exception ex) =>
+                Dispatcher.UIThread.Post(() => HandleRuntimeTextMateFailure(ex));
+
+            _cppTextMate = Highlight(CppEditor, options, ".cpp", OnTextMateException);
+            _csTextMate = Highlight(CSharpEditor, options, ".cs", OnTextMateException);
         }
         catch (Exception ex)
         {
@@ -117,12 +107,6 @@ public sealed partial class MainView : UserControl, IUiServices
                 ex);
             ActivateManagedFallback();
         }
-    }
-
-    private static void OnStaticTextMateException(Exception ex)
-    {
-        if (s_activeView is null || !s_activeView.TryGetTarget(out var view)) return;
-        Dispatcher.UIThread.Post(() => view.HandleRuntimeTextMateFailure(ex));
     }
 
     private void HandleRuntimeTextMateFailure(Exception ex)
@@ -158,9 +142,13 @@ public sealed partial class MainView : UserControl, IUiServices
         editor.TextArea.TextView.Redraw();
     }
 
-    private static TextMate.Installation Highlight(TextEditor editor, RegistryOptions options, string extension)
+    private static TextMate.Installation Highlight(
+        TextEditor editor,
+        RegistryOptions options,
+        string extension,
+        Action<Exception> exceptionHandler)
     {
-        var installation = editor.InstallTextMate(options);
+        var installation = editor.InstallTextMate(options, exceptionHandler: exceptionHandler);
         installation.SetGrammar(options.GetScopeByLanguageId(options.GetLanguageByExtension(extension).Id));
         return installation;
     }
@@ -178,10 +166,6 @@ public sealed partial class MainView : UserControl, IUiServices
     private void Attach()
     {
         Detach();
-        lock (s_tmHookLock)
-        {
-            s_activeView = new WeakReference<MainView>(this);
-        }
         if (HostTopLevel?.InsetsManager is { } insetsManager)
         {
             _insetsManager = insetsManager;
@@ -361,7 +345,7 @@ public sealed partial class MainView : UserControl, IUiServices
         PromptTitle.Text = title;
         PromptMessage.Text = message;
         PromptBox.Text = "";
-        PromptBox.Watermark = watermark;
+        PromptBox.PlaceholderText = watermark;
         PromptBox.PasswordChar = maskInput ? '●' : '\0';
         PromptOverlay.IsVisible = true;
         PromptBox.Focus();
