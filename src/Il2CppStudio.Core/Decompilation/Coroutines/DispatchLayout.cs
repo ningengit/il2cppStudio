@@ -50,7 +50,7 @@ public static class DispatchLayout
             }
             break;
         }
-        LowerStateSwitchDispatch(body, aliases, i, ref exitCounter);
+        LowerStateSwitchDispatch(body, aliases, i, ref exitCounter, resumeStates);
         var liftedTails = new List<Statement>();
         DispatchNormalizer.Normalize(body, aliases, nested: false, rootBody: body, liftedTails: liftedTails);
         stmts = body.Statements.ToList();
@@ -122,7 +122,7 @@ public static class DispatchLayout
         }
     }
 
-    private static void LowerStateSwitchDispatch(BlockStatement body, ISet<string> aliases, int start, ref int exitCounter)
+    private static void LowerStateSwitchDispatch(BlockStatement body, ISet<string> aliases, int start, ref int exitCounter, IReadOnlyCollection<long> resumeStates)
     {
         var stmts = body.Statements.ToList();
         if (start >= stmts.Count) return;
@@ -167,6 +167,8 @@ public static class DispatchLayout
             }
         }
         if (sw is null) return;
+
+        TryInlineTrailingStateReturn(sw, guardIf, aliases, resumeStates);
 
         var exitLabel = $"switch_exit_{exitCounter++}";
         var usedExit = RewriteSwitchBreaks(sw, exitLabel);
@@ -231,6 +233,88 @@ public static class DispatchLayout
             foreach (var ts in extractedTail) { body.Statements.InsertAfter(anchor, ts); anchor = ts; }
             if (usedExit) body.Statements.InsertAfter(anchor, new LabelStatement { Label = exitLabel });
         }
+    }
+
+    private static void TryInlineTrailingStateReturn(
+        SwitchStatement sw,
+        IfElseStatement? guardIf,
+        ISet<string> aliases,
+        IReadOnlyCollection<long> resumeStates)
+    {
+        if (guardIf is not null && guardIf.TrueStatement is BlockStatement gtb && gtb.Statements.LastOrDefault() != sw)
+            return;
+        Statement anchor = guardIf ?? (Statement)sw;
+        if (anchor.GetNextSibling(n => n is Statement) is not ReturnStatement trailingRet
+            || trailingRet.Expression.IsNull
+            || !StateEvaluator.IsStateOnly(trailingRet.Expression, aliases))
+            return;
+
+        if (sw.SwitchSections.Any(sec => sec.Descendants.OfType<IdentifierExpression>().Any(id => aliases.Contains(id.Identifier) && IsAliasWrite(id))))
+            return;
+
+        var sectionReturns = new List<(SwitchSection Section, bool Value)>();
+        SwitchSection? defaultSection = null;
+        var coveredStates = new HashSet<long>();
+
+        foreach (var sec in sw.SwitchSections)
+        {
+            if (sec.CaseLabels.Any(cl => cl.Expression.IsNull))
+            {
+                if (sec.CaseLabels.Count != 1) return;
+                defaultSection = sec;
+                continue;
+            }
+
+            bool? commonBool = null;
+            foreach (var cl in sec.CaseLabels)
+            {
+                if (cl.Expression is not PrimitiveExpression { Value: IConvertible raw } || raw is bool)
+                    return;
+                var caseVal = Convert.ToInt64(raw);
+                if (StateEvaluator.Eval(trailingRet.Expression, caseVal, aliases) is not { } eval)
+                    return;
+                var b = eval != 0;
+                if (commonBool is null) commonBool = b;
+                else if (commonBool.Value != b) return;
+                coveredStates.Add(caseVal);
+            }
+            if (commonBool is null) return;
+            sectionReturns.Add((sec, commonBool.Value));
+        }
+
+        if (!resumeStates.Prepend(0L).All(coveredStates.Contains))
+            return;
+        if (StateEvaluator.Eval(trailingRet.Expression, -1L, aliases) is not { } defaultEval)
+            return;
+        var defaultBool = defaultEval != 0;
+
+        foreach (var (sec, val) in sectionReturns)
+            ReplaceSwitchBreaksWithReturn(sec, val);
+        if (defaultSection is not null)
+            ReplaceSwitchBreaksWithReturn(defaultSection, defaultBool);
+
+        trailingRet.Expression = new PrimitiveExpression(defaultBool);
+    }
+
+    private static void ReplaceSwitchBreaksWithReturn(SwitchSection sec, bool value)
+    {
+        var stack = new Stack<AstNode>();
+        stack.Push(sec);
+        while (stack.Count > 0)
+        {
+            var n = stack.Pop();
+            if (n is BreakStatement bs)
+            {
+                bs.ReplaceWith(new ReturnStatement(new PrimitiveExpression(value)));
+                continue;
+            }
+            if (n is SwitchStatement or WhileStatement or DoWhileStatement or ForStatement or ForeachStatement)
+                continue;
+            for (var ch = n.LastChild; ch is not null; ch = ch.PrevSibling)
+                stack.Push(ch);
+        }
+        if (CanFallThrough(sec.Statements.LastOrDefault()))
+            sec.Statements.Add(new ReturnStatement(new PrimitiveExpression(value)));
     }
 
     private static bool RewriteSwitchBreaks(SwitchStatement sw, string exitLabel)

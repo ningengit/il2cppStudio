@@ -4,8 +4,16 @@
              xmlns:diag="using:Il2CppStudio.Core.Diagnostics"
              xmlns:ae="using:AvaloniaEdit"
              x:Class="Il2CppStudio.Gui.Views.MainView"
-             x:DataType="vm:MainViewModel">
-  <Border x:Name="RootSafeArea" Background="Transparent" DragDrop.AllowDrop="True">
+             x:DataType="vm:MainViewModel"
+             HorizontalAlignment="Stretch"
+             VerticalAlignment="Stretch"
+             TopLevel.AutoSafeAreaPadding="False"
+             Background="#1E1E1E">
+  <Border x:Name="RootSafeArea"
+          Background="Transparent"
+          DragDrop.AllowDrop="True"
+          HorizontalAlignment="Stretch"
+          VerticalAlignment="Stretch">
     <Grid>
       <DockPanel>
         <!-- Desktop menu bar -->

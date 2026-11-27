@@ -10,8 +10,10 @@ namespace Il2CppStudio.Android;
     Label = "Il2CppStudio",
     Theme = "@style/MyTheme.NoActionBar",
     MainLauncher = true,
+    ResizeableActivity = true,
+    ScreenOrientation = ScreenOrientation.FullUser,
     LaunchMode = LaunchMode.SingleTop,
-    ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize | ConfigChanges.ScreenLayout | ConfigChanges.SmallestScreenSize | ConfigChanges.UiMode)]
+    ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize | ConfigChanges.ScreenLayout | ConfigChanges.SmallestScreenSize | ConfigChanges.UiMode | ConfigChanges.Density | ConfigChanges.Keyboard | ConfigChanges.KeyboardHidden | ConfigChanges.Navigation)]
 public class MainActivity : AvaloniaMainActivity
 {
     private SystemBarsInsetsListener? _insetsListener;
@@ -20,15 +22,38 @@ public class MainActivity : AvaloniaMainActivity
     {
         base.OnCreate(savedInstanceState);
 
-        if (Window?.DecorView is { } decorView && WindowCompat.GetInsetsController(Window, decorView) is { } controller)
+        if (Window?.Attributes is { } attrs)
         {
-            controller.AppearanceLightStatusBars = false;
-            controller.AppearanceLightNavigationBars = false;
+            if (OperatingSystem.IsAndroidVersionAtLeast(30))
+                attrs.LayoutInDisplayCutoutMode = global::Android.Views.LayoutInDisplayCutoutMode.Always;
+            else if (OperatingSystem.IsAndroidVersionAtLeast(28))
+                attrs.LayoutInDisplayCutoutMode = global::Android.Views.LayoutInDisplayCutoutMode.ShortEdges;
+            Window.Attributes = attrs;
+        }
+
+        if (Window?.DecorView is { } decorView)
+        {
+            decorView.SetBackgroundColor(global::Android.Graphics.Color.ParseColor("#1E1E1E"));
+            if (WindowCompat.GetInsetsController(Window, decorView) is { } controller)
+            {
+                controller.AppearanceLightStatusBars = false;
+                controller.AppearanceLightNavigationBars = false;
+            }
         }
 
         if (FindViewById(global::Android.Resource.Id.Content) is { } contentView)
         {
             contentView.SetBackgroundColor(global::Android.Graphics.Color.ParseColor("#1E1E1E"));
+            if (contentView is global::Android.Views.ViewGroup vg)
+            {
+                for (var i = 0; i < vg.ChildCount; i++)
+                {
+                    if (vg.GetChildAt(i) is AvaloniaView av)
+                        av.LayoutParameters = new global::Android.Views.ViewGroup.LayoutParams(
+                            global::Android.Views.ViewGroup.LayoutParams.MatchParent,
+                            global::Android.Views.ViewGroup.LayoutParams.MatchParent);
+                }
+            }
             if (!OperatingSystem.IsAndroidVersionAtLeast(35))
             {
                 _insetsListener = new SystemBarsInsetsListener();

@@ -2,5 +2,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
           android:installLocation="auto">
   <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-  <application android:label="Il2CppStudio" android:allowBackup="true" />
+  <supports-screens android:smallScreens="true"
+                    android:normalScreens="true"
+                    android:largeScreens="true"
+                    android:xlargeScreens="true"
+                    android:anyDensity="true" />
+  <application android:label="Il2CppStudio"
+               android:allowBackup="true"
+               android:resizeableActivity="true">
+    <meta-data android:name="android.supports_size_changes" android:value="true" />
+    <meta-data android:name="android.max_aspect" android:value="3.0" />
+  </application>
 </manifest>
