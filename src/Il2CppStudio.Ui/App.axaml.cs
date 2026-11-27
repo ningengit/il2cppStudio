@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 using Il2CppStudio.Gui.ViewModels;
 using Il2CppStudio.Gui.Views;
 
@@ -9,6 +10,9 @@ namespace Il2CppStudio.Gui;
 
 public sealed class App : Application
 {
+    private static WeakReference<MainViewModel>? s_activeVm;
+    private static bool s_uiExceptionHooked;
+
     /// <summary>Optional desktop window factory (set by <c>Il2CppStudio.Gui</c> so desktop keeps drag-and-drop &amp; window sizing).</summary>
     public static Func<MainViewModel, Window>? DesktopMainWindowFactory { get; set; }
 
@@ -22,6 +26,7 @@ public sealed class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             var vm = new MainViewModel();
+            HookUiUnhandledExceptions(vm);
             desktop.MainWindow = DesktopMainWindowFactory?.Invoke(vm)
                 ?? new Window { Title = "Il2CppStudio", Content = new MainView { DataContext = vm }, DataContext = vm };
             desktop.ShutdownRequested += (_, _) => vm.Dispose();
@@ -32,8 +37,21 @@ public sealed class App : Application
         else if (ApplicationLifetime is ISingleViewApplicationLifetime singleView)
         {
             var vm = new MainViewModel();
+            HookUiUnhandledExceptions(vm);
             singleView.MainView = new MainView { DataContext = vm };
         }
         base.OnFrameworkInitializationCompleted();
+    }
+
+    private static void HookUiUnhandledExceptions(MainViewModel vm)
+    {
+        s_activeVm = new WeakReference<MainViewModel>(vm);
+        if (s_uiExceptionHooked) return;
+        s_uiExceptionHooked = true;
+        Dispatcher.UIThread.UnhandledException += (_, e) =>
+        {
+            if (s_activeVm is not null && s_activeVm.TryGetTarget(out var current))
+                current.RecordUnhandledUiException(e.Exception);
+        };
     }
 }

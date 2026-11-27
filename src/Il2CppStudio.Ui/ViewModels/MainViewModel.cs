@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -16,21 +18,34 @@ namespace Il2CppStudio.Gui.ViewModels;
 public sealed partial class MainViewModel : ObservableObject, IDisposable
 {
     private const int SearchDebounceMs = 200;
+    private const int SelectionDebounceMs = 100;
     private const int MaxSearchResults = 500;
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Serilog.Core.Logger _logger;
     private readonly DiagnosticCollector _sink;
+    private readonly RuntimeDiagnosticsLog _runtimeLog;
+    private readonly PerformanceMonitorService _perfMonitor;
     private Il2CppWorkspace? _ws;
     private WorkspaceSearchIndex? _searchIndex;
     private CancellationTokenSource? _renderCts;
     private CancellationTokenSource? _searchCts;
+    private long _selectionVersion;
+    private (long Version, string? Cpp, string? Il, string? Cs) _renderedTabs;
+    private int _pendingRuntimeLogRefresh;
+    private volatile bool _disposed;
 
     public IUiServices? Ui { get; set; }
 
     public ObservableCollection<TreeNodeViewModel> Roots { get; } = [];
     public ObservableCollection<Diagnostic> Diagnostics { get; } = [];
     public ObservableCollection<string> ExportedResources { get; } = [];
+    public ObservableCollection<RuntimeLogEntry> RuntimeLogs { get; } = [];
+    public IReadOnlyList<RuntimeLogFilter> LogFilters { get; } = Enum.GetValues<RuntimeLogFilter>();
+    public IReadOnlyList<int> IntervalChoices { get; } = [1, 2, 5, 10, 15, 30, 60];
+
+    internal RuntimeDiagnosticsLog RuntimeLog => _runtimeLog;
+    internal PerformanceMonitorService PerfMonitor => _perfMonitor;
 
     [ObservableProperty] private string _title = "Il2CppStudio";
     [ObservableProperty] private string _modeLabel = "No folder loaded";
@@ -46,6 +61,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private IReadOnlyList<TreeNodeViewModel> _searchResults = Array.Empty<TreeNodeViewModel>();
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private bool _substituteBcl = true;
+    [ObservableProperty] private int _selectedCodeTabIndex;
     [ObservableProperty] private TreeNodeViewModel? _selectedNode;
     [ObservableProperty] private TreeNodeViewModel? _selectedTreeNode;
     [ObservableProperty] private TreeNodeViewModel? _selectedSearchNode;
@@ -57,6 +73,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _inspectionText = "";
     [ObservableProperty] private DiagnosticSeverity _minimumSeverity = DiagnosticSeverity.Information;
 
+    // Debug & Performance Monitor panel properties
+    [ObservableProperty] private bool _isDebugPanelOpen;
+    [ObservableProperty] private string _cpuSummary = "CPU: 0.0% sys | 0.0% proc";
+    [ObservableProperty] private string _ramSummary = "RAM: 0 / 0 MB (0%) | Proc: 0 MB";
+    [ObservableProperty] private string _diskSummary = "Disk: 0.0% busy | R 0.00 / W 0.00 MB/s";
+    [ObservableProperty] private string _gcSummary = "GC: Gen0 0 | Gen1 0 | Gen2 0 | Threads 0";
+    [ObservableProperty] private string _runtimeSummary = "Activity: Idle | Warn 0 | Err 0 | 1stChance 0";
+    [ObservableProperty] private string _perfLogFolder = "";
+    [ObservableProperty] private bool _isCsvLogging;
+    [ObservableProperty] private string _csvLogButtonText = "Start CSV Log";
+    [ObservableProperty] private int _perfIntervalSeconds = 5;
+    [ObservableProperty] private string _lastGcResultText = "";
+    [ObservableProperty] private RuntimeLogFilter _selectedLogFilter = RuntimeLogFilter.All;
+    [ObservableProperty] private bool _captureFirstChanceExceptions;
+
     private TreeNodeViewModel? ContextTarget => ContextNode ?? SelectedNode;
     public bool ContextHasMenu => ContextTarget?.HasMenu ?? false;
     public bool ContextHasCode => ContextTarget?.HasCode ?? false;
@@ -67,13 +98,197 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _logger = LoggingSetup.CreateLogger(new LoggingOptions { EnableConsole = false });
         _sink = new DiagnosticCollector(_logger);
+        _runtimeLog = new RuntimeDiagnosticsLog();
+        _runtimeLog.InstallGlobalHooks();
+        if (Environment.GetEnvironmentVariable("IL2CPPSTUDIO_PERF_LOG") == "1")
+            _runtimeLog.StartFileLogging();
+        _perfMonitor = new PerformanceMonitorService(_runtimeLog);
+        _perfLogFolder = _perfMonitor.LogDirectory;
+        _isCsvLogging = _perfMonitor.IsCsvLogging;
+        _csvLogButtonText = _isCsvLogging ? "Stop CSV Log" : "Start CSV Log";
+        _captureFirstChanceExceptions = _runtimeLog.CaptureFirstChanceExceptions;
+
         _sink.DiagnosticReported += OnDiagnosticReported;
+        _runtimeLog.Changed += OnRuntimeLogChanged;
+        _perfMonitor.Sampled += OnPerformanceSampled;
+        _perfMonitor.Start();
     }
 
     private void OnDiagnosticReported(Diagnostic d)
     {
+        _runtimeLog.RecordFromDiagnostic(d);
         if (d.Severity < MinimumSeverity) return;
         if (Ui is { } ui) ui.Post(() => AddDiagnostic(d));
+    }
+
+    public void RecordUnhandledUiException(Exception ex)
+    {
+        _runtimeLog.RecordError("Dispatcher.UIThread.UnhandledException", ex.Message, ex);
+        _sink.Error(DiagnosticCategory.Workspace, DiagnosticCodes.StageFailed, ex.Message, null, ex);
+    }
+
+    private void OnRuntimeLogChanged()
+    {
+        if (_disposed) return;
+        if (Interlocked.CompareExchange(ref _pendingRuntimeLogRefresh, 1, 0) != 0) return;
+        void Apply()
+        {
+            Interlocked.Exchange(ref _pendingRuntimeLogRefresh, 0);
+            if (!_disposed) RefreshRuntimeLogs();
+        }
+        if (Ui is { } ui) ui.Post(Apply);
+        else Apply();
+    }
+
+    private void RefreshRuntimeLogs()
+    {
+        var items = _runtimeLog.Snapshot(SelectedLogFilter);
+        RuntimeLogs.Clear();
+        for (var i = items.Count - 1; i >= 0; i--)
+            RuntimeLogs.Add(items[i]);
+    }
+
+    private void OnPerformanceSampled(PerformanceSample s)
+    {
+        if (_disposed) return;
+        void Apply()
+        {
+            if (_disposed) return;
+            CpuSummary = string.Format(CultureInfo.InvariantCulture,
+                "CPU: {0:F1}% sys | {1:F1}% proc | Threads: {2}", s.CpuPercent, s.ProcessCpuPercent, s.Threads);
+            RamSummary = string.Format(CultureInfo.InvariantCulture,
+                "RAM: {0:F0}/{1:F0} MB ({2:F1}%) | Proc {3:F1} MB (Peak {4:F1}, Heap {5:F1})",
+                s.RamUsedMb, s.RamTotalMb, s.RamUsedPercent, s.ThisProcessMb, s.PeakProcessMb, s.ManagedHeapMb);
+            DiskSummary = string.Format(CultureInfo.InvariantCulture,
+                "Disk: {0:F1}% busy | R {1:F2} / W {2:F2} MB/s | Free {3:F1} GB",
+                s.DiskBusyPercent, s.DiskReadMbPerSec, s.DiskWriteMbPerSec, s.DiskFreeGb);
+            GcSummary = string.Format(CultureInfo.InvariantCulture,
+                "GC: Gen0 {0} | Gen1 {1} | Gen2 {2} | Priv {3:F1} MB",
+                s.GcGen0, s.GcGen1, s.GcGen2, s.PrivateBytesMb);
+            RuntimeSummary = string.Format(CultureInfo.InvariantCulture,
+                "Activity: {0} | Warn {1} | Err {2} | 1stChance {3}",
+                s.Activity, s.Warnings, s.Errors, s.FirstChanceExceptions);
+        }
+        if (Ui is { } ui) ui.Post(Apply);
+        else Apply();
+    }
+
+    partial void OnPerfIntervalSecondsChanged(int value)
+    {
+        var clamped = Math.Clamp(value, 1, 60);
+        if (clamped != value)
+        {
+            PerfIntervalSeconds = clamped;
+            return;
+        }
+        _perfMonitor.IntervalSeconds = clamped;
+    }
+
+    partial void OnCaptureFirstChanceExceptionsChanged(bool value)
+    {
+        _runtimeLog.CaptureFirstChanceExceptions = value;
+    }
+
+    partial void OnSelectedLogFilterChanged(RuntimeLogFilter value) => RefreshRuntimeLogs();
+
+    [RelayCommand]
+    private void ToggleDebugPanel()
+    {
+        IsDebugPanelOpen = !IsDebugPanelOpen;
+        if (IsDebugPanelOpen)
+        {
+            _perfMonitor.SampleNow(writeCsvIfEnabled: false);
+            RefreshRuntimeLogs();
+        }
+    }
+
+    [RelayCommand]
+    private void ToggleCsvLogging()
+    {
+        if (_perfMonitor.IsCsvLogging)
+        {
+            _perfMonitor.StopCsvLogging();
+            _runtimeLog.StopFileLogging();
+            IsCsvLogging = false;
+            CsvLogButtonText = "Start CSV Log";
+            Status = "Stopped performance CSV logging.";
+        }
+        else
+        {
+            _perfMonitor.StartCsvLogging();
+            _runtimeLog.StartFileLogging(_perfMonitor.LogDirectory);
+            IsCsvLogging = true;
+            CsvLogButtonText = "Stop CSV Log";
+            _perfMonitor.SampleNow(writeCsvIfEnabled: true);
+            Status = $"CSV performance log writing to {_perfMonitor.LogDirectory}.";
+        }
+    }
+
+    [RelayCommand]
+    private void OpenPerfLogFolder()
+    {
+        try
+        {
+            var dir = _perfMonitor.LogDirectory;
+            Directory.CreateDirectory(dir);
+            if (OperatingSystem.IsAndroid())
+            {
+                Status = $"Perf logs: {dir}";
+                return;
+            }
+            Process.Start(new ProcessStartInfo(dir) { UseShellExecute = true });
+            Status = $"Opened log folder: {dir}";
+        }
+        catch (Exception ex)
+        {
+            _runtimeLog.RecordWarning("MainViewModel.OpenPerfLogFolder", ex.Message, ex);
+            Status = $"Could not open log folder: {ex.Message}";
+        }
+    }
+
+    [RelayCommand]
+    private void ForceGc()
+    {
+        var (before, after, freed) = _perfMonitor.ForceGcCompactLoh();
+        LastGcResultText = string.Format(CultureInfo.InvariantCulture,
+            "GC freed {0:F1} MB ({1:F1} → {2:F1} MB)", freed, before, after);
+        Status = LastGcResultText;
+    }
+
+    [RelayCommand]
+    private async Task ClearCache()
+    {
+        await RunBusy("Clearing caches…", () =>
+        {
+            _ws?.ClearCaches();
+        }, activity: "Idle");
+        _renderedTabs = (0, null, null, null);
+        Status = "Cleared decompiler and stub assembly caches.";
+    }
+
+    [RelayCommand]
+    private async Task CopyPerfSnapshot()
+    {
+        if (Ui is null) return;
+        var sample = _perfMonitor.SampleNow(writeCsvIfEnabled: false);
+        await Ui.SetClipboardAsync(PerformanceMonitorService.FormatSnapshotText(sample));
+        Status = "Copied performance snapshot to clipboard.";
+    }
+
+    [RelayCommand]
+    private void ClearRuntimeLogs()
+    {
+        _runtimeLog.Clear();
+        RefreshRuntimeLogs();
+        Status = "Cleared runtime diagnostics log.";
+    }
+
+    [RelayCommand]
+    private async Task CopyRuntimeLogs()
+    {
+        if (Ui is null) return;
+        await Ui.SetClipboardAsync(_runtimeLog.FormatText(SelectedLogFilter));
+        Status = "Copied runtime logs to clipboard.";
     }
 
     public void ReportUiDiagnostic(DiagnosticSeverity severity, string message, Exception? ex = null)
@@ -172,9 +387,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         string? nativeLibraryDir = null)
     {
         CancelSearch();
-        _renderCts?.Cancel();
-        _renderCts?.Dispose();
-        _renderCts = null;
+        CancelRender();
 
         SelectedTreeNode = null;
         SelectedSearchNode = null;
@@ -202,7 +415,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             WorkspaceSetup.Attach(ws);
             _searchIndex = WorkspaceSearchIndex.Build(ws.Model);
             _ws = ws;
-        });
+        }, activity: "Loading");
         if (_ws is null) return;
         ModeLabel = _ws.ModeLabel;
         Title = $"Il2CppStudio — {_ws.Files.Root}";
@@ -219,7 +432,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (dir is null) return;
         ExportSummary? summary = null;
         await RunBusy("Exporting…", () => summary = ExportService.ExportAll(_ws, dir, includeIl: true,
-            progress: new Progress<string>(m => Ui.Post(() => Status = m))));
+            progress: new Progress<string>(m => Ui.Post(() => Status = m))), activity: "Exporting");
         if (summary is not null)
         {
             Status = $"Exported {summary.Assemblies.Count} assemblies to {dir} in {summary.Elapsed.TotalSeconds:F1}s.";
@@ -236,7 +449,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var set = withReferences ? AssemblyClosure.Of(_ws.Model, asm) : [asm];
         ExportSummary? summary = null;
         await RunBusy($"Exporting {asm.Name}…", () => summary = ExportService.ExportAll(_ws, dir, includeIl: true,
-            AssemblyClosure.Filter(set), new Progress<string>(m => Ui.Post(() => Status = m))));
+            AssemblyClosure.Filter(set), new Progress<string>(m => Ui.Post(() => Status = m))), activity: "Exporting");
         if (summary is not null)
         {
             Status = $"Exported {summary.Assemblies.Count} assemblies ({string.Join(", ", set.Select(a => a.Name).Take(6))}{(set.Count > 6 ? ", …" : "")}) to {dir} in {summary.Elapsed.TotalSeconds:F1}s.";
@@ -275,34 +488,44 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (_ws is null) return;
         _ws.SubstituteBcl = value;
         Status = value ? "Substitute BCL (Clean/Fast)" : "Pure Native View";
-        _ = RenderSelectionAsync();
+        _renderedTabs = (0, null, null, null);
+        if (SelectedNode?.Type is not null)
+            TriggerRender(SelectedNode, isTabSwitch: true);
     }
 
     // ------------------------------------------------------------------ tree & flat search
 
     partial void OnSearchTextChanged(string value)
     {
-        CancelSearch();
         var filter = value?.Trim() ?? "";
         if (filter.Length == 0 || _searchIndex is not { } index)
         {
+            CancelSearch();
             ClearSearchState();
             return;
         }
 
-        var cts = new CancellationTokenSource();
-        _searchCts = cts;
+        var cts = ReplaceSearchCts();
         _ = RunDebouncedSearchAsync(index, filter, cts);
+    }
+
+    private CancellationTokenSource ReplaceSearchCts()
+    {
+        var cts = new CancellationTokenSource();
+        var old = Interlocked.Exchange(ref _searchCts, cts);
+        if (old is not null)
+        {
+            try { old.Cancel(); } catch (ObjectDisposedException) { }
+        }
+        return cts;
     }
 
     private void CancelSearch()
     {
-        var old = _searchCts;
-        _searchCts = null;
+        var old = Interlocked.Exchange(ref _searchCts, null);
         if (old is not null)
         {
-            old.Cancel();
-            old.Dispose();
+            try { old.Cancel(); } catch (ObjectDisposedException) { }
         }
     }
 
@@ -317,19 +540,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task RunDebouncedSearchAsync(WorkspaceSearchIndex index, string filter, CancellationTokenSource cts)
     {
+        var token = cts.Token;
         try
         {
-            await Task.Delay(SearchDebounceMs, cts.Token);
+            await Task.Delay(SearchDebounceMs, token);
             var ws = _ws;
-            if (ws is null || cts.IsCancellationRequested || !ReferenceEquals(_searchCts, cts)) return;
+            if (ws is null || token.IsCancellationRequested || !ReferenceEquals(_searchCts, cts)) return;
 
-            var result = await Task.Run(() => index.Search(filter, MaxSearchResults, cts.Token), cts.Token);
-            if (cts.IsCancellationRequested || !ReferenceEquals(_searchCts, cts)) return;
+            var result = await Task.Run(() => index.Search(filter, MaxSearchResults, token), token);
+            if (token.IsCancellationRequested || !ReferenceEquals(_searchCts, cts)) return;
 
             var nodes = new TreeNodeViewModel[result.Matches.Count];
             for (var i = 0; i < result.Matches.Count; i++)
             {
-                if ((i & 63) == 0) cts.Token.ThrowIfCancellationRequested();
+                if ((i & 63) == 0) token.ThrowIfCancellationRequested();
                 var m = result.Matches[i];
                 if (m.Method is { } method)
                 {
@@ -357,7 +581,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 }
             }
 
-            if (cts.IsCancellationRequested || !ReferenceEquals(_searchCts, cts)) return;
+            if (token.IsCancellationRequested || !ReferenceEquals(_searchCts, cts)) return;
 
             var summary = result.IsTruncated
                 ? $"Showing {nodes.Length:N0} of {result.TotalMatches:N0} matches — refine search"
@@ -365,7 +589,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             void Apply()
             {
-                if (cts.IsCancellationRequested || !ReferenceEquals(_searchCts, cts)) return;
+                if (token.IsCancellationRequested || !ReferenceEquals(_searchCts, cts)) return;
                 SelectedSearchNode = null;
                 SearchSummary = summary;
                 SearchResults = nodes;
@@ -377,6 +601,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         catch (OperationCanceledException)
         {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _runtimeLog.RecordError("MainViewModel.Search", ex.Message, ex);
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref _searchCts, null, cts);
+            cts.Dispose();
         }
     }
 
@@ -433,32 +669,145 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (value is not null) SelectedNode = value;
     }
 
-    partial void OnSelectedNodeChanged(TreeNodeViewModel? value) => _ = RenderSelectionAsync();
+    partial void OnSelectedNodeChanged(TreeNodeViewModel? value) => TriggerRender(value, isTabSwitch: false);
 
-    /// <summary>Renders the three synchronized views (C/C++, IL, C#) for the selected type or method.</summary>
-    private async Task RenderSelectionAsync()
+    partial void OnSelectedCodeTabIndexChanged(int value)
     {
-        var node = SelectedNode;
-        if (_ws is null || node?.Type is not { } type) return;
-        _renderCts?.Cancel();
-        _renderCts?.Dispose();
-        var cts = _renderCts = new CancellationTokenSource();
-        var method = node.Method;
-        var target = method is null ? type.FullName : $"{type.FullName}::{method.DisplaySignature}";
-        CppText = IlText = CSharpText = $"// Rendering {target}…";
-        string cpp = "", il = "", cs = "";
-        await RunBusy($"Rendering {target}…", () =>
+        if (SelectedNode?.Type is null) return;
+        var ver = Volatile.Read(ref _selectionVersion);
+        if (_renderedTabs.Version == ver)
         {
-            if (cts.IsCancellationRequested) return;
-            cpp = _ws.Render(type, method, CodeView.Cpp);
-            if (cts.IsCancellationRequested) return;
-            il = _ws.Render(type, method, CodeView.Il);
-            if (cts.IsCancellationRequested) return;
-            cs = _ws.Render(type, method, CodeView.CSharp);
-        });
-        if (cts.IsCancellationRequested) return;
-        CppText = cpp; IlText = il; CSharpText = cs;
-        Status = method is not null && _ws.GetMethodRva(method) is var rva and > 0 ? $"{target}  RVA 0x{rva:X}  file offset 0x{_ws.GetMethodFileOffset(method):X}" : target;
+            var cached = ActiveCodeView switch
+            {
+                CodeView.Cpp => _renderedTabs.Cpp,
+                CodeView.Il => _renderedTabs.Il,
+                CodeView.CSharp => _renderedTabs.Cs,
+                _ => null,
+            };
+            if (cached is not null) return;
+        }
+        TriggerRender(SelectedNode, isTabSwitch: true);
+    }
+
+    private CodeView ActiveCodeView => SelectedCodeTabIndex switch
+    {
+        1 => CodeView.Il,
+        2 => CodeView.CSharp,
+        _ => CodeView.Cpp,
+    };
+
+    private CancellationTokenSource ReplaceRenderCts()
+    {
+        var cts = new CancellationTokenSource();
+        var prev = Interlocked.Exchange(ref _renderCts, cts);
+        if (prev is not null)
+        {
+            try { prev.Cancel(); } catch (ObjectDisposedException) { }
+        }
+        return cts;
+    }
+
+    private void CancelRender()
+    {
+        Interlocked.Increment(ref _selectionVersion);
+        var prev = Interlocked.Exchange(ref _renderCts, null);
+        if (prev is not null)
+        {
+            try { prev.Cancel(); } catch (ObjectDisposedException) { }
+        }
+    }
+
+    private void TriggerRender(TreeNodeViewModel? node, bool isTabSwitch)
+    {
+        if (_disposed || _ws is null || node?.Type is null)
+        {
+            CancelRender();
+            return;
+        }
+        var version = isTabSwitch ? Volatile.Read(ref _selectionVersion) : Interlocked.Increment(ref _selectionVersion);
+        var cts = ReplaceRenderCts();
+        _ = RenderSelectionSafeAsync(version, node, cts, isTabSwitch);
+    }
+
+    /// <summary>Debounced, cancellable active-tab rendering for the selected type or method.</summary>
+    private async Task RenderSelectionSafeAsync(long version, TreeNodeViewModel? node, CancellationTokenSource cts, bool isTabSwitch)
+    {
+        var token = cts.Token;
+        var gateAcquired = false;
+        try
+        {
+            if (_disposed || _ws is null || node?.Type is not { } type) return;
+            if (!isTabSwitch)
+                await Task.Delay(SelectionDebounceMs, token);
+
+            if (token.IsCancellationRequested || Volatile.Read(ref _selectionVersion) != version || _disposed) return;
+
+            var view = ActiveCodeView;
+            var method = node.Method;
+            var target = method is null ? type.FullName : $"{type.FullName}::{method.DisplaySignature}";
+
+            await _gate.WaitAsync(token);
+            gateAcquired = true;
+
+            if (token.IsCancellationRequested || Volatile.Read(ref _selectionVersion) != version || _disposed) return;
+            var ws = _ws;
+            if (ws is null) return;
+
+            IsBusy = true;
+            _perfMonitor.SetActivity("Decompiling");
+            Status = $"Rendering {target}…";
+
+            var rendered = await Task.Run(() => ws.Render(type, method, view, token), token);
+            if (token.IsCancellationRequested || Volatile.Read(ref _selectionVersion) != version || _disposed) return;
+
+            void ApplyResult()
+            {
+                if (token.IsCancellationRequested || Volatile.Read(ref _selectionVersion) != version || _disposed) return;
+                if (_renderedTabs.Version != version)
+                    _renderedTabs = (version, null, null, null);
+                switch (view)
+                {
+                    case CodeView.Cpp:
+                        _renderedTabs.Cpp = rendered;
+                        CppText = rendered;
+                        break;
+                    case CodeView.Il:
+                        _renderedTabs.Il = rendered;
+                        IlText = rendered;
+                        break;
+                    case CodeView.CSharp:
+                        _renderedTabs.Cs = rendered;
+                        CSharpText = rendered;
+                        break;
+                }
+                Status = method is not null && ws.GetMethodRva(method) is var rva and > 0
+                    ? $"{target}  RVA 0x{rva:X}  file offset 0x{ws.GetMethodFileOffset(method):X}"
+                    : target;
+            }
+
+            if (Ui is { } ui) ui.Post(ApplyResult);
+            else ApplyResult();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _runtimeLog.RecordError("MainViewModel.RenderSelection", ex.Message, ex);
+            _sink.Error(DiagnosticCategory.Workspace, DiagnosticCodes.StageFailed, ex.Message, null, ex);
+            Status = "Error: " + ex.Message;
+        }
+        finally
+        {
+            _perfMonitor.SetActivity("Idle");
+            IsBusy = false;
+            if (gateAcquired) _gate.Release();
+            Interlocked.CompareExchange(ref _renderCts, null, cts);
+            cts.Dispose();
+        }
     }
 
     // ------------------------------------------------------------------ context menu commands
@@ -531,19 +880,22 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     // ------------------------------------------------------------------ helpers
 
-    private async Task RunBusy(string status, Action work)
+    private async Task RunBusy(string status, Action work, string activity = "Busy")
     {
         await _gate.WaitAsync();
         IsBusy = true;
+        _perfMonitor.SetActivity(activity);
         Status = status;
         try { await Task.Run(work); }
         catch (Exception ex)
         {
+            _runtimeLog.RecordError("MainViewModel.RunBusy", ex.Message, ex);
             _sink.Error(DiagnosticCategory.Workspace, DiagnosticCodes.StageFailed, ex.Message, null, ex);
             Status = "Error: " + ex.Message;
         }
         finally
         {
+            _perfMonitor.SetActivity("Idle");
             IsBusy = false;
             _gate.Release();
         }
@@ -582,14 +934,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
         _sink.DiagnosticReported -= OnDiagnosticReported;
+        _runtimeLog.Changed -= OnRuntimeLogChanged;
+        _perfMonitor.Sampled -= OnPerformanceSampled;
         CancelSearch();
-        _renderCts?.Cancel();
-        _renderCts?.Dispose();
-        _renderCts = null;
+        CancelRender();
         _searchIndex = null;
         SearchResults = Array.Empty<TreeNodeViewModel>();
         ReleaseTree();
+        _perfMonitor.Dispose();
+        _runtimeLog.Dispose();
         _ws?.Dispose();
         _ws = null;
         _logger.Dispose();

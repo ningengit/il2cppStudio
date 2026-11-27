@@ -19,6 +19,8 @@
           </MenuItem>
           <MenuItem Header="_View">
             <MenuItem Header="Substitute BCL (Clean/Fast)" ToggleType="CheckBox" IsChecked="{Binding SubstituteBcl}" />
+            <Separator />
+            <MenuItem Header="_Debug &amp; Perf Monitor" ToggleType="CheckBox" IsChecked="{Binding IsDebugPanelOpen}" InputGesture="F12" />
           </MenuItem>
           <MenuItem Header="_Tools">
             <MenuItem Header="Configure Diagnostic _Boot Flags…" Command="{Binding ConfigureBootFlagsCommand}" />
@@ -49,6 +51,8 @@
               <Button.Flyout>
                 <MenuFlyout Placement="BottomEdgeAlignedLeft">
                   <MenuItem Header="Substitute BCL (Clean/Fast)" ToggleType="CheckBox" IsChecked="{Binding SubstituteBcl}" />
+                  <Separator />
+                  <MenuItem Header="Debug &amp; Perf Monitor" ToggleType="CheckBox" IsChecked="{Binding IsDebugPanelOpen}" />
                 </MenuFlyout>
               </Button.Flyout>
             </Button>
@@ -66,9 +70,86 @@
         <!-- Status bar -->
         <Border DockPanel.Dock="Bottom" Background="#1E1E1E" Padding="8,3">
           <DockPanel>
-            <TextBlock DockPanel.Dock="Right" Text="{Binding ModeLabel}" Foreground="#4EC9B0" FontWeight="SemiBold" />
+            <Button DockPanel.Dock="Right"
+                    Content="Debug / Perf (F12)"
+                    Command="{Binding ToggleDebugPanelCommand}"
+                    Margin="8,0,0,0"
+                    Padding="8,2"
+                    FontSize="11" />
+            <TextBlock DockPanel.Dock="Right" Text="{Binding ModeLabel}" Foreground="#4EC9B0" FontWeight="SemiBold" VerticalAlignment="Center" />
             <ProgressBar DockPanel.Dock="Right" IsIndeterminate="True" IsVisible="{Binding IsBusy}" Width="120" Margin="8,0" />
-            <TextBlock Text="{Binding Status}" TextTrimming="CharacterEllipsis" />
+            <TextBlock Text="{Binding Status}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+          </DockPanel>
+        </Border>
+
+        <!-- Collapsible Debug & Performance Monitor drawer -->
+        <Border x:Name="DebugPerfDrawer"
+                DockPanel.Dock="Right"
+                Width="400"
+                IsVisible="{Binding IsDebugPanelOpen}"
+                Background="#252526"
+                BorderBrush="#3F3F46"
+                BorderThickness="1,0,0,0"
+                Padding="8">
+          <DockPanel>
+            <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+              <Button DockPanel.Dock="Right" Content="Close" Command="{Binding ToggleDebugPanelCommand}" Padding="8,2" FontSize="11" />
+              <TextBlock Text="Debug &amp; Perf Monitor" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" />
+            </DockPanel>
+            <TabControl>
+              <TabItem Header="Resources">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                  <StackPanel Spacing="8" Margin="0,6,0,0">
+                    <Border Background="#1E1E1E" BorderBrush="#3F3F46" BorderThickness="1" CornerRadius="4" Padding="8">
+                      <StackPanel Spacing="4">
+                        <TextBlock Text="{Binding CpuSummary}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding RamSummary}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding DiskSummary}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding GcSummary}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding RuntimeSummary}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="12" Foreground="#9CDCFE" TextWrapping="Wrap" />
+                      </StackPanel>
+                    </Border>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <TextBlock Text="Interval (s):" VerticalAlignment="Center" FontSize="12" />
+                      <ComboBox ItemsSource="{Binding IntervalChoices}" SelectedItem="{Binding PerfIntervalSeconds, Mode=TwoWay}" MinWidth="80" />
+                    </StackPanel>
+                    <WrapPanel Orientation="Horizontal" ItemSpacing="6" LineSpacing="6">
+                      <Button Content="{Binding CsvLogButtonText}" Command="{Binding ToggleCsvLoggingCommand}" />
+                      <Button Content="Open Log Folder" Command="{Binding OpenPerfLogFolderCommand}" />
+                      <Button Content="Force GC (Compact LOH)" Command="{Binding ForceGcCommand}" />
+                      <Button Content="Clear Cache" Command="{Binding ClearCacheCommand}" />
+                      <Button Content="Copy Snapshot" Command="{Binding CopyPerfSnapshotCommand}" />
+                    </WrapPanel>
+                    <TextBlock Text="{Binding LastGcResultText}" Foreground="#4EC9B0" FontSize="12" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding PerfLogFolder, StringFormat='Log folder: {0}'}" Foreground="#888888" FontSize="11" TextWrapping="Wrap" />
+                  </StackPanel>
+                </ScrollViewer>
+              </TabItem>
+              <TabItem Header="Runtime Logs">
+                <DockPanel Margin="0,6,0,0">
+                  <StackPanel DockPanel.Dock="Top" Spacing="6" Margin="0,0,0,6">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                      <ComboBox ItemsSource="{Binding LogFilters}" SelectedItem="{Binding SelectedLogFilter, Mode=TwoWay}" MinWidth="115" />
+                      <Button Content="Clear" Command="{Binding ClearRuntimeLogsCommand}" />
+                      <Button Content="Copy Logs" Command="{Binding CopyRuntimeLogsCommand}" />
+                    </StackPanel>
+                    <CheckBox Content="Capture First-Chance Exceptions" IsChecked="{Binding CaptureFirstChanceExceptions, Mode=TwoWay}" FontSize="12" />
+                  </StackPanel>
+                  <ListBox ItemsSource="{Binding RuntimeLogs}" FontFamily="Cascadia Code,Consolas,monospace" FontSize="11">
+                    <ListBox.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <VirtualizingStackPanel />
+                      </ItemsPanelTemplate>
+                    </ListBox.ItemsPanel>
+                    <ListBox.ItemTemplate>
+                      <DataTemplate x:DataType="diag:RuntimeLogEntry">
+                        <TextBlock Text="{Binding SummaryLine}" TextWrapping="Wrap" ToolTip.Tip="{Binding StackSummary}" />
+                      </DataTemplate>
+                    </ListBox.ItemTemplate>
+                  </ListBox>
+                </DockPanel>
+              </TabItem>
+            </TabControl>
           </DockPanel>
         </Border>
 
@@ -153,7 +234,7 @@
 
         <Grid Grid.Column="2" RowDefinitions="*,4,260">
           <!-- Central 3-tab code viewer -->
-          <TabControl Grid.Row="0">
+          <TabControl Grid.Row="0" SelectedIndex="{Binding SelectedCodeTabIndex, Mode=TwoWay}">
             <TabItem Header="C/C++">
               <ae:TextEditor x:Name="CppEditor" IsReadOnly="True" ShowLineNumbers="True" Background="#1E1E1E" Foreground="#D4D4D4" FontFamily="Cascadia Code,Consolas,Menlo,monospace" FontSize="13" />
             </TabItem>

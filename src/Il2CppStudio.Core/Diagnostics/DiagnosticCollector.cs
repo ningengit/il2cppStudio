@@ -16,6 +16,8 @@ public interface IDiagnosticSink
 /// </summary>
 public sealed class DiagnosticCollector : IDiagnosticSink
 {
+    public const int MaxRetainedItems = 20_000;
+
     private readonly ConcurrentQueue<Diagnostic> _items = new();
     private readonly ILogger _logger;
     private readonly int[] _counts = new int[Enum.GetValues<DiagnosticSeverity>().Length];
@@ -41,21 +43,29 @@ public sealed class DiagnosticCollector : IDiagnosticSink
 
     public void Report(Diagnostic diagnostic)
     {
-        _items.Enqueue(diagnostic);
         Interlocked.Increment(ref _counts[(int)diagnostic.Severity]);
+        if (diagnostic.Severity > DiagnosticSeverity.Verbose || _items.Count < 4096)
+        {
+            _items.Enqueue(diagnostic);
+            while (_items.Count > MaxRetainedItems && _items.TryDequeue(out _)) { }
+        }
 
-        var log = _logger
-            .ForContext("Category", diagnostic.Category)
-            .ForContext("Code", diagnostic.Code);
-        if (diagnostic.Location is { } loc)
-            log = log.ForContext("Location", loc, destructureObjects: true);
-        if (diagnostic.ExceptionText is { } exText)
-            log = log.ForContext("ExceptionType", diagnostic.ExceptionType).ForContext("ExceptionText", exText);
+        var sl = ToSerilog(diagnostic.Severity);
+        if (_logger.IsEnabled(sl))
+        {
+            var log = _logger
+                .ForContext("Category", diagnostic.Category)
+                .ForContext("Code", diagnostic.Code);
+            if (diagnostic.Location is { } loc)
+                log = log.ForContext("Location", loc, destructureObjects: true);
+            if (diagnostic.ExceptionText is { } exText)
+                log = log.ForContext("ExceptionType", diagnostic.ExceptionType).ForContext("ExceptionText", exText);
 
-        // The message is passed as a property, never as a template, so user/game strings containing
-        // braces can never break or inject into Serilog's message template parser.
-        log.Write(ToSerilog(diagnostic.Severity), "{Code} [{Category}] {DiagnosticMessage}",
-            diagnostic.Code, diagnostic.Category, diagnostic.Message);
+            // The message is passed as a property, never as a template, so user/game strings containing
+            // braces can never break or inject into Serilog's message template parser.
+            log.Write(sl, "{Code} [{Category}] {DiagnosticMessage}",
+                diagnostic.Code, diagnostic.Category, diagnostic.Message);
+        }
 
         DiagnosticReported?.Invoke(diagnostic);
     }

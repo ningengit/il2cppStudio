@@ -52,15 +52,20 @@ public sealed class LiftingBodyProvider(IMethodLifter driver, IDiagnosticSink si
                 "Emitted as NativeIntrinsics.CallNative(\"sub_RVA\", …); see diagnostics (IS8001/IS8002) for targets.");
     }
 
-    public int EnsureLifted(IEnumerable<int> methodIndices)
+    public int EnsureLifted(IEnumerable<int> methodIndices) => EnsureLifted(methodIndices, CancellationToken.None);
+
+    public int EnsureLifted(IEnumerable<int> methodIndices, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var todo = methodIndices.Distinct().Where(m => !_results.ContainsKey(m)).Order().ToArray();
         if (todo.Length == 0) return 0;
         var lifted = 0;
         if (driver.SupportsParallelLifting && todo.Length > 1)
         {
-            Parallel.ForEach(todo, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, m =>
+            var options = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount, CancellationToken = ct };
+            Parallel.ForEach(todo, options, m =>
             {
+                ct.ThrowIfCancellationRequested();
                 if (_results.ContainsKey(m)) return;
                 var r = driver.Lift(m);
                 _results[m] = r;
@@ -74,6 +79,7 @@ public sealed class LiftingBodyProvider(IMethodLifter driver, IDiagnosticSink si
             {
                 foreach (var m in todo)
                 {
+                    ct.ThrowIfCancellationRequested();
                     if (_results.ContainsKey(m)) continue;
                     var r = driver.Lift(m);
                     _results[m] = r;

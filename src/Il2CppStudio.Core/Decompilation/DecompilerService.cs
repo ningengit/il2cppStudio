@@ -17,6 +17,9 @@ public interface IMethodBodyProvider
 {
     /// <summary>Ensures the given methods have lifted CIL bodies in their stub module. Returns how many were lifted now.</summary>
     int EnsureLifted(IEnumerable<int> methodIndices);
+
+    /// <summary>Cancellable overload for interactive UI navigation.</summary>
+    int EnsureLifted(IEnumerable<int> methodIndices, CancellationToken ct) => EnsureLifted(methodIndices);
 }
 
 /// <summary>
@@ -209,32 +212,49 @@ public sealed class DecompilerService
 
     // ------------------------------------------------------------------ public API
 
-    public string DecompileType(TypeModel type)
+    public void ClearCache()
     {
+        _images.Clear();
+        _stubBytes.Clear();
+        _bclFiles.Clear();
+        Interlocked.Exchange(ref _mapper, null);
+    }
+
+    public string DecompileType(TypeModel type, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
         var image = ImageOf(type);
         if (image < 0) return $"// Type '{type.FullName}' has no image.";
         if (IsSubstitutedBcl(image) && TryPristine(image) is { } pristine)
-            return Guard(() => Header(image, true) + Finish(NewDecompiler(pristine).DecompileType(new FullTypeName(TopLevelOf(type).FullName)), image, annotate: false), type.FullName);
+        {
+            ct.ThrowIfCancellationRequested();
+            return Guard(() => Header(image, true) + Finish(NewDecompiler(pristine, ct).DecompileType(new FullTypeName(TopLevelOf(type).FullName)), image, annotate: false), type.FullName);
+        }
 
-        LiftType(type);
+        LiftType(type, ct);
+        ct.ThrowIfCancellationRequested();
         var file = GetStubFile(image);
-        return Guard(() => Header(image, false) + Finish(NewDecompiler(file).DecompileType(new FullTypeName(TopLevelOf(type).FullName)), image, annotate: true), type.FullName);
+        ct.ThrowIfCancellationRequested();
+        return Guard(() => Header(image, false) + Finish(NewDecompiler(file, ct).DecompileType(new FullTypeName(TopLevelOf(type).FullName)), image, annotate: true), type.FullName);
     }
 
-    public string DecompileMethod(TypeModel type, MethodModel method)
+    public string DecompileMethod(TypeModel type, MethodModel method, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var image = ImageOf(type);
         if (image < 0) return "// no image";
         var substituted = IsSubstitutedBcl(image) ? TryPristine(image) : null;
         if (substituted is null && TopLevelOf(type).NestedTypes.Any(n => n.Name.Contains(">d__", StringComparison.Ordinal)))
-            return DecompileMethodInTypeContext(type, method, image);
-        if (substituted is null) LiftMethods([method.Index]);
+            return DecompileMethodInTypeContext(type, method, image, ct);
+        if (substituted is null) LiftMethods([method.Index], ct);
+        ct.ThrowIfCancellationRequested();
         var file = substituted ?? GetStubFile(image);
+        ct.ThrowIfCancellationRequested();
         return Guard(() =>
         {
             var handle = FindMethod(file, type, method);
             if (handle.IsNil) return $"// Method {type.FullName}::{method.Name} not found in {(substituted is null ? "stub" : "BCL reference")} module.";
-            return Header(image, substituted is not null) + Finish(NewDecompiler(file).Decompile(handle), image, annotate: substituted is null);
+            return Header(image, substituted is not null) + Finish(NewDecompiler(file, ct).Decompile(handle), image, annotate: substituted is null);
         }, $"{type.FullName}::{method.Name}");
     }
 
@@ -242,41 +262,49 @@ public sealed class DecompilerService
     /// Single-method view for types with compiler-generated iterators: decompiles the whole type so type-level
     /// rewrites (coroutine reconstruction, factory call-site collapse) apply, then prints only the requested method.
     /// </summary>
-    private string DecompileMethodInTypeContext(TypeModel type, MethodModel method, int image)
+    private string DecompileMethodInTypeContext(TypeModel type, MethodModel method, int image, CancellationToken ct = default)
     {
-        LiftType(type);
+        LiftType(type, ct);
+        ct.ThrowIfCancellationRequested();
         var file = GetStubFile(image);
-        return Guard(() => Header(image, false) + Finish(NewDecompiler(file).DecompileType(new FullTypeName(TopLevelOf(type).FullName)), image,
+        ct.ThrowIfCancellationRequested();
+        return Guard(() => Header(image, false) + Finish(NewDecompiler(file, ct).DecompileType(new FullTypeName(TopLevelOf(type).FullName)), image,
             annotate: true, select: t => MemberExtractor.Extract(t, type.Name, method.Name, method.ParameterNames)), $"{type.FullName}::{method.Name}");
     }
 
-    public string DisassembleType(TypeModel type)
+    public string DisassembleType(TypeModel type, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var image = ImageOf(type);
         if (image < 0) return "// no image";
-        LiftType(type);
+        LiftType(type, ct);
+        ct.ThrowIfCancellationRequested();
         var file = GetStubFile(image);
+        ct.ThrowIfCancellationRequested();
         return Guard(() =>
         {
             var handle = FindType(file, type);
             if (handle.IsNil) return $"// Type {type.FullName} not found in stub module.";
-            var (dis, writer) = NewDisassembler(file);
+            var (dis, writer) = NewDisassembler(file, ct);
             dis.DisassembleType(file, handle);
             return writer.ToString();
         }, type.FullName);
     }
 
-    public string DisassembleMethod(TypeModel type, MethodModel method)
+    public string DisassembleMethod(TypeModel type, MethodModel method, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var image = ImageOf(type);
         if (image < 0) return "// no image";
-        LiftMethods([method.Index]);
+        LiftMethods([method.Index], ct);
+        ct.ThrowIfCancellationRequested();
         var file = GetStubFile(image);
+        ct.ThrowIfCancellationRequested();
         return Guard(() =>
         {
             var handle = FindMethod(file, type, method);
             if (handle.IsNil) return $"// Method {type.FullName}::{method.Name} not found in stub module.";
-            var (dis, writer) = NewDisassembler(file);
+            var (dis, writer) = NewDisassembler(file, ct);
             dis.DisassembleMethod(file, handle);
             return writer.ToString();
         }, $"{type.FullName}::{method.Name}");
@@ -669,23 +697,25 @@ public sealed class DecompilerService
         ? $"// [BCL substituted] {_stubs.ImageName(image)} decompiled from pristine reference assembly: {_bcl.Find(_stubs.ImageName(image))}\n"
         : $"// {_stubs.ImageName(image)} — reconstructed from IL2CPP metadata + lifted native code\n";
 
-    private void LiftType(TypeModel type)
+    private void LiftType(TypeModel type, CancellationToken ct = default)
     {
         var all = new List<int>();
         void Collect(TypeModel t) { all.AddRange(t.Methods.Select(m => m.Index)); foreach (var n in t.NestedTypes) Collect(n); }
         Collect(TopLevelOf(type));
-        LiftMethods(all);
+        LiftMethods(all, ct);
     }
 
-    private void LiftMethods(IEnumerable<int> methods) => BodyProvider?.EnsureLifted(methods);
+    private void LiftMethods(IEnumerable<int> methods, CancellationToken ct = default) =>
+        BodyProvider?.EnsureLifted(methods, ct);
 
-    private CSharpDecompiler NewDecompiler(MetadataFile file) => new(file, _sharedResolver, CreateSettings());
+    private CSharpDecompiler NewDecompiler(MetadataFile file, CancellationToken ct = default) =>
+        new(file, _sharedResolver, CreateSettings()) { CancellationToken = ct };
 
-    private (ReflectionDisassembler, StringWriter) NewDisassembler(MetadataFile file)
+    private (ReflectionDisassembler, StringWriter) NewDisassembler(MetadataFile file, CancellationToken ct = default)
     {
         var writer = new StringWriter();
         var output = new PlainTextOutput(writer);
-        var dis = new ReflectionDisassembler(output, CancellationToken.None)
+        var dis = new ReflectionDisassembler(output, ct)
         {
             AssemblyResolver = _sharedResolver,
             DetectControlStructure = true,
@@ -697,6 +727,7 @@ public sealed class DecompilerService
     private string Guard(Func<string> action, string what)
     {
         try { return action(); }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             _sink.Warn(DiagnosticCategory.Decompilation, DiagnosticCodes.DecompilationFailed, $"Decompiling {what} failed: {ex.Message}", new() { TypeName = what }, ex);

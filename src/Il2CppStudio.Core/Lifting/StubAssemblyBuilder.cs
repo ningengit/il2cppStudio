@@ -91,9 +91,24 @@ public sealed class StubAssemblyBuilder
         {
             if (assembly.Name?.Value is { } name && owner.FindImage(name) is >= 0 and var img)
             {
-                var mod = owner._modules[img] ?? owner.GetModule(img);
-                result = mod.Module.Assembly;
-                return result is not null ? ResolutionStatus.Success : ResolutionStatus.AssemblyNotFound;
+                lock (owner._gate)
+                {
+                    var existing = owner._modules[img];
+                    if (existing is not null)
+                    {
+                        var asm = existing.Module.Assembly;
+                        if (asm is { RuntimeContext: null })
+                        {
+                            result = asm;
+                            return ResolutionStatus.Success;
+                        }
+                        result = null;
+                        return ResolutionStatus.AssemblyNotFound;
+                    }
+                    var mod = owner._modules[img] = owner.BuildModule(img, addToRuntimeContext: false);
+                    result = mod.Module.Assembly;
+                    return result is not null ? ResolutionStatus.Success : ResolutionStatus.AssemblyNotFound;
+                }
             }
             result = null;
             return ResolutionStatus.AssemblyNotFound;
@@ -177,14 +192,19 @@ public sealed class StubAssemblyBuilder
 
     // ------------------------------------------------------------------ building
 
-    private StubModule BuildModule(int imageIndex)
+    private StubModule BuildModule(int imageIndex, bool addToRuntimeContext = true)
     {
         var img = _md.Images[imageIndex];
         var asmDef = _md.Assemblies.FirstOrDefault(a => a.ImageIndex == imageIndex);
         var asmName = _md.GetString(asmDef.NameIndex);
         var corlib = MakeAssemblyRef(_md.Assemblies.FirstOrDefault(a => _md.GetString(a.NameIndex) == "mscorlib"), "mscorlib");
         var module = new ModuleDefinition(ImageName(imageIndex), corlib);
-        var assembly = new AssemblyDefinition(asmName, new Version(asmDef.Major, asmDef.Minor, asmDef.Build, asmDef.Revision));
+        var assembly = new AssemblyDefinition(asmName, new Version(Math.Max(0, asmDef.Major), Math.Max(0, asmDef.Minor), Math.Max(0, asmDef.Build), Math.Max(0, asmDef.Revision)));
+        if (asmDef.PublicKeyToken != 0)
+        {
+            assembly.PublicKey = BitConverter.GetBytes(asmDef.PublicKeyToken);
+            assembly.HasPublicKey = false;
+        }
         assembly.Modules.Add(module);
         for (var r = 0; r < asmDef.ReferencedAssemblyCount; r++)
         {
@@ -222,12 +242,39 @@ public sealed class StubAssemblyBuilder
         var intrinsics = CreateIntrinsics(module);
         var stub = new StubModule { ImageIndex = imageIndex, AssemblyName = asmName, Module = module, Intrinsics = intrinsics };
         _modules[imageIndex] = stub;
-        try { GetOrCreateRuntimeContext(corlib).AddAssembly(assembly); }
-        catch (ArgumentException) { }
+        var rtCtx = GetOrCreateRuntimeContext(corlib);
+        if (addToRuntimeContext && assembly.RuntimeContext is null)
+        {
+            try { rtCtx.AddAssembly(assembly); }
+            catch (ArgumentException) { }
+        }
 
         // Pass 3: custom attributes (after stub registration so intra-image attribute ctors do not recurse).
         AttachCustomAttributes(module, imageIndex, attrTargets);
+        NormalizeOptionalParameters(module);
         return stub;
+    }
+
+    private int _systemEnumTypeDef = -2;
+
+    private ITypeDefOrRef GetSystemEnumRef(ModuleDefinition module)
+    {
+        if (_systemEnumTypeDef == -2)
+        {
+            _systemEnumTypeDef = -1;
+            for (var i = 0; i < _model.Types.Count; i++)
+            {
+                var tm = _model.Types[i];
+                if (tm.DeclaringType is null && tm.Namespace == "System" && tm.Name == "Enum")
+                {
+                    _systemEnumTypeDef = i;
+                    break;
+                }
+            }
+        }
+        if (_systemEnumTypeDef >= 0 && TypeRefFor(module, _systemEnumTypeDef) is { } r)
+            return r;
+        return new TypeReference(module, module.CorLibTypeFactory.CorLibScope, "System", "Enum");
     }
 
     private void PopulateType(ModuleDefinition module, int t, List<(uint Token, IHasCustomAttribute Target)> attrTargets)
@@ -236,7 +283,10 @@ public sealed class StubAssemblyBuilder
         var td = _typeDefs[t]!;
         try
         {
-            if (def.ParentIndex >= 0) td.BaseType = ToTypeDefOrRef(module, def.ParentIndex);
+            if (def.IsEnum)
+                td.BaseType = GetSystemEnumRef(module);
+            else if (def.ParentIndex >= 0)
+                td.BaseType = ToTypeDefOrRef(module, def.ParentIndex);
             for (var i = 0; i < def.InterfacesCount; i++)
             {
                 var ti = _md.Interfaces[def.InterfacesStart + i];
@@ -458,6 +508,8 @@ public sealed class StubAssemblyBuilder
             var pi = md.ParameterStart + p;
             var pd = _md.Parameters[pi];
             var pattrs = _reg is not null && _reg.TryGetType(pd.TypeIndex, out var pt) ? (ParameterAttributes)pt.Attrs : 0;
+            if (paramTypes[p] is ByReferenceTypeSignature)
+                pattrs &= ~(ParameterAttributes.HasDefault | ParameterAttributes.Optional);
             var pdef = new ParameterDefinition((ushort)(p + 1), _md.GetString(pd.NameIndex), pattrs);
             if ((pattrs & ParameterAttributes.HasDefault) != 0 && _reg is not null)
             {
@@ -469,10 +521,10 @@ public sealed class StubAssemblyBuilder
                     else if (ConstantFromObject(pv) is { } pc)
                         pdef.Constant = pc;
                     else
-                        pdef.Attributes &= ~ParameterAttributes.HasDefault;
+                        pdef.Attributes &= ~(ParameterAttributes.HasDefault | ParameterAttributes.Optional);
                 }
                 else
-                    pdef.Attributes &= ~ParameterAttributes.HasDefault;
+                    pdef.Attributes &= ~(ParameterAttributes.HasDefault | ParameterAttributes.Optional);
             }
             method.ParameterDefinitions.Add(pdef);
             if (pd.Token != 0) attrTargets.Add((pd.Token, pdef));
@@ -542,6 +594,95 @@ public sealed class StubAssemblyBuilder
         return tr;
     }
 
+    private readonly Dictionary<int, bool> _attrAllowMultipleCache = [];
+
+    private bool IsAttributeAllowMultiple(int attrDeclTd)
+    {
+        if (_attrAllowMultipleCache.TryGetValue(attrDeclTd, out var cached))
+            return cached;
+        var allowMultiple = false;
+        var attrImg = ImageOfType(attrDeclTd);
+        var token = _md.TypeDefinitions[attrDeclTd].Token;
+        if (attrImg >= 0 && token != 0 && _attrReader is not null)
+        {
+            try
+            {
+                var attrs = _attrReader.ReadForToken(attrImg, token);
+                foreach (var da in attrs)
+                {
+                    if ((uint)da.CtorMethodIndex >= (uint)_md.Methods.Length) continue;
+                    var usageTd = _md.Methods[da.CtorMethodIndex].DeclaringType;
+                    if ((uint)usageTd >= (uint)_model.Types.Count) continue;
+                    if (_model.Types[usageTd].FullName != "System.AttributeUsageAttribute") continue;
+                    foreach (var na in da.NamedArgs)
+                    {
+                        if ((uint)na.DeclaringTypeDef >= (uint)_md.TypeDefinitions.Length) continue;
+                        var owner = _md.TypeDefinitions[na.DeclaringTypeDef];
+                        string? memberName = null;
+                        if (na.IsField && (uint)na.MemberOffsetInType < owner.FieldCount)
+                            memberName = _md.GetString(_md.Fields[owner.FieldStart + na.MemberOffsetInType].NameIndex);
+                        else if (!na.IsField && (uint)na.MemberOffsetInType < owner.PropertyCount)
+                            memberName = _md.GetString(_md.Properties[owner.PropertyStart + na.MemberOffsetInType].NameIndex);
+                        if (memberName == "AllowMultiple" && na.Value.Value is bool b && b)
+                        {
+                            allowMultiple = true;
+                            break;
+                        }
+                    }
+                    if (allowMultiple) break;
+                }
+            }
+            catch { }
+        }
+        _attrAllowMultipleCache[attrDeclTd] = allowMultiple;
+        return allowMultiple;
+    }
+
+    private static void NormalizeOptionalParameters(ModuleDefinition module)
+    {
+        foreach (var top in module.TopLevelTypes)
+            NormalizeTypeOptionalParameters(top);
+    }
+
+    private static void NormalizeTypeOptionalParameters(TypeDefinition td)
+    {
+        foreach (var m in td.Methods)
+            NormalizeMethodOptionalParameters(m);
+        foreach (var nested in td.NestedTypes)
+            NormalizeTypeOptionalParameters(nested);
+    }
+
+    private static void NormalizeMethodOptionalParameters(MethodDefinition method)
+    {
+        var ps = method.ParameterDefinitions;
+        var count = ps.Count;
+        if (count == 0) return;
+
+        var paramTypes = method.Signature?.ParameterTypes;
+        var idx = count - 1;
+        if (idx >= 0 && ps[idx].CustomAttributes.Any(a => a.Constructor?.DeclaringType?.FullName == "System.ParamArrayAttribute"))
+            idx--;
+
+        var seenRequired = false;
+        for (; idx >= 0; idx--)
+        {
+            var p = ps[idx];
+            var isByRef = paramTypes is not null && idx < paramTypes.Count && paramTypes[idx] is ByReferenceTypeSignature;
+            var hasDefault = (p.Attributes & ParameterAttributes.HasDefault) != 0 && p.Constant is not null;
+            if (isByRef || !hasDefault)
+            {
+                p.Attributes &= ~(ParameterAttributes.HasDefault | ParameterAttributes.Optional);
+                p.Constant = null;
+                seenRequired = true;
+            }
+            else if (seenRequired)
+            {
+                p.Attributes &= ~(ParameterAttributes.HasDefault | ParameterAttributes.Optional);
+                p.Constant = null;
+            }
+        }
+    }
+
     private void AttachCustomAttributes(ModuleDefinition module, int imageIndex, List<(uint Token, IHasCustomAttribute Target)> targets)
     {
         if (targets.Count == 0) return;
@@ -553,6 +694,7 @@ public sealed class StubAssemblyBuilder
             catch { continue; }
             if (decoded.Count == 0) continue;
 
+            HashSet<string>? singleUseTypes = null;
             foreach (var da in decoded)
             {
                 try
@@ -562,6 +704,13 @@ public sealed class StubAssemblyBuilder
                     if ((uint)attrDeclTd >= (uint)_model.Types.Count) continue;
                     var attrTypeName = _model.Types[attrDeclTd].FullName;
                     if (SkippedAttributeTypes.Contains(attrTypeName)) continue;
+
+                    var allowMultiple = IsAttributeAllowMultiple(attrDeclTd);
+                    if (!allowMultiple)
+                    {
+                        singleUseTypes ??= new HashSet<string>(StringComparer.Ordinal);
+                        if (!singleUseTypes.Add(attrTypeName)) continue;
+                    }
 
                     if (MethodRefFor(module, da.CtorMethodIndex) is not ICustomAttributeType ctor) continue;
                     var caSig = new CustomAttributeSignature();
@@ -648,6 +797,16 @@ public sealed class StubAssemblyBuilder
         if (v.TypeCode == Il2CppTypeEnum.Enum)
         {
             var enumSig = v.TypeIndex >= 0 ? ToSig(module, v.TypeIndex) : expectedType;
+            var tdIdx = v.TypeIndex >= 0 ? TypeDefOfTypeIndex(v.TypeIndex) : -1;
+            if ((uint)tdIdx < (uint)_md.TypeDefinitions.Length)
+                return _md.TypeDefinitions[tdIdx].IsEnum ? new CustomAttributeArgument(enumSig, v.Value) : null;
+
+            if (expectedType is TypeDefOrRefSignature trs)
+            {
+                _typeByFullName ??= _model.Types.GroupBy(x => x.FullName).ToDictionary(g => g.Key, g => g.First().Index, StringComparer.Ordinal);
+                if (_typeByFullName.TryGetValue(trs.FullName.Replace('/', '+'), out var expTd))
+                    return _md.TypeDefinitions[expTd].IsEnum ? new CustomAttributeArgument(enumSig, v.Value) : null;
+            }
             return ((ITypeDescriptor)enumSig).Resolve(module.RuntimeContext, out var enumDef) == ResolutionStatus.Success && enumDef is { IsEnum: true }
                 ? new CustomAttributeArgument(enumSig, v.Value)
                 : null;
@@ -803,6 +962,25 @@ public sealed class StubAssemblyBuilder
             case Il2CppTypeEnum.TypedByRef: return f.TypedReference;
             case Il2CppTypeEnum.Class or Il2CppTypeEnum.ValueType:
             {
+                if ((uint)t.KlassIndex < (uint)_model.Types.Count)
+                {
+                    var tm = _model.Types[t.KlassIndex];
+                    if (tm.Namespace == "Unity.IL2CPP.Metadata" && tm.Name.StartsWith("__Il2Cpp", StringComparison.Ordinal))
+                    {
+                        return tm.Name switch
+                        {
+                            "__Il2CppInt32Enum" => f.Int32,
+                            "__Il2CppUInt32Enum" => f.UInt32,
+                            "__Il2CppInt64Enum" => f.Int64,
+                            "__Il2CppUInt64Enum" => f.UInt64,
+                            "__Il2CppInt16Enum" => f.Int16,
+                            "__Il2CppUInt16Enum" => f.UInt16,
+                            "__Il2CppByteEnum" => f.Byte,
+                            "__Il2CppSByteEnum" => f.SByte,
+                            _ => f.Object,
+                        };
+                    }
+                }
                 var r = TypeRefFor(ctx, t.KlassIndex);
                 return r is null ? f.Object : new TypeDefOrRefSignature(r, IsValueType(t.KlassIndex));
             }

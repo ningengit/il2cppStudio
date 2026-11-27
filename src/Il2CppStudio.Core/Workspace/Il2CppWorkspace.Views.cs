@@ -81,16 +81,32 @@ public sealed partial class Il2CppWorkspace
     /// Renders one view. Serialized: lifting mutates the shared stub modules and body cache, and the GUI starts a
     /// background render per selection, so overlapping renders must not interleave.
     /// </summary>
-    public string Render(TypeModel type, MethodModel? method, CodeView view)
+    public string Render(TypeModel type, MethodModel? method, CodeView view) =>
+        Render(type, method, view, CancellationToken.None);
+
+    public string Render(TypeModel type, MethodModel? method, CodeView view, CancellationToken ct)
     {
-        lock (_renderGate) return RenderCore(type, method, view);
+        ct.ThrowIfCancellationRequested();
+        lock (_renderGate)
+        {
+            ct.ThrowIfCancellationRequested();
+            return RenderCore(type, method, view, ct);
+        }
     }
 
-    private string RenderCore(TypeModel type, MethodModel? method, CodeView view) => view switch
+    public void ClearCaches()
+    {
+        lock (_renderGate)
+        {
+            _decompiler?.ClearCache();
+        }
+    }
+
+    private string RenderCore(TypeModel type, MethodModel? method, CodeView view, CancellationToken ct) => view switch
     {
         CodeView.Cpp => method is null ? CppTypeView.Render(Cpp, type) : Cpp.GenerateMethod(type, method),
-        CodeView.Il => method is null ? Decompiler.DisassembleType(type) : Decompiler.DisassembleMethod(type, method),
-        CodeView.CSharp => method is null ? Decompiler.DecompileType(type) : Decompiler.DecompileMethod(type, method),
+        CodeView.Il => method is null ? Decompiler.DisassembleType(type, ct) : Decompiler.DisassembleMethod(type, method, ct),
+        CodeView.CSharp => method is null ? Decompiler.DecompileType(type, ct) : Decompiler.DecompileMethod(type, method, ct),
         _ => "",
     };
 }

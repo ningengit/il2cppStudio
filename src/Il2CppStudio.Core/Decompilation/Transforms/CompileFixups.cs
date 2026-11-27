@@ -149,6 +149,7 @@ public static class CompileFixups
         HoistRefAssignTargetLocals(tree);
         StripImmutableKeyValuePairFieldStores(tree);
         FoldReinterpretFloatLocals(tree);
+        FixDoubleToFloatAndThisAddress(tree, in flags);
         FixLeakedTypeParameters(tree);
         PurgeDiscardsAndDeadStatements(tree);
         EmptyIfRemover.Apply(tree);
@@ -1766,6 +1767,81 @@ public static class CompileFixups
                 else if (u.Expression is not ParenthesizedExpression)
                     u.Expression = new ParenthesizedExpression(innerMinus.Detach());
             }
+        }
+    }
+
+    private static void FixDoubleToFloatAndThisAddress(SyntaxTree tree, in TreeFlags flags)
+    {
+        static bool CoerceDoubleLiteralToFloat(Expression expr, out Expression replacement)
+        {
+            if (expr is PrimitiveExpression { Value: double d })
+            {
+                replacement = new PrimitiveExpression((float)d);
+                return true;
+            }
+            if (expr is UnaryOperatorExpression { Operator: UnaryOperatorType.Minus, Expression: PrimitiveExpression { Value: double dn } })
+            {
+                replacement = new UnaryOperatorExpression(UnaryOperatorType.Minus, new PrimitiveExpression((float)dn));
+                return true;
+            }
+            replacement = null!;
+            return false;
+        }
+
+        var floatLocalNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var vds in AstWalk.Collect<VariableDeclarationStatement>(tree))
+        {
+            if (vds.Type is not PrimitiveType { Keyword: "float" }) continue;
+            foreach (var v in vds.Variables)
+            {
+                floatLocalNames.Add(v.Name);
+                if (!v.Initializer.IsNull && CoerceDoubleLiteralToFloat(v.Initializer, out var rep))
+                    v.Initializer = rep;
+            }
+        }
+
+        foreach (var assign in AstWalk.Collect<AssignmentExpression>(tree))
+        {
+            if (assign.Operator != AssignmentOperatorType.Assign || assign.Right.IsNull) continue;
+            var isFloatTarget = assign.Left.Annotation<ResolveResult>()?.Type.IsKnownType(KnownTypeCode.Single) == true
+                || (assign.Left is IdentifierExpression id && floatLocalNames.Contains(id.Identifier));
+            if (isFloatTarget && CoerceDoubleLiteralToFloat(assign.Right, out var rep))
+                assign.Right = rep;
+        }
+
+        if (!flags.HasPointerSyntax) return;
+        foreach (var u in AstWalk.Collect<UnaryOperatorExpression>(tree, static x => x.Operator == UnaryOperatorType.AddressOf))
+        {
+            if (u.Parent is null || UnwrapParens(u.Expression) is not ThisReferenceExpression) continue;
+            var enclosingTd = u.GetParent<TypeDeclaration>();
+            if (enclosingTd is { ClassType: ClassType.Struct }) continue;
+
+            AstNode cur = u;
+            while (cur.Parent is ParenthesizedExpression pe) cur = pe;
+            if (cur.Parent is CastExpression { Type: ComposedType { PointerRank: 1 } ptrType } cast)
+            {
+                AstNode afterCast = cast;
+                while (afterCast.Parent is ParenthesizedExpression pe2) afterCast = pe2;
+                if (afterCast.Parent is UnaryOperatorExpression { Operator: UnaryOperatorType.Dereference } deref
+                    && deref.Parent is not DirectionExpression
+                    && !(deref.Parent is AssignmentExpression ae && ae.Left == deref))
+                {
+                    deref.ReplaceWith(new InvocationExpression(
+                        new MemberReferenceExpression(
+                            new TypeReferenceExpression(new MemberType(new MemberType(new SimpleType("Il2CppStudio"), "Native"), "NativeIntrinsics")),
+                            "Reinterpret",
+                            ptrType.BaseType.Clone()),
+                        new ThisReferenceExpression()));
+                    continue;
+                }
+            }
+
+            u.ReplaceWith(new InvocationExpression(
+                new MemberReferenceExpression(
+                    new TypeReferenceExpression(new MemberType(new MemberType(new SimpleType("Il2CppStudio"), "Native"), "NativeIntrinsics")),
+                    "Reinterpret",
+                    new SimpleType("nint")),
+                new ThisReferenceExpression()));
         }
     }
 

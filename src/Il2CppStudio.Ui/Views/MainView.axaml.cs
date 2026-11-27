@@ -48,6 +48,7 @@ public sealed partial class MainView : UserControl, IUiServices
         DetachedFromVisualTree += (_, _) => Detach();
         AssemblyTree.AddHandler(Control.ContextRequestedEvent, OnNodeContextRequested, RoutingStrategies.Tunnel);
         SearchList.AddHandler(Control.ContextRequestedEvent, OnNodeContextRequested, RoutingStrategies.Tunnel);
+        AddHandler(InputElement.KeyDownEvent, OnViewKeyDown, RoutingStrategies.Tunnel);
 
         PromptOkButton.Click += (_, _) => ResolvePrompt(PromptBox.Text?.Trim());
         PromptCancelButton.Click += (_, _) => ResolvePrompt(null);
@@ -236,16 +237,37 @@ public sealed partial class MainView : UserControl, IUiServices
         return null;
     }
 
+    private void OnViewKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.F12 && Vm is { } vm)
+        {
+            vm.ToggleDebugPanelCommand.Execute(null);
+            e.Handled = true;
+        }
+    }
+
     /// <summary>AvaloniaEdit documents are not bindable; push text from the view model explicitly.</summary>
     private void OnVmPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (Vm is not { } vm) return;
         switch (e.PropertyName)
         {
-            case nameof(MainViewModel.CppText): CppEditor.Text = vm.CppText; break;
-            case nameof(MainViewModel.IlText): IlEditor.Text = vm.IlText; break;
-            case nameof(MainViewModel.CSharpText): CSharpEditor.Text = vm.CSharpText; break;
-            case nameof(MainViewModel.InspectionText): InspectionEditor.Text = vm.InspectionText; break;
+            case nameof(MainViewModel.CppText):
+                if (!string.Equals(CppEditor.Text, vm.CppText, StringComparison.Ordinal))
+                    CppEditor.Text = vm.CppText;
+                break;
+            case nameof(MainViewModel.IlText):
+                if (!string.Equals(IlEditor.Text, vm.IlText, StringComparison.Ordinal))
+                    IlEditor.Text = vm.IlText;
+                break;
+            case nameof(MainViewModel.CSharpText):
+                if (!string.Equals(CSharpEditor.Text, vm.CSharpText, StringComparison.Ordinal))
+                    CSharpEditor.Text = vm.CSharpText;
+                break;
+            case nameof(MainViewModel.InspectionText):
+                if (!string.Equals(InspectionEditor.Text, vm.InspectionText, StringComparison.Ordinal))
+                    InspectionEditor.Text = vm.InspectionText;
+                break;
         }
     }
 
