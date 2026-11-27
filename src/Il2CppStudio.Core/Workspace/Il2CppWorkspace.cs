@@ -93,6 +93,7 @@ public sealed partial class Il2CppWorkspace : IDisposable
                 else
                     sink.Warn(DiagnosticCategory.Binary, DiagnosticCodes.BinaryFormatUnsupported,
                         "Unrecognized archived native binary format; metadata-only features remain available.", new() { File = binBuf.VirtualPath });
+                files.Archive.ReleaseBinary();
             }
             else if (files.BinaryPath is { } bin && bin.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
                 pe = PeBinaryImage.Load(bin, sink);
@@ -139,6 +140,8 @@ public sealed partial class Il2CppWorkspace : IDisposable
 
     partial void DisposeNativePipeline();
 
+    partial void DisposeViews();
+
     /// <summary>Finds types by simple name, full name or "Namespace.Name" (case-insensitive fallback).</summary>
     public IReadOnlyList<TypeModel> FindTypes(string name)
     {
@@ -155,6 +158,7 @@ public sealed partial class Il2CppWorkspace : IDisposable
 
     public void Dispose()
     {
+        DisposeViews();
         DisposeNativePipeline();
         Binary?.Dispose();
         Metadata.Dispose();

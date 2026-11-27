@@ -57,6 +57,12 @@ public static partial class BuildBackupDetector
     /// <param name="binaryPdbGuid">CodeView GUID/age from GameAssembly.dll, if known, to verify the PDB.</param>
     public static BuildBackupInfo? Detect(string gameRoot, PdbIdentity? binaryPdbGuid, IDiagnosticSink sink, bool parseCodeGen = true)
     {
+        if (string.IsNullOrWhiteSpace(gameRoot) || !Directory.Exists(gameRoot))
+        {
+            sink.Info(DiagnosticCategory.BuildBackup, DiagnosticCodes.BackupNotPresent, $"No build backup folder. {BareModeLabel}", new() { File = gameRoot });
+            return null;
+        }
+
         string? folder = null;
         try
         {

@@ -75,11 +75,18 @@ public sealed partial class Il2CppWorkspace
     }
 
     /// <summary>Renders a type (method == null) or a single method in the requested representation.</summary>
+    private const int RenderCacheCapacity = 128;
+
+    private readonly record struct RenderCacheKey(int TypeIndex, int MethodIndex, CodeView View, bool SubstituteBcl);
+
     private readonly Lock _renderGate = new();
+    private readonly Lock _renderCacheGate = new();
+    private readonly Dictionary<RenderCacheKey, LinkedListNode<(RenderCacheKey Key, string Text)>> _renderCache = [];
+    private readonly LinkedList<(RenderCacheKey Key, string Text)> _renderCacheLru = [];
 
     /// <summary>
-    /// Renders one view. Serialized: lifting mutates the shared stub modules and body cache, and the GUI starts a
-    /// background render per selection, so overlapping renders must not interleave.
+    /// Renders one view. Checks the bounded 128-entry LRU cache first so revisiting recently viewed types costs ~0 allocations;
+    /// misses serialize under <see cref="_renderGate"/> so lifting does not interleave across concurrent UI requests.
     /// </summary>
     public string Render(TypeModel type, MethodModel? method, CodeView view) =>
         Render(type, method, view, CancellationToken.None);
@@ -87,19 +94,71 @@ public sealed partial class Il2CppWorkspace
     public string Render(TypeModel type, MethodModel? method, CodeView view, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        var key = new RenderCacheKey(type.Index, method?.Index ?? -1, view, SubstituteBcl);
+        lock (_renderCacheGate)
+        {
+            if (_renderCache.TryGetValue(key, out var node))
+            {
+                _renderCacheLru.Remove(node);
+                _renderCacheLru.AddFirst(node);
+                return node.Value.Text;
+            }
+        }
+
+        string rendered;
         lock (_renderGate)
         {
             ct.ThrowIfCancellationRequested();
-            return RenderCore(type, method, view, ct);
+            lock (_renderCacheGate)
+            {
+                if (_renderCache.TryGetValue(key, out var node))
+                {
+                    _renderCacheLru.Remove(node);
+                    _renderCacheLru.AddFirst(node);
+                    return node.Value.Text;
+                }
+            }
+            rendered = RenderCore(type, method, view, ct);
         }
+
+        lock (_renderCacheGate)
+        {
+            if (!_renderCache.TryGetValue(key, out var node))
+            {
+                var entry = new LinkedListNode<(RenderCacheKey Key, string Text)>((key, rendered));
+                _renderCacheLru.AddFirst(entry);
+                _renderCache[key] = entry;
+                while (_renderCache.Count > RenderCacheCapacity && _renderCacheLru.Last is { } oldest)
+                {
+                    _renderCacheLru.RemoveLast();
+                    _renderCache.Remove(oldest.Value.Key);
+                }
+            }
+        }
+        return rendered;
     }
 
     public void ClearCaches()
     {
+        lock (_renderCacheGate)
+        {
+            _renderCache.Clear();
+            _renderCacheLru.Clear();
+        }
         lock (_renderGate)
         {
             _decompiler?.ClearCache();
         }
+    }
+
+    partial void DisposeViews()
+    {
+        lock (_renderCacheGate)
+        {
+            _renderCache.Clear();
+            _renderCacheLru.Clear();
+        }
+        _decompiler?.Dispose();
     }
 
     private string RenderCore(TypeModel type, MethodModel? method, CodeView view, CancellationToken ct) => view switch

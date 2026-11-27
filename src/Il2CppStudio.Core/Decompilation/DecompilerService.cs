@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using System.Runtime.InteropServices;
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.Disassembler;
@@ -28,8 +29,10 @@ public interface IMethodBodyProvider
 /// The assembly resolver implements BCL substitution: with <see cref="SubstituteBcl"/> on, references to
 /// System.* / Microsoft.* / mscorlib bind to pristine reference assemblies; otherwise to the generated stubs.
 /// </summary>
-public sealed class DecompilerService
+public sealed class DecompilerService : IDisposable
 {
+    private const int InteractivePreLiftMethodLimit = 1500;
+
     private readonly StubAssemblyBuilder _stubs;
     private readonly MetadataModel _model;
     private readonly BclReferenceProvider _bcl;
@@ -37,6 +40,8 @@ public sealed class DecompilerService
     private readonly IDiagnosticSink _sink;
     private readonly ConcurrentDictionary<int, (int LiftedCount, PEFile File)> _images = new();
     private readonly ConcurrentDictionary<string, PEFile?> _bclFiles = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<(int ImageIndex, bool IsPristine), (MetadataFile File, DecompilerTypeSystem TypeSystem)> _typeSystems = new();
+    private readonly ConcurrentDictionary<int, byte> _preLiftedImages = new();
 
     public bool SubstituteBcl { get; set; }
 
@@ -214,11 +219,18 @@ public sealed class DecompilerService
 
     public void ClearCache()
     {
-        _images.Clear();
+        _typeSystems.Clear();
         _stubBytes.Clear();
+        foreach (var kv in _images)
+            kv.Value.File.Dispose();
+        _images.Clear();
+        foreach (var kv in _bclFiles)
+            kv.Value?.Dispose();
         _bclFiles.Clear();
         Interlocked.Exchange(ref _mapper, null);
     }
+
+    public void Dispose() => ClearCache();
 
     public string DecompileType(TypeModel type, CancellationToken ct = default)
     {
@@ -228,14 +240,14 @@ public sealed class DecompilerService
         if (IsSubstitutedBcl(image) && TryPristine(image) is { } pristine)
         {
             ct.ThrowIfCancellationRequested();
-            return Guard(() => Header(image, true) + Finish(NewDecompiler(pristine, ct).DecompileType(new FullTypeName(TopLevelOf(type).FullName)), image, annotate: false), type.FullName);
+            return Guard(() => Header(image, true) + Finish(NewDecompiler(image, pristine, isPristine: true, ct).DecompileType(new FullTypeName(TopLevelOf(type).FullName)), image, annotate: false), type.FullName);
         }
 
         LiftType(type, ct);
         ct.ThrowIfCancellationRequested();
         var file = GetStubFile(image);
         ct.ThrowIfCancellationRequested();
-        return Guard(() => Header(image, false) + Finish(NewDecompiler(file, ct).DecompileType(new FullTypeName(TopLevelOf(type).FullName)), image, annotate: true), type.FullName);
+        return Guard(() => Header(image, false) + Finish(NewDecompiler(image, file, isPristine: false, ct).DecompileType(new FullTypeName(TopLevelOf(type).FullName)), image, annotate: true), type.FullName);
     }
 
     public string DecompileMethod(TypeModel type, MethodModel method, CancellationToken ct = default)
@@ -248,13 +260,14 @@ public sealed class DecompilerService
             return DecompileMethodInTypeContext(type, method, image, ct);
         if (substituted is null) LiftMethods([method.Index], ct);
         ct.ThrowIfCancellationRequested();
+        var isPristine = substituted is not null;
         var file = substituted ?? GetStubFile(image);
         ct.ThrowIfCancellationRequested();
         return Guard(() =>
         {
             var handle = FindMethod(file, type, method);
-            if (handle.IsNil) return $"// Method {type.FullName}::{method.Name} not found in {(substituted is null ? "stub" : "BCL reference")} module.";
-            return Header(image, substituted is not null) + Finish(NewDecompiler(file, ct).Decompile(handle), image, annotate: substituted is null);
+            if (handle.IsNil) return $"// Method {type.FullName}::{method.Name} not found in {(isPristine ? "BCL reference" : "stub")} module.";
+            return Header(image, isPristine) + Finish(NewDecompiler(image, file, isPristine, ct).Decompile(handle), image, annotate: !isPristine);
         }, $"{type.FullName}::{method.Name}");
     }
 
@@ -268,7 +281,7 @@ public sealed class DecompilerService
         ct.ThrowIfCancellationRequested();
         var file = GetStubFile(image);
         ct.ThrowIfCancellationRequested();
-        return Guard(() => Header(image, false) + Finish(NewDecompiler(file, ct).DecompileType(new FullTypeName(TopLevelOf(type).FullName)), image,
+        return Guard(() => Header(image, false) + Finish(NewDecompiler(image, file, isPristine: false, ct).DecompileType(new FullTypeName(TopLevelOf(type).FullName)), image,
             annotate: true, select: t => MemberExtractor.Extract(t, type.Name, method.Name, method.ParameterNames)), $"{type.FullName}::{method.Name}");
     }
 
@@ -342,8 +355,10 @@ public sealed class DecompilerService
             if (_images.TryGetValue(imageIndex, out var cached) && cached.LiftedCount == stub.LiftedMethods.Count) return cached.File;
             var tStub = ExportProfiler.Start();
             var bytes = CachedStubBytes(imageIndex) ?? throw new InvalidOperationException($"Stub for {stub.AssemblyName} could not be written.");
-            var file = new PEFile(stub.Module.Name ?? stub.AssemblyName + ".dll", new MemoryStream(bytes), PEStreamOptions.PrefetchEntireImage);
+            var peReader = new PEReader(ImmutableCollectionsMarshal.AsImmutableArray(bytes));
+            var file = new PEFile(stub.Module.Name ?? stub.AssemblyName + ".dll", peReader);
             _images[imageIndex] = (stub.LiftedMethods.Count, file);
+            _typeSystems.TryRemove((imageIndex, false), out _);
             ExportProfiler.RecordStubPe(tStub);
             return file;
         }
@@ -685,7 +700,11 @@ public sealed class DecompilerService
     {
         var path = _bcl.Find(n);
         if (path is null) return null;
-        try { return new PEFile(path, new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read), PEStreamOptions.PrefetchEntireImage); }
+        try
+        {
+            var bytes = File.ReadAllBytes(path);
+            return new PEFile(path, new PEReader(ImmutableCollectionsMarshal.AsImmutableArray(bytes)));
+        }
         catch (Exception ex)
         {
             _sink.Warn(DiagnosticCategory.Decompilation, DiagnosticCodes.BclReferenceMissing, $"Cannot load BCL reference '{path}': {ex.Message}", new() { File = path }, ex);
@@ -699,6 +718,28 @@ public sealed class DecompilerService
 
     private void LiftType(TypeModel type, CancellationToken ct = default)
     {
+        var image = ImageOf(type);
+        if (image >= 0 && BodyProvider is not null && !_preLiftedImages.ContainsKey(image))
+        {
+            var (start, count) = _stubs.ImageTypeRange(image);
+            var totalMethods = 0;
+            for (var ti = start; ti < start + count; ti++)
+            {
+                totalMethods += _model.Types[ti].Methods.Count;
+                if (totalMethods > InteractivePreLiftMethodLimit) break;
+            }
+            if (totalMethods <= InteractivePreLiftMethodLimit)
+            {
+                var allImageMethods = new List<int>(totalMethods);
+                for (var ti = start; ti < start + count; ti++)
+                    foreach (var m in _model.Types[ti].Methods)
+                        allImageMethods.Add(m.Index);
+                LiftMethods(allImageMethods, ct);
+                _preLiftedImages.TryAdd(image, 0);
+                return;
+            }
+        }
+
         var all = new List<int>();
         void Collect(TypeModel t) { all.AddRange(t.Methods.Select(m => m.Index)); foreach (var n in t.NestedTypes) Collect(n); }
         Collect(TopLevelOf(type));
@@ -708,8 +749,18 @@ public sealed class DecompilerService
     private void LiftMethods(IEnumerable<int> methods, CancellationToken ct = default) =>
         BodyProvider?.EnsureLifted(methods, ct);
 
-    private CSharpDecompiler NewDecompiler(MetadataFile file, CancellationToken ct = default) =>
-        new(file, _sharedResolver, CreateSettings()) { CancellationToken = ct };
+    private DecompilerTypeSystem GetOrCreateTypeSystem(int imageIndex, MetadataFile file, bool isPristine)
+    {
+        var key = (imageIndex, isPristine);
+        if (_typeSystems.TryGetValue(key, out var cached) && ReferenceEquals(cached.File, file))
+            return cached.TypeSystem;
+        var ts = new DecompilerTypeSystem(file, _sharedResolver, isPristine ? CreateBclSettings() : CreateSettings());
+        _typeSystems[key] = (file, ts);
+        return ts;
+    }
+
+    private CSharpDecompiler NewDecompiler(int imageIndex, MetadataFile file, bool isPristine, CancellationToken ct = default) =>
+        new(GetOrCreateTypeSystem(imageIndex, file, isPristine), isPristine ? CreateBclSettings() : CreateSettings()) { CancellationToken = ct };
 
     private (ReflectionDisassembler, StringWriter) NewDisassembler(MetadataFile file, CancellationToken ct = default)
     {

@@ -149,6 +149,15 @@ public sealed class StubAssemblyBuilder
 
     public int ImageOfType(int typeDefIndex) => (uint)typeDefIndex < (uint)_imageOfType.Length ? _imageOfType[typeDefIndex] : -1;
 
+    public (int Start, int Count) ImageTypeRange(int imageIndex)
+    {
+        if ((uint)imageIndex >= (uint)_md.Images.Length) return (0, 0);
+        var img = _md.Images[imageIndex];
+        var start = Math.Max(0, img.TypeStart);
+        var count = Math.Clamp((int)img.TypeCount, 0, Math.Max(0, _model.Types.Count - start));
+        return (start, count);
+    }
+
     public string ImageName(int imageIndex) => _md.GetString(_md.Images[imageIndex].NameIndex);
 
     public int FindImage(string assemblyName)
@@ -1181,6 +1190,8 @@ public sealed class StubAssemblyBuilder
 
     // ------------------------------------------------------------------ writing
 
+    private readonly ConcurrentDictionary<int, int> _lastWriteSizes = new();
+
     /// <summary>Serializes a stub module to a PE image in memory. Errors are reported, never thrown.</summary>
     public byte[]? Write(StubModule stub)
     {
@@ -1189,11 +1200,14 @@ public sealed class StubAssemblyBuilder
             var bag = new DiagnosticBag();
             try
             {
-                using var ms = new MemoryStream();
+                var initialCap = _lastWriteSizes.GetValueOrDefault(stub.ImageIndex, 64 * 1024);
+                using var ms = new MemoryStream(initialCap);
                 stub.Module.Write(ms, new ManagedPEImageBuilder(new DotNetDirectoryFactory(MetadataBuilderFlags.NoMemberSignatureVerification), bag));
                 foreach (var ex in bag.Exceptions.Take(20))
                     _sink.Warn(DiagnosticCategory.Lifting, DiagnosticCodes.LiftFailed, $"{stub.AssemblyName}: {ex.Message}", new() { AssemblyName = stub.AssemblyName });
-                return ms.ToArray();
+                var bytes = ms.ToArray();
+                _lastWriteSizes[stub.ImageIndex] = bytes.Length + 16 * 1024;
+                return bytes;
             }
             catch (Exception ex)
             {

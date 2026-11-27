@@ -129,8 +129,14 @@ public sealed class VirtualArchiveSession : IDisposable
     private readonly List<IDisposable> _owners = [];
 
     public string? BinaryVirtualPath { get; init; }
-    public VirtualFileBuffer? Binary { get; init; }
+    public VirtualFileBuffer? Binary { get; set; }
     public string? BinaryFilePathOnDisk { get; init; }
+
+    public void ReleaseBinary()
+    {
+        Binary?.Dispose();
+        Binary = null;
+    }
     public string? MetadataVirtualPath { get; init; }
     public VirtualFileBuffer? Metadata { get; init; }
     public string? PrimaryArchivePath { get; init; }

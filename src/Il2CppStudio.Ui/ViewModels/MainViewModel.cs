@@ -18,7 +18,7 @@ namespace Il2CppStudio.Gui.ViewModels;
 public sealed partial class MainViewModel : ObservableObject, IDisposable
 {
     private const int SearchDebounceMs = 200;
-    private const int SelectionDebounceMs = 100;
+    private const int SelectionDebounceMs = 140;
     private const int MaxSearchResults = 500;
 
     private readonly SemaphoreSlim _gate = new(1, 1);

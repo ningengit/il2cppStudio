@@ -270,6 +270,49 @@ public sealed class DiagnosticsAndStabilityTests
         }
     }
 
+    [Fact]
+    public void OpeningApkDirectly_ProducesZeroIS1006Warnings()
+    {
+        var apk = Target("Template il2cpp android", "Baldi's Basics Classic.arm64-v8a.apk");
+        var sink = Sink();
+        using var log = new RuntimeDiagnosticsLog();
+        log.CaptureFirstChanceExceptions = true;
+        sink.DiagnosticReported += log.RecordFromDiagnostic;
+
+        using var ws = Il2CppWorkspace.Load(apk, sink, new WorkspaceOptions { UseBuildBackup = true, SubstituteBcl = true });
+        WorkspaceSetup.Attach(ws);
+
+        var fileAccessWarnings = sink.Query(DiagnosticSeverity.Warning)
+            .Where(d => d.Code == DiagnosticCodes.FileAccessFailed)
+            .ToList();
+        Assert.Empty(fileAccessWarnings);
+        Assert.DoesNotContain(log.Snapshot(RuntimeLogFilter.FirstChance),
+            e => e.ExceptionType == typeof(IOException).FullName);
+    }
+
+    [Fact]
+    public void RevisitingPreviouslyDecompiledType_HitsRenderCacheWithMinimalAllocations()
+    {
+        var apk = Target("Template il2cpp android", "Baldi's Basics Classic.arm64-v8a.apk");
+        var sink = Sink();
+        using var ws = Il2CppWorkspace.Load(apk, sink, new WorkspaceOptions { UseBuildBackup = true, SubstituteBcl = true });
+        WorkspaceSetup.Attach(ws);
+
+        var gcType = Assert.Single(ws.FindTypes("GameControllerScript"));
+        var first = ws.Render(gcType, null, CodeView.CSharp);
+        Assert.Contains("class GameControllerScript", first, StringComparison.Ordinal);
+
+        // Measure allocations across 20 revisits (bounded LRU cache hit path).
+        var allocBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 20; i++)
+        {
+            var revisited = ws.Render(gcType, null, CodeView.CSharp);
+            Assert.Same(first, revisited);
+        }
+        var allocDelta = GC.GetAllocatedBytesForCurrentThread() - allocBefore;
+        Assert.True(allocDelta < 16 * 1024, $"Expected < 16 KB allocations for 20 cached revisits, got {allocDelta:N0} bytes.");
+    }
+
     private sealed class HeadlessUiServices : IUiServices
     {
         public Task<string?> PickFolderAsync(string title) => Task.FromResult<string?>(null);
