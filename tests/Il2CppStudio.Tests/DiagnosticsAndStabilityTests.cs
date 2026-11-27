@@ -313,6 +313,31 @@ public sealed class DiagnosticsAndStabilityTests
         Assert.True(allocDelta < 16 * 1024, $"Expected < 16 KB allocations for 20 cached revisits, got {allocDelta:N0} bytes.");
     }
 
+    [Fact]
+    public void MainViewModel_BuffersPreAttachDiagnosticsAndSyncsOnAttach()
+    {
+        using var vm = new MainViewModel();
+        Assert.Null(vm.Ui);
+
+        // Fire background-like notifications while Ui is null (cold launch before view attach).
+        vm.ReportUiDiagnostic(DiagnosticSeverity.Warning, "Cold-launch pre-attach warning");
+        vm.RuntimeLog.RecordWarning("ColdLaunchTest", "Pre-attach runtime warning");
+        var sample = vm.PerfMonitor.SampleNow(writeCsvIfEnabled: false);
+        Assert.NotNull(sample);
+
+        // Observable collections bound to UI controls should not be populated prematurely off-UI-thread.
+        Assert.Empty(vm.Diagnostics);
+        Assert.Empty(vm.RuntimeLogs);
+
+        vm.Ui = new HeadlessUiServices();
+        vm.SyncUiState();
+
+        Assert.Contains(vm.Diagnostics, d => d.Message == "Cold-launch pre-attach warning");
+        Assert.Contains(vm.RuntimeLogs, entry => entry.Message == "Pre-attach runtime warning");
+        Assert.Contains("CPU:", vm.CpuSummary, StringComparison.Ordinal);
+        Assert.Contains("RAM:", vm.RamSummary, StringComparison.Ordinal);
+    }
+
     private sealed class HeadlessUiServices : IUiServices
     {
         public Task<string?> PickFolderAsync(string title) => Task.FromResult<string?>(null);

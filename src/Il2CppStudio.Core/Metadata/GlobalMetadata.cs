@@ -334,7 +334,7 @@ public sealed class GlobalMetadata : IDisposable
     {
         switch (raw)
         {
-            case 16 or 19 or 20 or 21 or 22 or 23 or 27 or 29 or 31 or 39 or 108:
+            case 16 or 19 or 20 or 21 or 22 or 23 or 27 or 29 or 31 or 39 or 104 or 105 or 106 or 107 or 108:
                 return new MetadataVersion(raw);
             case 24:
                 return ResolveV24Minor();
@@ -428,32 +428,36 @@ public sealed class GlobalMetadata : IDisposable
         var gcIdx = SerializedIndexSizes.GetIndexSize(Header["genericContainers"].Count);
         var paramIdx = SerializedIndexSizes.GetIndexSize(Header["parameters"].Count);
 
-        if (!version.HasV108EmbeddedGenerics)
-        {
-            return new SerializedIndexSizes
-            {
-                TypeIndex = typeIdx, TypeDefinitionIndex = tdIdx, GenericContainerIndex = gcIdx, ParameterIndex = paramIdx,
-                GenericParameterIndex = 4, InterfacesIndex = 4, EventIndex = 4, PropertyIndex = 4,
-                NestedTypeIndex = 4, FieldIndex = 4, DefaultValueDataIndex = 4, MethodIndex = 4,
-                GenericInstIndex = 4, GenericMethodIndex = 4, MethodPointerTableIndex = 4,
-                InvokerTableIndex = 4, AdjustorThunkIndex = 4,
-            };
-        }
+        var ifacesIdx = version.HasCompactV104Indices ? SerializedIndexSizes.GetIndexSize(Header["interfaceOffsets"].Count) : 4;
+        var eventIdx = version.HasCompactV104Indices ? SerializedIndexSizes.GetIndexSize(Header["events"].Count) : 4;
+        var propIdx = version.HasCompactV104Indices ? SerializedIndexSizes.GetIndexSize(Header["properties"].Count) : 4;
+        var nestedIdx = version.HasCompactV104Indices ? SerializedIndexSizes.GetIndexSize(Header["nestedTypes"].Count) : 4;
+        var methodIdx = version.HasCompactMethodIndex ? SerializedIndexSizes.GetIndexSize(Header["methods"].Count) : 4;
+        var gpIdx = version.HasCompactV106Indices ? SerializedIndexSizes.GetIndexSize(Header["genericParameters"].Count) : 4;
+        var fieldIdx = version.HasCompactV106Indices ? SerializedIndexSizes.GetIndexSize(Header["fields"].Count) : 4;
+        var defDataIdx = version.HasCompactV106Indices ? SerializedIndexSizes.GetIndexSize(Header["fieldAndParameterDefaultValueData"].Count) : 4;
 
-        var methodIdx = SerializedIndexSizes.GetIndexSize(Header["methods"].Count);
-        var gInstIdx = Header["methodSpecsOnGenericType"].Count > 0 ? Stride("methodSpecsOnGenericType", methodIdx + 4) - methodIdx
-            : Header["genericMethodSpecsOnType"].Count > 0 ? Stride("genericMethodSpecsOnType", methodIdx + 4) - methodIdx
-            : Header["methodSpecs"].Count > 0 ? (Stride("methodSpecs", methodIdx + 8) - methodIdx) / 2
-            : 4;
-        var gmCount = Header["methodSpecsOnGenericType"].Count + Header["genericMethodSpecsOnType"].Count + Header["methodSpecs"].Count;
-        var gmIdx = SerializedIndexSizes.GetIndexSize(gmCount);
-        var invIdx = Header["invokerIndices"].Count > 0 ? Stride("invokerIndices", 4) : 4;
-        var adjIdx = SerializedIndexSizes.GetIndexSize(Header["genericMethodFunctionsDefinitionsWithAdjustor"].Count);
-        var mpIdx = Header["genericMethodFunctionsDefinitions"].Count > 0
-            ? Stride("genericMethodFunctionsDefinitions", gmIdx + invIdx + 4) - gmIdx - invIdx
-            : Header["genericMethodFunctionsDefinitionsWithAdjustor"].Count > 0
-                ? Stride("genericMethodFunctionsDefinitionsWithAdjustor", gmIdx + invIdx + adjIdx + 4) - gmIdx - invIdx - adjIdx
+        var gInstIdx = 4;
+        var gmIdx = 4;
+        var invIdx = 4;
+        var adjIdx = 4;
+        var mpIdx = 4;
+        if (version.HasV108EmbeddedGenerics)
+        {
+            gInstIdx = Header["methodSpecsOnGenericType"].Count > 0 ? Stride("methodSpecsOnGenericType", methodIdx + 4) - methodIdx
+                : Header["genericMethodSpecsOnType"].Count > 0 ? Stride("genericMethodSpecsOnType", methodIdx + 4) - methodIdx
+                : Header["methodSpecs"].Count > 0 ? (Stride("methodSpecs", methodIdx + 8) - methodIdx) / 2
                 : 4;
+            var gmCount = Header["methodSpecsOnGenericType"].Count + Header["genericMethodSpecsOnType"].Count + Header["methodSpecs"].Count;
+            gmIdx = SerializedIndexSizes.GetIndexSize(gmCount);
+            invIdx = Header["invokerIndices"].Count > 0 ? Stride("invokerIndices", 4) : 4;
+            adjIdx = SerializedIndexSizes.GetIndexSize(Header["genericMethodFunctionsDefinitionsWithAdjustor"].Count);
+            mpIdx = Header["genericMethodFunctionsDefinitions"].Count > 0
+                ? Stride("genericMethodFunctionsDefinitions", gmIdx + invIdx + 4) - gmIdx - invIdx
+                : Header["genericMethodFunctionsDefinitionsWithAdjustor"].Count > 0
+                    ? Stride("genericMethodFunctionsDefinitionsWithAdjustor", gmIdx + invIdx + adjIdx + 4) - gmIdx - invIdx - adjIdx
+                    : 4;
+        }
 
         return new SerializedIndexSizes
         {
@@ -461,13 +465,13 @@ public sealed class GlobalMetadata : IDisposable
             TypeDefinitionIndex = tdIdx,
             GenericContainerIndex = gcIdx,
             ParameterIndex = paramIdx,
-            GenericParameterIndex = SerializedIndexSizes.GetIndexSize(Header["genericParameters"].Count),
-            InterfacesIndex = SerializedIndexSizes.GetIndexSize(Header["interfaceOffsets"].Count),
-            EventIndex = SerializedIndexSizes.GetIndexSize(Header["events"].Count),
-            PropertyIndex = SerializedIndexSizes.GetIndexSize(Header["properties"].Count),
-            NestedTypeIndex = SerializedIndexSizes.GetIndexSize(Header["nestedTypes"].Count),
-            FieldIndex = SerializedIndexSizes.GetIndexSize(Header["fields"].Count),
-            DefaultValueDataIndex = SerializedIndexSizes.GetIndexSize(Header["fieldAndParameterDefaultValueData"].Count),
+            GenericParameterIndex = gpIdx,
+            InterfacesIndex = ifacesIdx,
+            EventIndex = eventIdx,
+            PropertyIndex = propIdx,
+            NestedTypeIndex = nestedIdx,
+            FieldIndex = fieldIdx,
+            DefaultValueDataIndex = defDataIdx,
             MethodIndex = methodIdx,
             GenericInstIndex = gInstIdx,
             GenericMethodIndex = gmIdx,

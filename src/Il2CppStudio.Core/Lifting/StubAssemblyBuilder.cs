@@ -336,7 +336,11 @@ public sealed class StubAssemblyBuilder
             }
             var cleanAttrs = rvaBytes is not null ? attrs : (attrs & ~FieldAttributes.HasFieldRva);
             if ((cleanAttrs & FieldAttributes.Literal) == 0) cleanAttrs &= ~FieldAttributes.InitOnly;
-            var field = new FieldDefinition(_md.GetString(fd.NameIndex), cleanAttrs, ToSig(module, fd.TypeIndex));
+            var fieldName = _md.GetString(fd.NameIndex);
+            var fieldSig = ToSig(module, fd.TypeIndex);
+            if (def.IsEnum && fieldName == "value__" && fieldSig.ElementType == ElementType.Object)
+                fieldSig = module.CorLibTypeFactory.Int32;
+            var field = new FieldDefinition(fieldName, cleanAttrs, fieldSig);
             if (rvaBytes is not null) field.FieldRva = new DataSegment(rvaBytes);
             if ((attrs & FieldAttributes.HasDefault) != 0 && Constant(fi) is { } constant) field.Constant = constant;
             else field.Attributes &= ~FieldAttributes.HasDefault;
@@ -780,22 +784,57 @@ public sealed class StubAssemblyBuilder
     private CustomAttributeArgument? ToCustomAttributeArg(ModuleDefinition module, DecodedAttrValue v, TypeSignature expectedType)
     {
         var f = module.CorLibTypeFactory;
+        var built = ToTypedCustomAttributeArg(module, v, expectedType, f);
+        if (built is null)
+            return null;
+
+        CustomAttributeArgument result;
+        if (expectedType.ElementType == ElementType.Object && built.ArgumentType.ElementType != ElementType.Object)
+        {
+            object? boxedVal = built.ArgumentType is SzArrayTypeSignature
+                ? (built.IsNullArray ? null : built.Elements)
+                : built.Element;
+            result = new CustomAttributeArgument(f.Object, new BoxedArgument(built.ArgumentType, boxedVal));
+        }
+        else
+        {
+            result = built;
+        }
+
+        if (result.ArgumentType.ElementType == ElementType.Object && result.Element is not null and not BoxedArgument)
+            return null;
+        if (result.ArgumentType is SzArrayTypeSignature sz && sz.BaseType.ElementType == ElementType.Object)
+        {
+            foreach (var el in result.Elements)
+            {
+                if (el is not null and not BoxedArgument)
+                    return null;
+            }
+        }
+        return result;
+    }
+
+    private CustomAttributeArgument? ToTypedCustomAttributeArg(
+        ModuleDefinition module,
+        DecodedAttrValue v,
+        TypeSignature expectedType,
+        CorLibTypeFactory f)
+    {
         if (v.TypeCode == Il2CppTypeEnum.SzArray)
         {
-            var elemType = expectedType is SzArrayTypeSignature sz ? sz.BaseType : f.Object;
+            var elemType = expectedType is SzArrayTypeSignature sz
+                ? sz.BaseType
+                : PrimitiveSigOrFallback(f, v.ArrayElementTypeCode, v.ArrayElementTypeIndex is >= 0 ? ToSig(module, v.ArrayElementTypeIndex) : f.Object);
             var arrType = elemType.MakeSzArrayType();
             if (v.Value is not DecodedAttrValue[] items)
-                return new CustomAttributeArgument(arrType, (object?)null);
-            var boxed = new object?[items.Length];
+                return new CustomAttributeArgument(arrType) { IsNullArray = true };
+            var elems = new object?[items.Length];
             for (var i = 0; i < items.Length; i++)
             {
                 if (ToCustomAttributeArg(module, items[i], elemType) is not { } elemArg) return null;
-                if (elemType.ElementType == ElementType.Object)
-                    boxed[i] = elemArg;
-                else
-                    boxed[i] = elemArg.Elements.Count > 0 ? elemArg.Elements[0] : null;
+                elems[i] = elemArg.Element;
             }
-            return new CustomAttributeArgument(arrType, (IEnumerable<object?>)boxed);
+            return new CustomAttributeArgument(arrType, (IEnumerable<object?>)elems);
         }
         if (v.TypeCode == Il2CppTypeEnum.Il2CppTypeIndex)
         {
@@ -806,6 +845,10 @@ public sealed class StubAssemblyBuilder
         if (v.TypeCode == Il2CppTypeEnum.Enum)
         {
             var enumSig = v.TypeIndex >= 0 ? ToSig(module, v.TypeIndex) : expectedType;
+            if (enumSig.ElementType == ElementType.Object && expectedType.ElementType != ElementType.Object)
+                enumSig = expectedType;
+            if (enumSig.ElementType == ElementType.Object)
+                return null;
             var tdIdx = v.TypeIndex >= 0 ? TypeDefOfTypeIndex(v.TypeIndex) : -1;
             if ((uint)tdIdx < (uint)_md.TypeDefinitions.Length)
                 return _md.TypeDefinitions[tdIdx].IsEnum ? new CustomAttributeArgument(enumSig, v.Value) : null;
@@ -820,27 +863,37 @@ public sealed class StubAssemblyBuilder
                 ? new CustomAttributeArgument(enumSig, v.Value)
                 : null;
         }
-        var primSig = v.TypeCode switch
+        if (v.Value is null)
         {
-            Il2CppTypeEnum.Boolean => f.Boolean,
-            Il2CppTypeEnum.Char => f.Char,
-            Il2CppTypeEnum.I1 => f.SByte,
-            Il2CppTypeEnum.U1 => f.Byte,
-            Il2CppTypeEnum.I2 => f.Int16,
-            Il2CppTypeEnum.U2 => f.UInt16,
-            Il2CppTypeEnum.I4 => f.Int32,
-            Il2CppTypeEnum.U4 => f.UInt32,
-            Il2CppTypeEnum.I8 => f.Int64,
-            Il2CppTypeEnum.U8 => f.UInt64,
-            Il2CppTypeEnum.R4 => f.Single,
-            Il2CppTypeEnum.R8 => f.Double,
-            Il2CppTypeEnum.String => f.String,
-            _ => expectedType,
-        };
-        if (v.TypeCode == Il2CppTypeEnum.Object && v.Value is null && expectedType.ElementType == ElementType.Object)
+            if (expectedType.ElementType == ElementType.Object)
+                return new CustomAttributeArgument(f.Object, (object?)null);
+            if (expectedType.ElementType == ElementType.String || expectedType.IsTypeOf("System", "Type"))
+                return new CustomAttributeArgument(expectedType, (object?)null);
+            if (expectedType is SzArrayTypeSignature)
+                return new CustomAttributeArgument(expectedType) { IsNullArray = true };
             return null;
+        }
+        var primSig = PrimitiveSigOrFallback(f, v.TypeCode, expectedType);
         return new CustomAttributeArgument(primSig, v.Value);
     }
+
+    private static TypeSignature PrimitiveSigOrFallback(CorLibTypeFactory f, Il2CppTypeEnum code, TypeSignature fallback) => code switch
+    {
+        Il2CppTypeEnum.Boolean => f.Boolean,
+        Il2CppTypeEnum.Char => f.Char,
+        Il2CppTypeEnum.I1 => f.SByte,
+        Il2CppTypeEnum.U1 => f.Byte,
+        Il2CppTypeEnum.I2 => f.Int16,
+        Il2CppTypeEnum.U2 => f.UInt16,
+        Il2CppTypeEnum.I4 => f.Int32,
+        Il2CppTypeEnum.U4 => f.UInt32,
+        Il2CppTypeEnum.I8 => f.Int64,
+        Il2CppTypeEnum.U8 => f.UInt64,
+        Il2CppTypeEnum.R4 => f.Single,
+        Il2CppTypeEnum.R8 => f.Double,
+        Il2CppTypeEnum.String => f.String,
+        _ => fallback,
+    };
 
     private static NativeIntrinsics CreateIntrinsics(ModuleDefinition module)
     {

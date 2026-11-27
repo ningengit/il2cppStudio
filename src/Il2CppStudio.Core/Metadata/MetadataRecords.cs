@@ -100,15 +100,17 @@ public readonly record struct Il2CppTypeDefinition(
         var parent = SerializedIndexSizes.ReadIndex(ref r, s.TypeIndex);
         var gc = SerializedIndexSizes.ReadIndex(ref r, s.GenericContainerIndex);
         var flags = r.ReadUInt32();
-        var v108 = v.HasV108EmbeddedGenerics;
-        var fieldStart = v108 ? SerializedIndexSizes.ReadIndex(ref r, s.FieldIndex) : r.ReadInt32();
-        var methodStart = v108 ? SerializedIndexSizes.ReadIndex(ref r, s.MethodIndex) : r.ReadInt32();
-        var eventStart = v108 ? SerializedIndexSizes.ReadIndex(ref r, s.EventIndex) : r.ReadInt32();
-        var propStart = v108 ? SerializedIndexSizes.ReadIndex(ref r, s.PropertyIndex) : r.ReadInt32();
-        var nestedStart = v108 ? SerializedIndexSizes.ReadIndex(ref r, s.NestedTypeIndex) : r.ReadInt32();
-        var ifStart = v108 ? SerializedIndexSizes.ReadIndex(ref r, s.InterfacesIndex) : r.ReadInt32();
+        var v104 = v.HasCompactV104Indices;
+        var v105 = v.HasCompactMethodIndex;
+        var v106 = v.HasCompactV106Indices;
+        var fieldStart = v106 ? SerializedIndexSizes.ReadIndex(ref r, s.FieldIndex) : r.ReadInt32();
+        var methodStart = v105 ? SerializedIndexSizes.ReadIndex(ref r, s.MethodIndex) : r.ReadInt32();
+        var eventStart = v104 ? SerializedIndexSizes.ReadIndex(ref r, s.EventIndex) : r.ReadInt32();
+        var propStart = v104 ? SerializedIndexSizes.ReadIndex(ref r, s.PropertyIndex) : r.ReadInt32();
+        var nestedStart = v104 ? SerializedIndexSizes.ReadIndex(ref r, s.NestedTypeIndex) : r.ReadInt32();
+        var ifStart = v104 ? SerializedIndexSizes.ReadIndex(ref r, s.InterfacesIndex) : r.ReadInt32();
         var vtableStart = r.ReadInt32();
-        var ifOffStart = v108 ? SerializedIndexSizes.ReadIndex(ref r, s.InterfacesIndex) : r.ReadInt32();
+        var ifOffStart = v104 ? SerializedIndexSizes.ReadIndex(ref r, s.InterfacesIndex) : r.ReadInt32();
         return new(name, ns, byval, declaring, parent, -1, gc, flags,
             fieldStart, methodStart, eventStart, propStart, nestedStart, ifStart, vtableStart, ifOffStart,
             r.ReadUInt16(), r.ReadUInt16(), r.ReadUInt16(), r.ReadUInt16(),
@@ -207,12 +209,12 @@ public readonly record struct Il2CppDefaultValue(int OwnerIndex, int TypeIndex, 
     public static Il2CppDefaultValue ReadParamCompact(ref SpanReader r, MetadataVersion v, in SerializedIndexSizes s) =>
         new(SerializedIndexSizes.ReadIndex(ref r, s.ParameterIndex),
             SerializedIndexSizes.ReadIndex(ref r, s.TypeIndex),
-            v.HasV108EmbeddedGenerics ? SerializedIndexSizes.ReadIndex(ref r, s.DefaultValueDataIndex) : r.ReadInt32());
+            v.HasCompactV106Indices ? SerializedIndexSizes.ReadIndex(ref r, s.DefaultValueDataIndex) : r.ReadInt32());
 
     public static Il2CppDefaultValue ReadFieldCompact(ref SpanReader r, MetadataVersion v, in SerializedIndexSizes s) =>
-        new(v.HasV108EmbeddedGenerics ? SerializedIndexSizes.ReadIndex(ref r, s.FieldIndex) : r.ReadInt32(),
+        new(v.HasCompactV106Indices ? SerializedIndexSizes.ReadIndex(ref r, s.FieldIndex) : r.ReadInt32(),
             SerializedIndexSizes.ReadIndex(ref r, s.TypeIndex),
-            v.HasV108EmbeddedGenerics ? SerializedIndexSizes.ReadIndex(ref r, s.DefaultValueDataIndex) : r.ReadInt32());
+            v.HasCompactV106Indices ? SerializedIndexSizes.ReadIndex(ref r, s.DefaultValueDataIndex) : r.ReadInt32());
 }
 
 public readonly record struct Il2CppFieldMarshaledSize(int FieldIndex, int TypeIndex, int Size)
@@ -222,7 +224,7 @@ public readonly record struct Il2CppFieldMarshaledSize(int FieldIndex, int TypeI
     public static Il2CppFieldMarshaledSize Read(ref SpanReader r, MetadataVersion v) => new(r.ReadInt32(), r.ReadInt32(), r.ReadInt32());
 
     public static Il2CppFieldMarshaledSize ReadCompact(ref SpanReader r, MetadataVersion v, in SerializedIndexSizes s) =>
-        new(v.HasV108EmbeddedGenerics ? SerializedIndexSizes.ReadIndex(ref r, s.FieldIndex) : r.ReadInt32(),
+        new(v.HasCompactV106Indices ? SerializedIndexSizes.ReadIndex(ref r, s.FieldIndex) : r.ReadInt32(),
             SerializedIndexSizes.ReadIndex(ref r, s.TypeIndex),
             r.ReadInt32());
 }
@@ -241,7 +243,7 @@ public readonly record struct Il2CppPropertyDefinition(int NameIndex, int Get, i
     public static Il2CppPropertyDefinition ReadCompact(ref SpanReader r, MetadataVersion v, in SerializedIndexSizes s)
     {
         var name = r.ReadInt32();
-        var mSize = v.HasV108EmbeddedGenerics ? s.MethodIndex : 4;
+        var mSize = v.HasCompactMethodIndex ? s.MethodIndex : 4;
         return new(name, SerializedIndexSizes.ReadIndex(ref r, mSize), SerializedIndexSizes.ReadIndex(ref r, mSize), r.ReadUInt32(), r.ReadUInt32());
     }
 }
@@ -261,7 +263,7 @@ public readonly record struct Il2CppEventDefinition(int NameIndex, int TypeIndex
     {
         var name = r.ReadInt32();
         var type = SerializedIndexSizes.ReadIndex(ref r, s.TypeIndex);
-        var mSize = v.HasV108EmbeddedGenerics ? s.MethodIndex : 4;
+        var mSize = v.HasCompactMethodIndex ? s.MethodIndex : 4;
         return new(name, type, SerializedIndexSizes.ReadIndex(ref r, mSize), SerializedIndexSizes.ReadIndex(ref r, mSize), SerializedIndexSizes.ReadIndex(ref r, mSize), r.ReadUInt32());
     }
 }
@@ -274,7 +276,7 @@ public readonly record struct Il2CppGenericContainer(int OwnerIndex, int TypeArg
         new(r.ReadInt32(), r.ReadInt32(), r.ReadInt32(), r.ReadInt32());
 
     public static Il2CppGenericContainer ReadCompact(ref SpanReader r, MetadataVersion v, in SerializedIndexSizes s) =>
-        v.HasV108EmbeddedGenerics
+        v.HasCompactV106Indices
             ? new(r.ReadInt32(), r.ReadUInt16(), r.ReadByte(), SerializedIndexSizes.ReadIndex(ref r, s.GenericParameterIndex))
             : Read(ref r, v);
 }
@@ -317,7 +319,7 @@ public readonly record struct Il2CppImageDefinition(
         var typeCount = r.ReadUInt32();
         var expStart = SerializedIndexSizes.ReadIndex(ref r, s.TypeDefinitionIndex);
         var expCount = r.ReadUInt32();
-        var entry = v.HasV108EmbeddedGenerics ? SerializedIndexSizes.ReadIndex(ref r, s.MethodIndex) : r.ReadInt32();
+        var entry = v.HasCompactMethodIndex ? SerializedIndexSizes.ReadIndex(ref r, s.MethodIndex) : r.ReadInt32();
         var tok = r.ReadUInt32();
         var caStart = r.ReadInt32();
         var caCount = r.ReadUInt32();
@@ -377,7 +379,7 @@ public readonly record struct Il2CppFieldRef(int TypeIndex, int FieldIndex) : IM
 
     public static Il2CppFieldRef ReadCompact(ref SpanReader r, MetadataVersion v, in SerializedIndexSizes s) =>
         new(SerializedIndexSizes.ReadIndex(ref r, s.TypeIndex),
-            v.HasV108EmbeddedGenerics ? SerializedIndexSizes.ReadIndex(ref r, s.FieldIndex) : r.ReadInt32());
+            v.HasCompactV106Indices ? SerializedIndexSizes.ReadIndex(ref r, s.FieldIndex) : r.ReadInt32());
 }
 
 public readonly record struct Il2CppInterfaceOffsetPair(int InterfaceTypeIndex, int Offset) : IMetadataRecord<Il2CppInterfaceOffsetPair>

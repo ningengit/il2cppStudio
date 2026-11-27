@@ -118,7 +118,7 @@ public sealed class MetadataHeader
             {
                 if (v.HasCodegenIndices)
                     names.Add(("rgctxEntries", "Il2CppRGCTXDefinition"));
-                if (v.HasV108EmbeddedGenerics)
+                if (v.HasTypeInlineArrays)
                     names.Add(("typeInlineArrays", "Il2CppInlineArrayLength"));
                 names.Add(entry);
                 continue;

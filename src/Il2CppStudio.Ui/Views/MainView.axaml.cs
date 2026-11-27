@@ -21,7 +21,9 @@ namespace Il2CppStudio.Gui.Views;
 public sealed partial class MainView : UserControl, IUiServices
 {
     private MainViewModel? _attachedVm;
+    private TopLevel? _attachedTopLevel;
     private IInsetsManager? _insetsManager;
+    private bool _initialRenderRefreshPosted;
     private TaskCompletionSource<string?>? _promptTcs;
     private TaskCompletionSource<InstalledAndroidApp?>? _appPickerTcs;
     private IReadOnlyList<InstalledAndroidApp> _scannedApps = [];
@@ -166,16 +168,22 @@ public sealed partial class MainView : UserControl, IUiServices
     private void Attach()
     {
         Detach();
-        if (HostTopLevel?.InsetsManager is { } insetsManager)
+        if (HostTopLevel is { } topLevel)
         {
-            _insetsManager = insetsManager;
-            _insetsManager.SafeAreaChanged += OnSafeAreaChanged;
-            RootSafeArea.Padding = _insetsManager.SafeAreaPadding;
+            _attachedTopLevel = topLevel;
+            _attachedTopLevel.Opened += OnTopLevelOpened;
+            if (topLevel.InsetsManager is { } insetsManager)
+            {
+                _insetsManager = insetsManager;
+                _insetsManager.SafeAreaChanged += OnSafeAreaChanged;
+                RootSafeArea.Padding = _insetsManager.SafeAreaPadding;
+            }
         }
         if (Vm is not { } vm) return;
         _attachedVm = vm;
         vm.Ui = this;
         vm.PropertyChanged += OnVmPropertyChanged;
+        vm.SyncUiState();
         if (!string.Equals(CppEditor.Text, vm.CppText, StringComparison.Ordinal))
             CppEditor.Text = vm.CppText;
         if (!string.Equals(IlEditor.Text, vm.IlText, StringComparison.Ordinal))
@@ -191,10 +199,17 @@ public sealed partial class MainView : UserControl, IUiServices
             foreach (var (sev, msg, ex) in queued)
                 vm.ReportUiDiagnostic(sev, msg, ex);
         }
+        if (_attachedTopLevel is not null)
+            ScheduleLayoutAndVisualRefresh();
     }
 
     private void Detach()
     {
+        if (_attachedTopLevel is not null)
+        {
+            _attachedTopLevel.Opened -= OnTopLevelOpened;
+            _attachedTopLevel = null;
+        }
         if (_insetsManager is not null)
         {
             _insetsManager.SafeAreaChanged -= OnSafeAreaChanged;
@@ -205,6 +220,45 @@ public sealed partial class MainView : UserControl, IUiServices
         if (ReferenceEquals(_attachedVm.Ui, this))
             _attachedVm.Ui = null;
         _attachedVm = null;
+    }
+
+    private void OnTopLevelOpened(object? sender, EventArgs e) => RequestRenderRefresh();
+
+    private void ScheduleLayoutAndVisualRefresh()
+    {
+        if (_initialRenderRefreshPosted)
+            return;
+        _initialRenderRefreshPosted = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            _initialRenderRefreshPosted = false;
+            ApplyLayoutAndVisualInvalidation();
+        }, DispatcherPriority.Loaded);
+        Dispatcher.UIThread.Post(ApplyLayoutAndVisualInvalidation, DispatcherPriority.Render);
+    }
+
+    public void RequestRenderRefresh() =>
+        Dispatcher.UIThread.Post(ApplyLayoutAndVisualInvalidation, DispatcherPriority.Render);
+
+    private void ApplyLayoutAndVisualInvalidation()
+    {
+        if (_insetsManager is not null)
+            RootSafeArea.Padding = _insetsManager.SafeAreaPadding;
+        RootSafeArea.InvalidateMeasure();
+        RootSafeArea.InvalidateArrange();
+        RootSafeArea.InvalidateVisual();
+        WorkspaceGrid.InvalidateMeasure();
+        WorkspaceGrid.InvalidateArrange();
+        WorkspaceGrid.InvalidateVisual();
+        InvalidateMeasure();
+        InvalidateArrange();
+        InvalidateVisual();
+        if (HostTopLevel is { } topLevel)
+        {
+            topLevel.InvalidateMeasure();
+            topLevel.InvalidateArrange();
+            topLevel.InvalidateVisual();
+        }
     }
 
     private void OnSafeAreaChanged(object? sender, SafeAreaChangedArgs e) =>

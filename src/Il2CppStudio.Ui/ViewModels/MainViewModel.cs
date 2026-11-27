@@ -33,6 +33,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private long _selectionVersion;
     private (long Version, string? Cpp, string? Il, string? Cs) _renderedTabs;
     private int _pendingRuntimeLogRefresh;
+    private readonly Lock _pendingDiagnosticsGate = new();
+    private readonly List<Diagnostic> _pendingUiDiagnostics = [];
     private volatile bool _disposed;
 
     public IUiServices? Ui { get; set; }
@@ -118,13 +120,51 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         _runtimeLog.RecordFromDiagnostic(d);
         if (d.Severity < MinimumSeverity) return;
-        if (Ui is { } ui) ui.Post(() => AddDiagnostic(d));
+        if (Ui is { } ui)
+        {
+            ui.Post(() => AddDiagnostic(d));
+        }
+        else
+        {
+            lock (_pendingDiagnosticsGate)
+            {
+                if (_pendingUiDiagnostics.Count >= 20_000)
+                    _pendingUiDiagnostics.RemoveAt(0);
+                _pendingUiDiagnostics.Add(d);
+            }
+        }
     }
 
     public void RecordUnhandledUiException(Exception ex)
     {
         _runtimeLog.RecordError("Dispatcher.UIThread.UnhandledException", ex.Message, ex);
         _sink.Error(DiagnosticCategory.Workspace, DiagnosticCodes.StageFailed, ex.Message, null, ex);
+    }
+
+    public void SyncUiState()
+    {
+        if (_disposed) return;
+
+        Diagnostic[]? pending = null;
+        lock (_pendingDiagnosticsGate)
+        {
+            if (_pendingUiDiagnostics.Count > 0)
+            {
+                pending = [.. _pendingUiDiagnostics];
+                _pendingUiDiagnostics.Clear();
+            }
+        }
+        if (pending is not null)
+        {
+            foreach (var d in pending)
+                AddDiagnostic(d);
+        }
+
+        if (_perfMonitor.LatestSample is { } latest)
+            ApplyPerformanceSample(latest);
+
+        Interlocked.Exchange(ref _pendingRuntimeLogRefresh, 0);
+        RefreshRuntimeLogs();
     }
 
     private void OnRuntimeLogChanged()
@@ -136,8 +176,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             Interlocked.Exchange(ref _pendingRuntimeLogRefresh, 0);
             if (!_disposed) RefreshRuntimeLogs();
         }
-        if (Ui is { } ui) ui.Post(Apply);
-        else Apply();
+        if (Ui is { } ui)
+            ui.Post(Apply);
+        else
+            Interlocked.Exchange(ref _pendingRuntimeLogRefresh, 0);
     }
 
     private void RefreshRuntimeLogs()
@@ -151,26 +193,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void OnPerformanceSampled(PerformanceSample s)
     {
         if (_disposed) return;
-        void Apply()
-        {
-            if (_disposed) return;
-            CpuSummary = string.Format(CultureInfo.InvariantCulture,
-                "CPU: {0:F1}% sys | {1:F1}% proc | Threads: {2}", s.CpuPercent, s.ProcessCpuPercent, s.Threads);
-            RamSummary = string.Format(CultureInfo.InvariantCulture,
-                "RAM: {0:F0}/{1:F0} MB ({2:F1}%) | Proc {3:F1} MB (Peak {4:F1}, Heap {5:F1})",
-                s.RamUsedMb, s.RamTotalMb, s.RamUsedPercent, s.ThisProcessMb, s.PeakProcessMb, s.ManagedHeapMb);
-            DiskSummary = string.Format(CultureInfo.InvariantCulture,
-                "Disk: {0:F1}% busy | R {1:F2} / W {2:F2} MB/s | Free {3:F1} GB",
-                s.DiskBusyPercent, s.DiskReadMbPerSec, s.DiskWriteMbPerSec, s.DiskFreeGb);
-            GcSummary = string.Format(CultureInfo.InvariantCulture,
-                "GC: Gen0 {0} | Gen1 {1} | Gen2 {2} | Priv {3:F1} MB",
-                s.GcGen0, s.GcGen1, s.GcGen2, s.PrivateBytesMb);
-            RuntimeSummary = string.Format(CultureInfo.InvariantCulture,
-                "Activity: {0} | Warn {1} | Err {2} | 1stChance {3}",
-                s.Activity, s.Warnings, s.Errors, s.FirstChanceExceptions);
-        }
-        if (Ui is { } ui) ui.Post(Apply);
-        else Apply();
+        if (Ui is { } ui)
+            ui.Post(() => ApplyPerformanceSample(s));
+    }
+
+    private void ApplyPerformanceSample(PerformanceSample s)
+    {
+        if (_disposed) return;
+        CpuSummary = string.Format(CultureInfo.InvariantCulture,
+            "CPU: {0:F1}% sys | {1:F1}% proc | Threads: {2}", s.CpuPercent, s.ProcessCpuPercent, s.Threads);
+        RamSummary = string.Format(CultureInfo.InvariantCulture,
+            "RAM: {0:F0}/{1:F0} MB ({2:F1}%) | Proc {3:F1} MB (Peak {4:F1}, Heap {5:F1})",
+            s.RamUsedMb, s.RamTotalMb, s.RamUsedPercent, s.ThisProcessMb, s.PeakProcessMb, s.ManagedHeapMb);
+        DiskSummary = string.Format(CultureInfo.InvariantCulture,
+            "Disk: {0:F1}% busy | R {1:F2} / W {2:F2} MB/s | Free {3:F1} GB",
+            s.DiskBusyPercent, s.DiskReadMbPerSec, s.DiskWriteMbPerSec, s.DiskFreeGb);
+        GcSummary = string.Format(CultureInfo.InvariantCulture,
+            "GC: Gen0 {0} | Gen1 {1} | Gen2 {2} | Priv {3:F1} MB",
+            s.GcGen0, s.GcGen1, s.GcGen2, s.PrivateBytesMb);
+        RuntimeSummary = string.Format(CultureInfo.InvariantCulture,
+            "Activity: {0} | Warn {1} | Err {2} | 1stChance {3}",
+            s.Activity, s.Warnings, s.Errors, s.FirstChanceExceptions);
     }
 
     partial void OnPerfIntervalSecondsChanged(int value)

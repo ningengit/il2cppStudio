@@ -138,4 +138,43 @@ public sealed class Unity6000Tests
         var arm64Math = arm64Ws.Render(Assert.Single(arm64Ws.FindTypes("MathGameScript")), null, CodeView.CSharp);
         Assert.DoesNotContain("sub_3120", arm64Math, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void IosIpa_MetadataOnlyIosAndUnity6000_5_V106_LoadCleanlyWithoutStubErrors()
+    {
+        var root = TemplateBuildFixture.RepositoryRoot;
+        var ipaPath = root is null ? null : Path.Combine(root, "testdata", "sample game unity ios.ipa");
+        if (ipaPath is not null && File.Exists(ipaPath))
+        {
+            var ipaSink = Sink();
+            using var ipaWs = Il2CppWorkspace.Load(ipaPath, ipaSink);
+            WorkspaceSetup.Attach(ipaWs);
+            Assert.Equal("6000.0.58f2", ipaWs.Environment.UnityVersion);
+            Assert.True(ipaWs.Registration?.IsComplete);
+            Assert.Empty(ipaSink.Query(DiagnosticSeverity.Warning));
+            Assert.Empty(ipaSink.Query(DiagnosticSeverity.Error));
+        }
+
+        var iosDir = Target("template il2cpp ios");
+        var iosSink = Sink();
+        using (var iosWs = Il2CppWorkspace.Load(iosDir, iosSink))
+        {
+            var acsIdx = iosWs.Model.Assemblies.ToList().FindIndex(a => a.Name == "Assembly-CSharp");
+            Assert.True(acsIdx >= 0);
+            var stubBytes = iosWs.Stubs.Write(iosWs.Stubs.GetModule(acsIdx));
+            Assert.NotNull(stubBytes);
+            Assert.NotEmpty(stubBytes!);
+            Assert.Empty(iosSink.Query(DiagnosticSeverity.Error));
+        }
+
+        var v106Dir = Target(Path.Combine("Cpp2IL-development", "Cpp2IL-development", "TestFiles", "Simple_6000_5_0_a6"));
+        var v106Sink = Sink();
+        using (var v106Ws = Il2CppWorkspace.Load(v106Dir, v106Sink))
+        {
+            Assert.Equal(106, v106Ws.Metadata.Version.Major);
+            Assert.All(v106Ws.Metadata.SectionReports, r => { Assert.True(r.InBounds); Assert.True(r.Aligned); });
+            Assert.True(v106Ws.Registration?.IsComplete);
+            Assert.Empty(v106Sink.Query(DiagnosticSeverity.Error));
+        }
+    }
 }

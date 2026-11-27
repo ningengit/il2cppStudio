@@ -88,6 +88,16 @@ public readonly record struct MetadataVersion(int Major, int Minor = 0) : ICompa
     public bool HasElementTypeIndex => Major < 39;
     public bool HasAssemblyModuleToken => Major >= 39;
 
+    /// <summary>v104+: adds typeInlineArrays header section and compact interface/event/property/nested-type indices.</summary>
+    public bool HasTypeInlineArrays => Major >= 104;
+    public bool HasCompactV104Indices => Major >= 104;
+
+    /// <summary>v105+: variable-width method indices.</summary>
+    public bool HasCompactMethodIndex => Major >= 105;
+
+    /// <summary>v106+: variable-width generic parameter, field, and default value data indices, plus compact GenericContainer.</summary>
+    public bool HasCompactV106Indices => Major >= 106;
+
     /// <summary>v108+ embeds methodSpecs, genericMethodFunctionsDefinitions, invokerIndices, and RGCTX tables in metadata.</summary>
     public bool HasV108EmbeddedGenerics => Major >= 108;
 
@@ -104,7 +114,8 @@ public readonly record struct MetadataVersion(int Major, int Minor = 0) : ICompa
         27 => "Unity 2020.2 - 2021.1",
         29 => "Unity 2021.2 - 2022.1",
         31 => "Unity 2022.2 - 6000.2",
-        39 => "Unity 6000.3 - 6000.5",
+        39 => "Unity 6000.3 - 6000.4",
+        104 or 105 or 106 or 107 => "Unity 6000.5",
         108 => "Unity 6000.6+",
         _ => "unknown",
     };

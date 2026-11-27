@@ -207,7 +207,7 @@ public static class IpaExtractor
             if (rel.StartsWith("Data/Managed/Resources/", StringComparison.OrdinalIgnoreCase)
                 && rel.EndsWith("-resources.dat", StringComparison.OrdinalIgnoreCase))
                 return true;
-            if (rel.StartsWith("Data/", StringComparison.OrdinalIgnoreCase) && !rel.Contains('/', StringComparison.Ordinal))
+            if (rel.StartsWith("Data/", StringComparison.OrdinalIgnoreCase) && !rel["Data/".Length..].Contains('/', StringComparison.Ordinal))
             {
                 var fileName = Path.GetFileName(rel);
                 if (WantedExactNames.Contains(fileName, StringComparer.OrdinalIgnoreCase))
