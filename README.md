@@ -20,6 +20,12 @@ il2cppstudio load "path/to/game.nsp" --keyset "path/to/prod.keys" --export "path
 il2cppstudio load "path/to/game.pkg" --passcode "00000000000000000000000000000000"
 ```
 
+## What's New in v2.4.0
+
+- **Decompilation Fidelity:** Generic-definition body recovery via donor instantiation borrowing & per-module RGCTX lifting (e.g. `Singleton<T>`), x64 packed-single SSE (`addps`/`subps`/`mulps`/`shufps`), `sbb`, x64/ARM64 jump tables, `il2cpp_value_box` CIL `box` lifting, ICF property-setter recovery, CRT math (`sinf`/`modf`), generic struct enumerators, coroutine tail-return reconstruction, Unity 6000.5 (`v104`–`v107`) & 6000.6 (`v108`) metadata support, iOS `.ipa` `Data/` & metadata-only enum fixes, and default `private` visibility preservation.
+- **UI & Android 17:** Upgraded to **Avalonia `12.2.0`** and **AvaloniaEdit `12.0.0`** (`0` vulnerable NuGet packages via Central Package Management), added the built-in **Debug & Performance Monitor** (`F12` / `View → Debug & Perf Monitor`), and hardened Android 17 support (16 KB ELF alignment, full-screen tablet viewport, cold-launch rendering, trim-safe JSON).
+- **Performance:** Zero-copy `PEReader`, cached `DecompilerTypeSystem`, per-assembly pre-lifting, and 128-entry LRU render cache (~2.46× faster navigation, ~50% lower GC churn).
+
 ## Current State of the Project
 
 | Area | Status | Details |
@@ -94,7 +100,7 @@ dotnet run --project src/Il2CppStudio.Gui -c Release
 
 ## Testing & Validation
 
-Il2CppStudio includes an automated 152-test unit and cross-platform integration suite (`tests/Il2CppStudio.Tests`) guarding against regressions across Windows (`x64`/`x86`/`arm64`), Linux, Android (`arm64-v8a`/`armeabi-v7a`/Split APKs), WebGL (`.wasm`/`asm.js`), PS4, Switch, iOS/Mach-O, and Unity `5.3` through `6000.6`.
+Il2CppStudio includes an automated 171-test unit and cross-platform integration suite (`tests/Il2CppStudio.Tests`) guarding against regressions across Windows (`x64`/`x86`/`arm64`), Linux, Android (`arm64-v8a`/`armeabi-v7a`/Split APKs), WebGL (`.wasm`/`asm.js`), PS4, Switch, iOS/Mach-O, and Unity `5.3` through `6000.6`.
 
 ```bash
 dotnet test -c Release

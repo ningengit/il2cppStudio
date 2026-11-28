@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 pushd "%~dp0"
 
-echo === Il2CppStudio Release Build (v2.3.0) ===
+echo === Il2CppStudio Release Build (v2.4.0) ===
 
 if exist "dist" (
     echo Cleaning dist\ ...
