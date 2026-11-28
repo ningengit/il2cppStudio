@@ -77,6 +77,19 @@ public sealed class BlockLifter(
                     regs.SpillLiveOut(ctx, block);
                     if (graph.BlockAt(ins.NearBranchTarget) is { } u && !u.IsTrap) ctx.IL.Add(AsmResolver.PE.DotNet.Cil.CilOpCodes.Br, u.Label);
                     return true;
+                case FlowControl.IndirectBranch when graph.JumpTables.TryGetValue(i, out var jt):
+                {
+                    regs.SpillLiveOut(ctx, block);
+                    Expr.EmitAs(ctx, regs.Get(jt.IndexRegister), ctx.Module.CorLibTypeFactory.Int32);
+                    var labels = jt.Targets.Select(va => graph.BlockAt(va)!.Label).ToArray();
+                    ctx.IL.Add(AsmResolver.PE.DotNet.Cil.CilOpCodes.Switch, labels);
+                    var def = jt.DefaultTargetVa != 0 ? graph.BlockAt(jt.DefaultTargetVa) : null;
+                    if (def is not null && !def.IsTrap)
+                        ctx.IL.Add(AsmResolver.PE.DotNet.Cil.CilOpCodes.Br, def.Label);
+                    else
+                        ctx.IL.Add(AsmResolver.PE.DotNet.Cil.CilOpCodes.Br, labels[0]);
+                    return true;
+                }
                 case FlowControl.IndirectBranch when ins.Op0Kind == OpKind.Memory && ins.MemoryIndex == Register.None:
                     // Tail call through a vtable / function pointer (jmp [rax+398h]); jump tables use jmp reg / [base+index*8].
                     if (calls.Handle(ctx, ins, (r, _) => regs.Get(r))) return true;
@@ -89,6 +102,7 @@ public sealed class BlockLifter(
             var conditional = ins.ConditionCode != ConditionCode.None;
             if (conditional && ins.Mnemonic.ToString().StartsWith("Set", StringComparison.Ordinal)) { branch.EmitSet(ins); continue; }
             if (conditional && ins.Mnemonic.ToString().StartsWith("Cmov", StringComparison.Ordinal)) { branch.EmitCmov(ctx, ins); continue; }
+            if (ins.Mnemonic == Mnemonic.Sbb && branch.EmitSbb(ctx, ins)) continue;
             if (arith.Translate(ctx, ins))
             {
                 if (ins.RflagsModified != 0) branch.NoteResult(ins.OpCount > 0 && ins.Op0Kind == OpKind.Register ? ins.Op0Register : Register.None);

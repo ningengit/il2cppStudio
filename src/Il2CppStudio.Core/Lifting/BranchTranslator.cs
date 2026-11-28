@@ -120,6 +120,28 @@ public sealed class BranchTranslator(RegisterTracker regs, OperandReader ops, In
         regs.Set(ins.Op0Register, cond is null ? new NativeExpr(ins.ToString(), ValueKind.I4) : cond);
     }
 
+    /// <summary>sbb reg, reg → reg = CF ? -1 : 0.</summary>
+    public bool EmitSbb(EmitContext ctx, in Instruction ins)
+    {
+        if (ins.Mnemonic != Mnemonic.Sbb || ins.OpCount != 2
+            || ins.Op0Kind != OpKind.Register || ins.Op1Kind != OpKind.Register
+            || ins.Op0Register != ins.Op1Register)
+            return false;
+
+        Expr? carry = _flags.Source == FlagSource.Test
+            ? new ConstExpr(0, ValueKind.I4)
+            : ConditionMapper.Map(_flags, ConditionCode.b);
+        if (carry is null) return false;
+
+        Expr res = new UnaryExpr(CilOpCodes.Neg, carry);
+        if (ins.Op0Register.IsGPR64())
+            res = new ConvExpr(res, ctx.Module.CorLibTypeFactory.Int64);
+        regs.Set(ins.Op0Register, res);
+        _flags = new(FlagSource.Result, res, null);
+        _resultRegister = ins.Op0Register;
+        return true;
+    }
+
     /// <summary>cmovcc dst, src → dst = cond ? src : dst, materialized into a local with a small diamond.</summary>
     public void EmitCmov(EmitContext ctx, in Instruction ins)
     {

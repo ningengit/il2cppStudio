@@ -27,8 +27,34 @@ public sealed class CallDispatcher(NativeSymbolizer sym, CallEmitter emitter, Re
             var target = ins.NearBranchTarget;
             if (sym.Map.SymbolAt(target) is not null)
             {
+                var candidates = sym.Map.CandidatesAt(target);
+                NativeSymbol? exact = null;
+                var exactSpec = -1;
+                if (candidates.Count > 1)
+                {
+                    for (var pos = 0; pos <= 3 && exact is null; pos++)
+                    {
+                        if (ArgumentLocations.TryReadHelperArg(regs, pos, out var arg)
+                            && arg is MarkerExpr { Marker: MarkerKind.MethodInfo, Usage: { Kind: Registration.MetadataUsageKind.MethodRef } u }
+                            && (uint)u.Index < (uint)sym.Registration.MethodSpecs.Count)
+                        {
+                            var specMethodIdx = sym.Registration.MethodSpecs[u.Index].MethodDefinitionIndex;
+                            var match = candidates.FirstOrDefault(c => c.MethodIndex == specMethodIdx);
+                            if (match is not null)
+                            {
+                                var sh = MethodShape.Create(sym.Metadata, sym.Registration, emitter.Stubs, emitter.Mem, emitter.Module, match.MethodIndex, u.Index);
+                                if (pos == sh.FirstParameterPosition + sh.Parameters.Count)
+                                {
+                                    exact = match;
+                                    exactSpec = u.Index;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (exact is not null && emitter.Emit(ctx, exact.MethodIndex, exactSpec, null)) return false;
                 var recv = ArgumentLocations.Abi == NativeAbi.Win32 ? emitter.Win32ThisCandidate() : regs.Get(ArgumentLocations.IntArg(0));
-                var s = IcfResolver.Choose(sym.Map.CandidatesAt(target), emitter.ReceiverTypeDef(), sym.Metadata, sym.Registration, sym.Names, ctx.Log,
+                var s = IcfResolver.Choose(candidates, emitter.ReceiverTypeDef(), sym.Metadata, sym.Registration, sym.Names, ctx.InfoLog,
                     receiverIsNewObject: recv is NewObjExpr { IsMaterialized: false }
                                          || InConstructor && recv is ArgExpr { Parameter.Index: -1 },
                     receiverType: emitter.ReceiverType(), stubs: emitter.Stubs, module: emitter.Module);

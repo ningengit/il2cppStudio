@@ -7,6 +7,10 @@ public sealed class StackAddrPlaceholder(long key) : Expr
 {
     public long Key => key;
     public override ValueKind Kind => ValueKind.Native;
-    public override void Emit(EmitContext ctx) => ctx.Native($"&stack[0x{key:X}]");
+    public override void Emit(EmitContext ctx)
+    {
+        ctx.Native($"&stack[0x{key:X}]");
+        ctx.IL.Add(CilOpCodes.Conv_I);
+    }
     public override string Describe() => $"&stack[0x{key:X}]";
 }

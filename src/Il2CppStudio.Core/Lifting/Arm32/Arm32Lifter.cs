@@ -1022,7 +1022,7 @@ public sealed class Arm32Lifter(NativeSymbolizer sym, StubAssemblyBuilder stubs,
                 var r0 = ReadReg("r0");
                 var recvType = r0 is NewObjExpr no ? no.Type : r0 is AddressExpr ae ? ae.Target.Type : r0.Type;
                 var td = _mem.TypeDefOf(recvType);
-                var s = IcfResolver.Choose(_sym.Map.CandidatesAt(targetVa), td, _sym.Metadata, _sym.Registration, _sym.Names, ctx.Log,
+                var s = IcfResolver.Choose(_sym.Map.CandidatesAt(targetVa), td, _sym.Metadata, _sym.Registration, _sym.Names, ctx.InfoLog,
                     receiverIsNewObject: r0 is NewObjExpr { IsMaterialized: false },
                     receiverType: recvType, stubs: _stubs, module: _module);
                 if (EmitManagedCall(ctx, s.MethodIndex, s.MethodSpecIndex)) return;

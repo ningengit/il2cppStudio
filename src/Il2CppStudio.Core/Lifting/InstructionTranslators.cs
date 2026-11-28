@@ -137,6 +137,11 @@ public sealed class InstructionTranslators(RegisterTracker regs, OperandReader o
     {
         var left = ops.Read(ins, 0);
         var right = ops.Read(ins, 1);
+        if (op == CilOpCodes.Shr_Un && left is PackedIntsExpr pi && right is ConstExpr { Value: 32 })
+        {
+            Write(ctx, ins, LastResult = pi.Hi);
+            return true;
+        }
         if (op == CilOpCodes.Add && right is ConstExpr { Value: > 0 and var disp } && ops.TryFieldAddress(left, disp) is { } addr)
         {
             Write(ctx, ins, LastResult = addr);

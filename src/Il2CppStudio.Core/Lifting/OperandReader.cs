@@ -20,13 +20,14 @@ public sealed class OperandReader(RegisterTracker regs, StructSlotTable slots, M
             {
                 var r = ins.GetOpRegister(operand);
                 var v = regs.Get(r);
-                if (r.IsGPR8() && r is not (Register.AH or Register.BH or Register.CH or Register.DH))
+                if ((r.IsGPR8() || r.IsGPR16() || r.IsGPR32()) && r is not (Register.AH or Register.BH or Register.CH or Register.DH))
                 {
+                    var width = r.GetSize();
                     var inner = v is ConvExpr ce ? ce.Operand : v;
                     if (inner.Kind == ValueKind.Struct && inner.Type is not null
                         && mem.TypeDefOf(inner.Type) is var std and >= 0
-                        && mem.StructField(inner, std, 0, desiredSize: 1) is { Type: not null } f0
-                        && mem.ValueSize(f0.Type) == 1)
+                        && mem.StructField(inner, std, 0, desiredSize: width) is { Type: not null } f0
+                        && mem.ValueSize(f0.Type) == width)
                         return f0;
                 }
                 return v;
@@ -121,18 +122,27 @@ public sealed class OperandReader(RegisterTracker regs, StructSlotTable slots, M
         if (ins.MemoryIndex == Register.None && ins.MemoryBase != Register.None && regs.Get(ins.MemoryBase) is StackAddrPlaceholder frame)
             return new StackAddrPlaceholder(frame.Key + disp);
         Expr sum = ins.MemoryBase == Register.None ? new ConstExpr(0, ValueKind.I8) : regs.Get(ins.MemoryBase);
+        var is32 = ins.Op0Kind == OpKind.Register && ins.Op0Register.IsGPR32();
+        if (is32 && sum.Kind == ValueKind.Struct && sum.Type is not null
+            && mem.TypeDefOf(sum.Type) is var sumTd and >= 0
+            && mem.StructField(sum, sumTd, 0, desiredSize: 4) is { Type: not null } sumF0
+            && mem.ValueSize(sumF0.Type) == 4)
+        {
+            sum = sumF0;
+        }
         if (ins.MemoryIndex == Register.None && disp != 0 && mem.ResolveFieldAddress(sum, disp) is { } fieldAddr)
             return fieldAddr;
         if (ins.MemoryIndex != Register.None && sum.Type is SzArrayTypeSignature arr
             && mem.Load(sum, regs.Get(ins.MemoryIndex), ins.MemoryIndexScale, disp, mem.ValueSize(arr.BaseType)) is ArrayElementExpr elem)
             return new AddressExpr(elem);
+        var arithKind = is32 ? ValueKind.I4 : ValueKind.I8;
         if (ins.MemoryIndex != Register.None)
         {
             Expr idx = regs.Get(ins.MemoryIndex);
-            if (ins.MemoryIndexScale > 1) idx = new BinaryExpr(AsmResolver.PE.DotNet.Cil.CilOpCodes.Mul, idx, new ConstExpr(ins.MemoryIndexScale, ValueKind.I8), ValueKind.I8);
-            sum = new BinaryExpr(AsmResolver.PE.DotNet.Cil.CilOpCodes.Add, sum, idx, ValueKind.I8);
+            if (ins.MemoryIndexScale > 1) idx = new BinaryExpr(AsmResolver.PE.DotNet.Cil.CilOpCodes.Mul, idx, new ConstExpr(ins.MemoryIndexScale, arithKind), arithKind);
+            sum = new BinaryExpr(AsmResolver.PE.DotNet.Cil.CilOpCodes.Add, sum, idx, arithKind);
         }
-        return disp == 0 ? sum : new BinaryExpr(AsmResolver.PE.DotNet.Cil.CilOpCodes.Add, sum, new ConstExpr(disp, ValueKind.I8), ValueKind.I8);
+        return disp == 0 ? sum : new BinaryExpr(AsmResolver.PE.DotNet.Cil.CilOpCodes.Add, sum, new ConstExpr(is32 ? unchecked((int)disp) : disp, arithKind), arithKind);
     }
 
     public Expr? TryFieldAddress(Expr baseExpr, long disp) => mem.ResolveFieldAddress(baseExpr, disp);

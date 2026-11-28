@@ -87,7 +87,7 @@ public sealed class CallEmitter(
             return true;
         }
 
-        if (thisValue is not null) EmitThis(ctx, shape, thisValue);
+        if (thisValue is not null) EmitThis(ctx, shape, target, thisValue);
         for (var i = 0; i < shape.Parameters.Count; i++) EmitParameter(ctx, shape.Parameters[i], shape.FirstParameterPosition + i);
 
         var isBaseCall = explicitThis is null
@@ -104,12 +104,15 @@ public sealed class CallEmitter(
         return true;
     }
 
-    private void EmitThis(EmitContext ctx, MethodShape shape, Expr value)
+    private void EmitThis(EmitContext ctx, MethodShape shape, IMethodDescriptor target, Expr value)
     {
         var declTd = md.Methods[shape.MethodIndex].DeclaringType;
         var declRef = stubs.TypeRefFor(module, declTd);
         if (declRef is null) { value.Emit(ctx); return; }
-        var declSig = declRef.ToTypeSignature(shape.DeclaringIsValueType);
+        var targetDecl = target is MethodSpecification ms ? ms.Method?.DeclaringType : target.DeclaringType;
+        var declSig = targetDecl is TypeSpecification { Signature: { } specSig }
+            ? specSig
+            : declRef.ToTypeSignature(shape.DeclaringIsValueType);
         if (!shape.DeclaringIsValueType && declSig.FullName == "System.Enum" && value is StackAddrPlaceholder sp
             && regs.GetSlot(sp.Key) is MarkerExpr { Marker: MarkerKind.TypeInfo, Usage: { Kind: MetadataUsageKind.TypeInfo } eu }
             && regs.GetSlot(sp.Key + 16) is { } enumVal && stubs.ToSig(module, eu.Index) is { } enumSig)
@@ -193,6 +196,14 @@ public sealed class CallEmitter(
         {
             ctx.IL.Add(CilOpCodes.Ldtoken, fieldRef);
             return;
+        }
+        if (Expr.KindOf(type) is ValueKind.I4 or ValueKind.R4 && v.Kind == ValueKind.Struct && v.Type is not null
+            && mem.TypeDefOf(v.Type) is var argTd and >= 0
+            && mem.ValueSize(type) is var targetSize
+            && mem.StructField(v, argTd, 0, desiredSize: targetSize) is { Type: not null } argF0
+            && mem.ValueSize(argF0.Type) == targetSize)
+        {
+            v = argF0;
         }
         Expr.EmitAs(ctx, v, type);
     }

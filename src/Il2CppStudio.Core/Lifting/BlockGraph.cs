@@ -25,6 +25,8 @@ public sealed class NativeBlock
     public bool IsPadding { get; set; }
 }
 
+public sealed record X64JumpTable(Register IndexRegister, ulong[] Targets, ulong DefaultTargetVa);
+
 /// <summary>
 /// Control-flow graph of one native function: leaders, blocks, IL2CPP runtime plumbing detection and
 /// backward register liveness (used to decide which registers must be spilled to locals at block ends).
@@ -34,6 +36,7 @@ public sealed class BlockGraph
     public IReadOnlyList<Instruction> Instructions { get; }
     public List<NativeBlock> Blocks { get; } = [];
     public HashSet<int> Elided { get; } = [];
+    public Dictionary<int, X64JumpTable> JumpTables { get; } = [];
     public int ElidedGuards { get; private set; }
     private readonly Dictionary<ulong, int> _indexOfVa = [];
     private readonly Dictionary<ulong, NativeBlock> _blockAt = [];
@@ -51,6 +54,7 @@ public sealed class BlockGraph
         for (var i = 0; i < instructions.Count; i++) _indexOfVa[instructions[i].IP] = i;
         FindMetadataInitGuards(reg);
         FindInterfaceOffsetLoops();
+        FindJumpTables(reg);
         BuildBlocks();
         MarkTraps();
         foreach (var b in Blocks)
@@ -145,6 +149,130 @@ public sealed class BlockGraph
         }
     }
 
+    private void FindJumpTables(Il2CppRegistration reg)
+    {
+        for (var i = 0; i < Instructions.Count; i++)
+        {
+            if (Elided.Contains(i)) continue;
+            var ins = Instructions[i];
+            if (ins.FlowControl != FlowControl.IndirectBranch || ins.Op0Kind != OpKind.Register) continue;
+            var targetReg = Normalize(ins.Op0Register);
+            if (!targetReg.IsGPR64()) continue;
+
+            var addIdx = -1;
+            var baseReg = Register.None;
+            for (var j = i - 1; j >= 0 && i - j <= 4; j--)
+            {
+                if (Elided.Contains(j)) continue;
+                var x = Instructions[j];
+                if (x.FlowControl != FlowControl.Next) break;
+                if (x.Mnemonic == Mnemonic.Add && x.OpCount == 2 && x.Op0Kind == OpKind.Register && x.Op1Kind == OpKind.Register
+                    && Normalize(x.Op0Register) == targetReg)
+                {
+                    addIdx = j;
+                    baseReg = Normalize(x.Op1Register);
+                    break;
+                }
+            }
+            if (addIdx < 0 || !baseReg.IsGPR64()) continue;
+
+            var loadIdx = -1;
+            var indexReg = Register.None;
+            var tableDisp = 0L;
+            var signExtendEntries = false;
+            for (var j = addIdx - 1; j >= 0 && addIdx - j <= 4; j--)
+            {
+                if (Elided.Contains(j)) continue;
+                var x = Instructions[j];
+                if (x.FlowControl != FlowControl.Next) break;
+                if (x.Mnemonic is Mnemonic.Mov or Mnemonic.Movsxd && x.Op0Kind == OpKind.Register
+                    && Normalize(x.Op0Register) == targetReg && x.Op1Kind == OpKind.Memory
+                    && x.MemoryIndexScale == 4 && x.MemoryIndex != Register.None
+                    && Normalize(x.MemoryBase) == baseReg)
+                {
+                    loadIdx = j;
+                    indexReg = Normalize(x.MemoryIndex);
+                    tableDisp = unchecked((long)x.MemoryDisplacement64);
+                    signExtendEntries = x.Mnemonic == Mnemonic.Movsxd;
+                    break;
+                }
+            }
+            if (loadIdx < 0 || !indexReg.IsGPR64()) continue;
+
+            var leaIdx = -1;
+            var baseVa = 0UL;
+            for (var j = loadIdx - 1; j >= 0 && loadIdx - j <= 6; j--)
+            {
+                if (Elided.Contains(j)) continue;
+                var x = Instructions[j];
+                if (x.FlowControl != FlowControl.Next) break;
+                if (x.Mnemonic == Mnemonic.Lea && x.Op0Kind == OpKind.Register
+                    && Normalize(x.Op0Register) == baseReg && x.IsIPRelativeMemoryOperand)
+                {
+                    leaIdx = j;
+                    baseVa = x.IPRelativeMemoryAddress;
+                    break;
+                }
+            }
+            if (leaIdx < 0 || baseVa == 0) continue;
+
+            var defaultVa = 0UL;
+            var count = 0;
+            for (var j = leaIdx - 1; j >= 0 && leaIdx - j <= 12; j--)
+            {
+                if (Elided.Contains(j)) continue;
+                var x = Instructions[j];
+                if (x.FlowControl == FlowControl.Call || x.FlowControl == FlowControl.Return) break;
+                if (x.Mnemonic is Mnemonic.Ja or Mnemonic.Jae && j > 0 && Instructions[j - 1].Mnemonic == Mnemonic.Cmp
+                    && Instructions[j - 1].Op1Kind is OpKind.Immediate8 or OpKind.Immediate8to32 or OpKind.Immediate32 or OpKind.Immediate8to64)
+                {
+                    var bound = unchecked((long)Instructions[j - 1].GetImmediate(1));
+                    var c = x.Mnemonic == Mnemonic.Ja ? bound + 1 : bound;
+                    if (c is >= 2 and <= 512)
+                    {
+                        count = (int)c;
+                        defaultVa = x.NearBranchTarget;
+                    }
+                    break;
+                }
+            }
+            if (count == 0) continue;
+
+            var tableVa = unchecked((ulong)((long)baseVa + tableDisp));
+            var targets = new ulong[count];
+            var ok = true;
+            for (var k = 0; k < count; k++)
+            {
+                var entryAddr = tableVa + (ulong)(k * 4);
+                if (!reg.Reader.IsMapped(entryAddr)) { ok = false; break; }
+                var targetVa = signExtendEntries
+                    ? unchecked((ulong)((long)baseVa + reg.Reader.ReadI32(entryAddr)))
+                    : baseVa + reg.Reader.ReadU32(entryAddr);
+                if (!_indexOfVa.ContainsKey(targetVa)) { ok = false; break; }
+                targets[k] = targetVa;
+            }
+            if (!ok) continue;
+
+            JumpTables[i] = new X64JumpTable(indexReg, targets, defaultVa);
+            Elided.Add(loadIdx);
+            Elided.Add(addIdx);
+            var baseUsedBetween = false;
+            for (var k = leaIdx + 1; k < loadIdx; k++)
+            {
+                var mid = Instructions[k];
+                if (mid.Op0Kind == OpKind.Register && Normalize(mid.Op0Register) == baseReg
+                    || mid.Op1Kind == OpKind.Register && Normalize(mid.Op1Register) == baseReg
+                    || mid.Op0Kind == OpKind.Memory && (Normalize(mid.MemoryBase) == baseReg || Normalize(mid.MemoryIndex) == baseReg)
+                    || mid.Op1Kind == OpKind.Memory && (Normalize(mid.MemoryBase) == baseReg || Normalize(mid.MemoryIndex) == baseReg))
+                {
+                    baseUsedBetween = true;
+                    break;
+                }
+            }
+            if (!baseUsedBetween) Elided.Add(leaIdx);
+        }
+    }
+
     private void BuildBlocks()
     {
         // Branches to trap blocks (call ThrowHelper; int3, optionally with Win32 `push`) are NullCheck / bounds
@@ -181,6 +309,14 @@ public sealed class BlockGraph
         }
 
         var list = leaders.ToList();
+        foreach (var jt in JumpTables.Values)
+        {
+            foreach (var tva in jt.Targets)
+                if (_indexOfVa.TryGetValue(tva, out var idx)) leaders.Add(idx);
+            if (jt.DefaultTargetVa != 0 && _indexOfVa.TryGetValue(jt.DefaultTargetVa, out var defIdx))
+                leaders.Add(defIdx);
+        }
+        list = leaders.ToList();
         for (var n = 0; n < list.Count; n++)
         {
             var start = list[n];
@@ -204,6 +340,12 @@ public sealed class BlockGraph
                     break;
                 case FlowControl.UnconditionalBranch:
                     if (_blockAt.TryGetValue(ins.NearBranchTarget, out var u)) b.Successors.Add(u);
+                    break;
+                case FlowControl.IndirectBranch when JumpTables.TryGetValue(last, out var jt):
+                    foreach (var tva in jt.Targets.Distinct())
+                        if (_blockAt.TryGetValue(tva, out var tb)) b.Successors.Add(tb);
+                    if (jt.DefaultTargetVa != 0 && _blockAt.TryGetValue(jt.DefaultTargetVa, out var db) && !b.Successors.Contains(db))
+                        b.Successors.Add(db);
                     break;
                 case FlowControl.Return or FlowControl.Interrupt or FlowControl.IndirectBranch:
                     break;
@@ -286,6 +428,12 @@ public sealed class BlockGraph
         }
         if (ins.FlowControl == FlowControl.Call) { reads.AddRange(_callReads(ins)); writes.AddRange(CallClobbers); }
         if (ins.FlowControl == FlowControl.Return) reads.AddRange(_returnRegs);
+        if (ins.FlowControl == FlowControl.IndirectBranch && JumpTables.TryGetValue(i, out var jt))
+        {
+            var jmpTargetReg = Normalize(ins.Op0Register);
+            reads.RemoveAll(r => r == jmpTargetReg);
+            reads.Add(jt.IndexRegister);
+        }
         _reads[i] = [.. reads];
         _writes[i] = [.. writes];
     }
@@ -327,15 +475,19 @@ public sealed class BlockGraph
                 if (Elided.Contains(i)) continue;
                 var ins = Instructions[i];
                 var info = factory.GetInfo(ins);
-                var zeroIdiom = ins.Mnemonic is Mnemonic.Xor or Mnemonic.Xorps or Mnemonic.Pxor or Mnemonic.Xorpd
+                var zeroIdiom = ins.Mnemonic is Mnemonic.Xor or Mnemonic.Xorps or Mnemonic.Pxor or Mnemonic.Xorpd or Mnemonic.Sbb
                     && ins.OpCount == 2 && ins.Op0Kind == OpKind.Register && ins.Op1Kind == OpKind.Register && ins.Op0Register == ins.Op1Register;
+                X64JumpTable? jt = null;
+                var isJumpTable = ins.FlowControl == FlowControl.IndirectBranch && JumpTables.TryGetValue(i, out jt);
                 foreach (var u in info.GetUsedRegisters())
                 {
-                    var r = Normalize(u.Register);
+                    var r = isJumpTable ? Register.None : Normalize(u.Register);
                     if (!IsTracked(r)) continue;
                     var reads = u.Access is OpAccess.Read or OpAccess.ReadWrite or OpAccess.CondRead or OpAccess.ReadCondWrite;
                     if (reads && !zeroIdiom && !b.Def.Contains(r)) b.Use.Add(r);
                 }
+                if (isJumpTable && !b.Def.Contains(jt!.IndexRegister))
+                    b.Use.Add(jt.IndexRegister);
                 foreach (var u in info.GetUsedRegisters())
                 {
                     var r = Normalize(u.Register);

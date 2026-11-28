@@ -1585,7 +1585,7 @@ internal sealed class Arm64BlockTranslator
                 AddressExpr a => a.Target.Type,
                 _ => x0.Type,
             };
-            var s = IcfResolver.Choose(candidates, recvTd, _sym.Metadata, _sym.Registration, _sym.Names, ctx.Log,
+            var s = IcfResolver.Choose(candidates, recvTd, _sym.Metadata, _sym.Registration, _sym.Names, ctx.InfoLog,
                 receiverIsNewObject: x0 is NewObjExpr { IsMaterialized: false }
                                      || (_method.Name == ".ctor" && x0 is ArgExpr { Parameter.Index: -1 } or AddressExpr { Target: ThisStructExpr }),
                 receiverType: recvType, stubs: _stubs, module: _module);

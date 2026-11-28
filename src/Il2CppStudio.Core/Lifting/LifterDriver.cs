@@ -48,7 +48,11 @@ public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs
                 sink.Warn(DiagnosticCategory.Lifting, DiagnosticCodes.DisassemblyFailed, warnMsg, loc(fn.FailedVa));
                 notes.Add(warnMsg);
             }
-            var ctx = new EmitContext(body.Instructions, stub.Module, stub.Intrinsics) { Log = notes.Add };
+            var ctx = new EmitContext(body.Instructions, stub.Module, stub.Intrinsics)
+            {
+                Log = notes.Add,
+                InfoLog = msg => sink.Debug(DiagnosticCategory.Lifting, DiagnosticCodes.LiftCompleted, msg, loc(va)),
+            };
             var f = stub.Module.CorLibTypeFactory;
 
             var regs = new RegisterTracker(body, f);

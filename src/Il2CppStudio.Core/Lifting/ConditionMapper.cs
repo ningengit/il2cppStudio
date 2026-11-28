@@ -1,3 +1,4 @@
+using AsmResolver.PE.DotNet.Cil;
 using Iced.Intel;
 
 namespace Il2CppStudio.Core.Lifting;
@@ -28,11 +29,20 @@ public static class ConditionMapper
                 return ZeroTest(cc, value, zero32);
             }
             case FlagSource.Result when flags.Left is { } r:
+                if (cc == ConditionCode.b)
+                    return CarryFromResult(r, zero32);
                 return ZeroTest(cc, r, zero32);
             default:
                 return null;
         }
     }
+
+    private static CompareExpr? CarryFromResult(Expr result, Expr zero32) => result switch
+    {
+        UnaryExpr { Op.Code: CilCode.Neg } neg => new CompareExpr(Condition.Ne, neg.Operand, zero32),
+        BinaryExpr { Op.Code: CilCode.Sub } sub => new CompareExpr(Condition.LtUn, sub.Left, sub.Right),
+        _ => null,
+    };
 
     private static bool SameRegisterValue(Expr a, Expr b) =>
         a is LocalExpr la && b is LocalExpr lb && la.Local == lb.Local;

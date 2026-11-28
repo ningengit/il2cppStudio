@@ -254,4 +254,40 @@ public sealed class Unity6000Tests
         Assert.Contains("internal bool bDoorLocked;", relaxedDoorCs, StringComparison.Ordinal);
         Assert.Contains("widened because", relaxedDoorCs, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Unity6000_3_Win64_AssemblyCSharp_ZeroErrorLog_ZeroNativeIntrinsics_And_SwitchSbbEnumerators()
+    {
+        var dir = Target("template il2cpp 6000.3 win64");
+        using var ws = Il2CppWorkspace.Load(dir, Sink(), new WorkspaceOptions { UseBuildBackup = false, SubstituteBcl = true });
+        WorkspaceSetup.Attach(ws);
+
+        var acs = ws.Model.Assemblies.Single(a => a.Name == "Assembly-CSharp");
+        foreach (var type in acs.Namespaces.SelectMany(n => n.Types).Where(t => t.Raw.DeclaringTypeIndex < 0 && !t.Name.StartsWith('<')))
+        {
+            var cs = ws.Render(type, null, CodeView.CSharp);
+            Assert.DoesNotContain("NativeIntrinsics", cs, StringComparison.Ordinal);
+        }
+
+        Assert.Empty(ws.Decompiler.ErrorLog.EntriesFor("Assembly-CSharp.dll"));
+
+        var camCs = ws.Render(Assert.Single(ws.FindTypes("CameraScript")), null, CodeView.CSharp);
+        Assert.Contains("lookBehind =", camCs, StringComparison.Ordinal);
+        Assert.Contains("0xB4", camCs, StringComparison.Ordinal);
+
+        var controlsCs = ws.Render(Assert.Single(ws.FindTypes("ControlsMenu")), null, CodeView.CSharp);
+        Assert.Contains("return \"0\";", controlsCs, StringComparison.Ordinal);
+        Assert.Contains("return \"9\";", controlsCs, StringComparison.Ordinal);
+        Assert.Contains("primaryKey", controlsCs, StringComparison.Ordinal);
+
+        var inputMgrCs = ws.Render(Assert.Single(ws.FindTypes("InputManager")), null, CodeView.CSharp);
+        Assert.Contains("return \"0\";", inputMgrCs, StringComparison.Ordinal);
+        Assert.Contains("return \"9\";", inputMgrCs, StringComparison.Ordinal);
+        Assert.Contains("InputAction.MoveRight", inputMgrCs, StringComparison.Ordinal);
+        Assert.Contains("InputAction.Slot0", inputMgrCs, StringComparison.Ordinal);
+        Assert.Contains("primaryKey", inputMgrCs, StringComparison.Ordinal);
+        Assert.DoesNotContain("unsafe void Save", inputMgrCs, StringComparison.Ordinal);
+        Assert.DoesNotContain("unsafe void UpdateSimulatedKeys", inputMgrCs, StringComparison.Ordinal);
+        Assert.Contains("enumerator.Current.Value.primaryKey", inputMgrCs, StringComparison.Ordinal);
+    }
 }

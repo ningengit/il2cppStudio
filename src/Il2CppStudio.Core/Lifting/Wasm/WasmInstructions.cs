@@ -503,7 +503,7 @@ internal sealed partial class WasmMethodEmit
         }
         var sym = symbols.Count == 1
             ? symbols[0]
-            : IcfResolver.Choose(symbols, recvTd, _md, _reg, owner.Symbolizer.Names, ctx.Log, receiverIsNewObject: recvNew,
+            : IcfResolver.Choose(symbols, recvTd, _md, _reg, owner.Symbolizer.Names, ctx.InfoLog, receiverIsNewObject: recvNew,
                 receiverType: recvType, stubs: _stubs, module: _module);
         var methodIndex = sym.MethodIndex < 0 && sym.MethodSpecIndex >= 0 && (uint)sym.MethodSpecIndex < (uint)_reg.MethodSpecs.Count
             ? _reg.MethodSpecs[sym.MethodSpecIndex].MethodDefinitionIndex

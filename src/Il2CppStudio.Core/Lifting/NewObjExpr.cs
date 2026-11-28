@@ -38,7 +38,7 @@ public sealed class NewObjExpr(TypeSignature type, TypeDefinition? definition, R
             foreach (var p in ctor.Signature!.ParameterTypes) PushDefault(ctx, p);
             ctx.IL.Add(CilOpCodes.Newobj, Reference(ctx.Module, ctor));
             if (ctor.Parameters.Count > 0)
-                ConversionLog.Record(ctx, $"constructor of {type.Name} was inlined by IL2CPP; recreated as new {type.Name}({string.Join(", ", ctor.Parameters.Select(p => p.Name))}) with default arguments, followed by the inlined field stores");
+                ctx.InfoLog?.Invoke($"constructor of {type.Name} was inlined by IL2CPP; recreated as new {type.Name}({string.Join(", ", ctor.Parameters.Select(p => p.Name))}) with default arguments, followed by the inlined field stores");
         }
         else
         {

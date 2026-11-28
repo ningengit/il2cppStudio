@@ -15,6 +15,9 @@ public sealed class EmitContext(CilInstructionCollection il, ModuleDefinition mo
     /// <summary>Receives type-conversion / fallback notes for the per-assembly error log (never written into C#).</summary>
     public Action<string>? Log { get; init; }
 
+    /// <summary>Receives informational lifter notes (ICF resolution, inlined ctors) routed to debug diagnostics instead of error logs.</summary>
+    public Action<string>? InfoLog { get; init; }
+
     public CilInstructionCollection IL => il;
     public ModuleDefinition Module => module;
     public NativeIntrinsics Intrinsics => intrinsics;
@@ -277,7 +280,11 @@ public sealed class StackAddrExpr(int offset, CilLocalVariable? local) : Expr
     public override void Emit(EmitContext ctx)
     {
         if (local is not null) ctx.IL.Add(CilOpCodes.Ldloc, local);
-        else ctx.Native($"&stack[0x{offset:X}]");
+        else
+        {
+            ctx.Native($"&stack[0x{offset:X}]");
+            ctx.IL.Add(CilOpCodes.Conv_I);
+        }
     }
 }
 
@@ -448,6 +455,7 @@ public sealed class NativeExpr(string text, ValueKind kind = ValueKind.I8) : Exp
     {
         ctx.Native(text);
         if (kind is ValueKind.I4) ctx.IL.Add(CilOpCodes.Conv_I4);
+        else if (kind is ValueKind.Native) ctx.IL.Add(CilOpCodes.Conv_I);
         else if (kind is ValueKind.R4) ctx.IL.Add(CilOpCodes.Conv_R4);
         else if (kind is ValueKind.R8) ctx.IL.Add(CilOpCodes.Conv_R8);
     }
@@ -464,7 +472,11 @@ public sealed class MarkerExpr(MarkerKind marker, int index, string text, Expr? 
     public Registration.MetadataUsage? Usage => usage;
     public override bool IsMarker => true;
     public override ValueKind Kind => ValueKind.Native;
-    public override void Emit(EmitContext ctx) => ctx.Native(text);
+    public override void Emit(EmitContext ctx)
+    {
+        ctx.Native(text);
+        ctx.IL.Add(CilOpCodes.Conv_I);
+    }
     public override string Describe() => text;
 }
 

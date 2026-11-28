@@ -42,7 +42,7 @@ public sealed class StructBinder(RegisterTracker regs, StructSlotTable slots, Me
         var td = mem.TypeDefOf(structType);
         if (td < 0) return null;
         Expr? source = null;
-        foreach (var f in mem.FieldsOf(td).Where(f => !f.IsStatic))
+        foreach (var f in mem.FieldsOf(td, structType).Where(f => !f.IsStatic))
         {
             Expr? from = null;
             for (var o = f.Offset; o >= 0 && o > f.Offset - 16 && from is null; o--)
@@ -50,7 +50,7 @@ public sealed class StructBinder(RegisterTracker regs, StructSlotTable slots, Me
                 switch (regs.GetSlot(key + o))
                 {
                     case StructChunkExpr c when c.Offset == o && f.Offset < o + c.Size: from = c.Source; break;
-                    case FieldExpr fe when o == f.Offset && fe.Field.Name == mem.FieldRef(f)?.Name: from = fe.Instance; break;
+                    case FieldExpr fe when o == f.Offset && fe.Field.Name == mem.FieldRef(f, structType)?.Name: from = fe.Instance; break;
                     case not null when o == f.Offset: return null;   // some other value
                 }
             }
@@ -85,10 +85,16 @@ public sealed class StructBinder(RegisterTracker regs, StructSlotTable slots, Me
             ctx.IL.Add(CilOpCodes.Stloc, local);
             return local;
         }
+        if (WholeCopySource(key, structType) is { } copySrc)
+        {
+            copySrc.Emit(ctx);
+            ctx.IL.Add(CilOpCodes.Stloc, local);
+            return local;
+        }
         var td = mem.TypeDefOf(structType);
         if (td < 0) return local;
         var target = new LocalExpr(local);
-        foreach (var f in mem.FieldsOf(td).Where(f => !f.IsStatic))
+        foreach (var f in mem.FieldsOf(td, structType).Where(f => !f.IsStatic))
         {
             var pending = regs.GetSlot(key + f.Offset);
             if (pending is null) continue;
