@@ -47,10 +47,16 @@ public sealed class BlockLifter(
                     returns.Emit(ctx);
                     return true;
                 case FlowControl.ConditionalBranch:
-                    branch.BeforeSpill();
-                    regs.SpillLiveOut(ctx, block);
-                    branch.AfterSpill();
-                    if (graph.BlockAt(ins.NearBranchTarget) is { } t) branch.EmitConditional(ctx, ins, t, next, isInitPath);
+                    if (graph.BlockAt(ins.NearBranchTarget) is { } t)
+                    {
+                        if (!t.IsTrap)
+                        {
+                            branch.BeforeSpill();
+                            regs.SpillLiveOut(ctx, block);
+                            branch.AfterSpill();
+                        }
+                        branch.EmitConditional(ctx, ins, t, next, isInitPath);
+                    }
                     continue;
                 case FlowControl.UnconditionalBranch:
                     if (graph.BlockAt(ins.NearBranchTarget) is null && !graph.TryIndexOf(ins.NearBranchTarget, out _))

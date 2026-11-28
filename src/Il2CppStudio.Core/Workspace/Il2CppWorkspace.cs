@@ -29,6 +29,9 @@ public sealed record WorkspaceOptions
 
     /// <summary>Optional native library directory on Android (containing <c>libil2cpp.so</c>) when extracted outside the APKs.</summary>
     public string? NativeLibraryDir { get; init; }
+
+    /// <summary>Widen private/protected members accessed cross-type by inlined native code to internal for compilability.</summary>
+    public bool RelaxInlinedAccess { get; init; } = false;
 }
 
 /// <summary>

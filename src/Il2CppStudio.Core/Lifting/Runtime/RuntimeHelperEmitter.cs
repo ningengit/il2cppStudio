@@ -14,7 +14,7 @@ public enum HelperOutcome { NotHandled, Handled, Terminated }
 /// <c>isinst</c>/<c>castclass</c>; raise → <c>throw</c>. Each handled call is counted for the lift statistics.
 /// </summary>
 public sealed class RuntimeHelperEmitter(RuntimeHelperMap map, StubAssemblyBuilder stubs, ModuleDefinition module,
-    RegisterTracker regs, StructBinder binder)
+    RegisterTracker regs, StructBinder binder, StructSlotTable? slots = null, MemoryResolver? mem = null)
 {
     public int Handled { get; private set; }
 
@@ -47,7 +47,7 @@ public sealed class RuntimeHelperEmitter(RuntimeHelperMap map, StubAssemblyBuild
                 Expr.EmitAs(ctx, rdx, module.CorLibTypeFactory.Int32);
                 ctx.IL.Add(CilOpCodes.Newarr, arr.BaseType.ToTypeDefOrRef());
                 return Result(ctx, arr);
-            case RuntimeHelperKind.Box when TypeOf(rcx) is { } t:
+            case RuntimeHelperKind.Box when (TypeOf(rcx) ?? InferBoxType(rdx)) is { } t:
                 Expr.EmitAs(ctx, BoxedValue(ctx, rdx, t), t);
                 ctx.IL.Add(CilOpCodes.Box, t.ToTypeDefOrRef());
                 return Result(ctx, module.CorLibTypeFactory.Object);
@@ -103,6 +103,41 @@ public sealed class RuntimeHelperEmitter(RuntimeHelperMap map, StubAssemblyBuild
         e is MarkerExpr { Marker: MarkerKind.TypeInfo, Usage: { Kind: MetadataUsageKind.TypeInfo } u } ? stubs.ToSig(module, u.Index) : null;
 
     private TypeDefinition? TypeDefOf(Expr e) => e is MarkerExpr { Marker: MarkerKind.TypeInfo } m ? stubs.GetTypeDef(m.Index) : null;
+
+    /// <summary>When IL2CPP passes an internal <c>il2cpp_defaults.*_class</c> global not in metadata usages, infer T from the stack slot/value.</summary>
+    private TypeSignature? InferBoxType(Expr pointer)
+    {
+        if (pointer is AddressExpr a && a.Target.Type is { } at)
+        {
+            var elem = at is ByReferenceTypeSignature br ? br.BaseType : at;
+            return elem.IsValueType ? elem : null;
+        }
+        if (pointer is StackAddrPlaceholder p)
+        {
+            if (slots is not null && slots.TryFind(p.Key, out var structLocal, out var off))
+            {
+                if (off == 0) return structLocal.VariableType;
+                if (mem is not null && mem.TypeDefOf(structLocal.VariableType) is var td and >= 0
+                    && mem.StructField(new LocalExpr(structLocal), td, off) is { Type: { } ft })
+                    return ft;
+            }
+            if (regs.GetSlot(p.Key) is { } slot)
+            {
+                if (slot.Type is { IsValueType: true } st) return st;
+                var f = module.CorLibTypeFactory;
+                return slot.Kind switch
+                {
+                    ValueKind.I4 => f.Int32,
+                    ValueKind.I8 => f.Int64,
+                    ValueKind.R4 => f.Single,
+                    ValueKind.R8 => f.Double,
+                    ValueKind.Native => f.IntPtr,
+                    _ => null,
+                };
+            }
+        }
+        return null;
+    }
 
     /// <summary>il2cpp_value_box receives a pointer to the value; recover the value itself.</summary>
     private Expr BoxedValue(EmitContext ctx, Expr pointer, TypeSignature t) => pointer switch

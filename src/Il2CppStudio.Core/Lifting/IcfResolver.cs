@@ -37,6 +37,11 @@ public static class IcfResolver
             var rank = depth >= 0 ? depth
                 : names.TypeDefName(decl, true) == "System.Object" ? 1000
                 : c.MethodSpecIndex < 0 ? 2000 : 3000;
+            if (depth >= 0)
+            {
+                if ((mdef.Flags & 0x0007) != 0x0006) rank += 50;   // prefer public API (e.g. set_pitch over private SetPitch)
+                if ((mdef.Flags & 0x0010) != 0) rank += 10;         // prefer instance accessor over static P/Invoke helper
+            }
             if (depth == 0 && receiverType is GenericInstanceTypeSignature recvGen && stubs is not null && module is not null
                 && c.MethodSpecIndex >= 0 && (uint)c.MethodSpecIndex < (uint)reg.MethodSpecs.Count)
             {

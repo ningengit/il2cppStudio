@@ -105,6 +105,8 @@ public sealed class CallDispatcher(NativeSymbolizer sym, CallEmitter emitter, Re
             return false;
         }
         var name = helperMap?.ExportNames.GetValueOrDefault(target) ?? $"sub_{target - sym.Registration.Reader.ImageBase:X}";
+        if (Runtime.CrtMath.TryEmitModF(name, ctx, regs, emitter.Mem, emitter.Slots, ctx.Module.CorLibTypeFactory))
+            return false;
         if (Runtime.CrtMath.Build(name, regs, ctx.Module.CorLibTypeFactory) is { } math)
         {
             var result = regs.NewLocal(math.Type!);

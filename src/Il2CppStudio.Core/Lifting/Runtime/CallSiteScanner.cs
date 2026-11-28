@@ -63,10 +63,13 @@ public static class CallSiteScanner
                 s.Inc(ref s.RcxLeaStack);
             var rcxUsage = false;
             for (var k = i - 1; k >= Math.Max(0, i - 3); k--)
+            {
+                if (ins[k].Mnemonic == Mnemonic.Call) break;
                 if (ins[k].Op0Register == a0 && ins[k].IsIPRelativeMemoryOperand
                     && (ins[k].Mnemonic == Mnemonic.Lea && sym.TryGetUsage(ins[k].IPRelativeMemoryAddress, out _)
                         || ins[k].Mnemonic == Mnemonic.Mov && sym.TryGetUsage(sym.Registration.Reader.ReadPointer(ins[k].IPRelativeMemoryAddress), out _)))   // PIC: GOT slot → usage
                 { s.Inc(ref s.RcxLeaUsage); rcxUsage = true; break; }
+            }
             if (!rcxUsage && SourceUsage(ins, i, a0, sym, window: 6) is not null) s.Inc(ref s.RcxLeaUsage);
         }
         else if (i > 0 && ins[i - 1].Mnemonic == Mnemonic.Push)
@@ -106,6 +109,7 @@ public static class CallSiteScanner
             }
             if (!raxSeen && (ins[k].Op1Kind == OpKind.Register && ins[k].Op1Register.GetFullRegister() == Register.RAX
                 || ins[k].Mnemonic == Mnemonic.Test && ins[k].Op0Register.GetFullRegister() == Register.RAX)) { s.Inc(ref s.RaxUsedAfter); raxSeen = true; }
+            if (ins[k].Mnemonic is Mnemonic.Jmp or Mnemonic.Ret or Mnemonic.Retf) break;
             if (ins[k].Mnemonic == Mnemonic.Call)
             {
                 if (ins[k].Op0Kind == OpKind.Memory && ins[k].MemoryBase == Register.RAX && ins[k].MemoryDisplacement64 == 0)
@@ -136,6 +140,7 @@ public static class CallSiteScanner
         for (var k = i - 1; k >= Math.Max(0, i - window); k--)
         {
             var x = ins[k];
+            if (x.Mnemonic == Mnemonic.Call) return null;
             if (x.Op0Kind != OpKind.Register || x.Op0Register.GetFullRegister() != reg) continue;
             if (x.Mnemonic is Mnemonic.Mov or Mnemonic.Lea && x.IsIPRelativeMemoryOperand)
             {

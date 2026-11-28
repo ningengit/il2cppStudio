@@ -12,14 +12,32 @@ namespace Il2CppStudio.Core.Lifting;
 /// </summary>
 public sealed class OperandReader(RegisterTracker regs, StructSlotTable slots, MemoryResolver mem, NativeSymbolizer sym, CorLibTypeFactory corlib)
 {
-    public Expr Read(in Instruction ins, int operand) => ins.GetOpKind(operand) switch
+    public Expr Read(in Instruction ins, int operand)
     {
-        OpKind.Register => regs.Get(ins.GetOpRegister(operand)),
-        OpKind.Memory => ReadMemory(ins),
-        OpKind.Immediate8 or OpKind.Immediate16 or OpKind.Immediate32 or OpKind.Immediate64
-            or OpKind.Immediate8to16 or OpKind.Immediate8to32 or OpKind.Immediate8to64 or OpKind.Immediate32to64 => Immediate(ins, operand),
-        _ => new NativeExpr(ins.ToString()),
-    };
+        switch (ins.GetOpKind(operand))
+        {
+            case OpKind.Register:
+            {
+                var r = ins.GetOpRegister(operand);
+                var v = regs.Get(r);
+                if (r.IsGPR8() && r is not (Register.AH or Register.BH or Register.CH or Register.DH))
+                {
+                    var inner = v is ConvExpr ce ? ce.Operand : v;
+                    if (inner.Kind == ValueKind.Struct && inner.Type is not null
+                        && mem.TypeDefOf(inner.Type) is var std and >= 0
+                        && mem.StructField(inner, std, 0, desiredSize: 1) is { Type: not null } f0
+                        && mem.ValueSize(f0.Type) == 1)
+                        return f0;
+                }
+                return v;
+            }
+            case OpKind.Memory: return ReadMemory(ins);
+            case OpKind.Immediate8 or OpKind.Immediate16 or OpKind.Immediate32 or OpKind.Immediate64
+                or OpKind.Immediate8to16 or OpKind.Immediate8to32 or OpKind.Immediate8to64 or OpKind.Immediate32to64:
+                return Immediate(ins, operand);
+            default: return new NativeExpr(ins.ToString());
+        }
+    }
 
     private Expr Immediate(in Instruction ins, int operand)
     {
@@ -47,6 +65,11 @@ public sealed class OperandReader(RegisterTracker regs, StructSlotTable slots, M
         var index = ins.MemoryIndex == Register.None ? null : regs.Get(ins.MemoryIndex);
         if (index is null && disp == 0 && _gotValues.Contains(baseExpr)) return baseExpr;   // [GOT value] = the metadata item
         if (index is null && disp == 0 && _slotUsage.TryGetValue(baseExpr, out var slotUsage)) return UsageValue(slotUsage);   // lea r,[usage]; mov x,[r]
+        if (size == 8 && index is null
+            && (ins.Mnemonic is Mnemonic.Movsd or Mnemonic.Movq or Mnemonic.Movlps or Mnemonic.Movlpd or Mnemonic.Movddup
+                || (ins.Op0Kind == OpKind.Register && ins.Op0Register.IsXMM()))
+            && mem.TryLoadFloatPair(baseExpr, disp) is { } floatPair)
+            return floatPair;
         return mem.Load(baseExpr, index, ins.MemoryIndexScale, disp, size)
                ?? new NativeExpr($"*({baseExpr.Describe()} + 0x{disp:X})", size == 4 || ArgumentLocations.PointerSize == 4 && size != 8 ? ValueKind.I4 : ValueKind.I8);
     }
@@ -57,13 +80,20 @@ public sealed class OperandReader(RegisterTracker regs, StructSlotTable slots, M
         if (slots.TryFind(key, out var local, out var offset))
         {
             var holder = new LocalExpr(local);
-            if (mem.TypeDefOf(local.VariableType) is var td and >= 0 && mem.StructField(holder, td, offset) is { } field) return field;
+            var structSize = mem.ValueSize(local.VariableType);
+            if (offset == 0 && size >= structSize) return holder;
+            if (size == 8 && mem.TryLoadFloatPair(new AddressExpr(holder), offset) is { } stackPair) return stackPair;
+            if (mem.TypeDefOf(local.VariableType) is var td and >= 0 && mem.StructField(holder, td, offset, desiredSize: size) is { } field
+                && size <= Math.Max(4, mem.ValueSize(field.Type!)))
+                return field;
             return new StructChunkExpr(holder, (int)offset, size);
         }
         if (regs.GetSlot(key) is { } direct)
         {
             if (size == 8 && direct.Kind == ValueKind.R4 && regs.GetSlot(key + 4) is { Kind: ValueKind.R4 } hi)
                 return new PackedFloatsExpr(direct, hi, corlib.Single);
+            if (size == 8 && direct.Kind == ValueKind.I4 && regs.GetSlot(key + 4) is { Kind: ValueKind.I4 } hiInt)
+                return new PackedIntsExpr(direct, hiInt);
             return direct;
         }
         for (var d = 1; d < 16; d++)

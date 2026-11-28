@@ -1,3 +1,4 @@
+using AsmResolver.DotNet.Signatures;
 using AsmResolver.PE.DotNet.Cil;
 using Iced.Intel;
 
@@ -29,6 +30,14 @@ public sealed class ReturnEmitter(MethodShape shape, RegisterTracker regs, Entry
             }
         }
         var value = regs.Get(MethodShape.IsFloat(type) ? Register.XMM0 : Register.RAX);
+        if (ArgumentLocations.Abi != NativeAbi.SysV && kind == ValueKind.Struct && mem is not null
+            && (value is PackedFloatsExpr or PackedIntsExpr or ConstExpr) && mem.ValueSize(type) <= 8
+            && (value.Type is null || !SignatureComparer.Default.Equals(value.Type, type)))
+        {
+            CallEmitter.EmitStructFromChunks(ctx, type, [value], mem, regs);
+            ctx.IL.Add(CilOpCodes.Ret);
+            return;
+        }
         // bool returns arrive in AL; narrow before converting.
         if (kind == ValueKind.I4 && value.Kind == ValueKind.I8) value = new ConvExpr(value, ctx.Module.CorLibTypeFactory.Int32);
         Expr.EmitAs(ctx, value, type);

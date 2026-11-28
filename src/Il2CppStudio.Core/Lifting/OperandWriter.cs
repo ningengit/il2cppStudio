@@ -22,6 +22,12 @@ public sealed class OperandWriter(RegisterTracker regs, StructSlotTable slots, M
             WriteAt(ctx, ins, 4, 4, packed.Lane1);
             return;
         }
+        if (value is PackedIntsExpr packedInts && size == 8)
+        {
+            WriteAt(ctx, ins, 0, 4, packedInts.Lo);
+            WriteAt(ctx, ins, 4, 4, packedInts.Hi);
+            return;
+        }
         if (value is VectorConstExpr vc && size == 16)
         {
             // movaps [mem], xmm holding a Color/Vector4/Quaternion literal: four float fields.

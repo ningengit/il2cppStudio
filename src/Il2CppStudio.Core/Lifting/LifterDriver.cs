@@ -56,11 +56,11 @@ public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs
             var mem = new MemoryResolver(md, sym.Model, sym.Registration, sym.Names, stubs, stub.Module, _typeIndex);
             var ops = new OperandReader(regs, slots, mem, sym, f);
             var writer = new OperandWriter(regs, slots, mem);
-            var arith = new InstructionTranslators(regs, ops, writer, f, new ScalarIdioms(regs, ops, writer, f, sym.Registration.Reader));
+            var arith = new InstructionTranslators(regs, ops, writer, f, new ScalarIdioms(regs, ops, writer, f, sym.Registration.Reader, mem));
             var branch = new BranchTranslator(regs, ops, arith);
             var binder = new StructBinder(regs, slots, mem);
             var emitter = new CallEmitter(md, sym.Registration, stubs, stub.Module, mem, regs, slots, binder) { CurrentTypeDef = md.Methods[methodIndex].DeclaringType };
-            var helperEmitter = helpers is null ? null : new Runtime.RuntimeHelperEmitter(helpers, stubs, stub.Module, regs, binder);
+            var helperEmitter = helpers is null ? null : new Runtime.RuntimeHelperEmitter(helpers, stubs, stub.Module, regs, binder, slots, mem);
             var calls = new CallDispatcher(sym, emitter, regs, sink, loc, helperEmitter, helpers) { InConstructor = method.IsConstructor && !method.IsStatic };
             var shape = MethodShape.Create(md, sym.Registration, stubs, mem, stub.Module, methodIndex, -1);
             var returnReg = Expr.KindOf(shape.ReturnType) == ValueKind.Void || shape.HasReturnBuffer
@@ -162,7 +162,7 @@ public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs
                     return [ArgumentLocations.IntArg(0), ArgumentLocations.IntArg(1), ArgumentLocations.IntArg(2)];
             }
             if (helpers.ExportNames.TryGetValue(target, out var name) && Runtime.CrtMath.ArgCount(name) is > 0 and var n)
-                return n == 1 ? [Register.XMM0] : [Register.XMM0, Register.XMM1];
+                return name is "modf" or "modff" ? [Register.XMM0, ArgumentLocations.IntArg(1)] : n == 1 ? [Register.XMM0] : [Register.XMM0, Register.XMM1];
         }
         return AllCallArgs;
     }

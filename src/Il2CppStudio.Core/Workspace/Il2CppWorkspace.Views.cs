@@ -25,7 +25,11 @@ public sealed partial class Il2CppWorkspace
 
     private DecompilerService CreateDecompiler()
     {
-        var d = new DecompilerService(Stubs, Model, Bcl, Options.SubstituteBcl, Sink) { BodyProvider = BodyProvider };
+        var d = new DecompilerService(Stubs, Model, Bcl, Options.SubstituteBcl, Sink)
+        {
+            BodyProvider = BodyProvider,
+            RelaxInlinedAccess = Options.RelaxInlinedAccess,
+        };
         d.Annotations = new AnnotationContext
         {
             Model = Model,
@@ -74,10 +78,17 @@ public sealed partial class Il2CppWorkspace
         set => Decompiler.SubstituteBcl = value;
     }
 
+    /// <summary>When true, widens private/protected members accessed cross-type by inlined native code to internal.</summary>
+    public bool RelaxInlinedAccess
+    {
+        get => _decompiler?.RelaxInlinedAccess ?? Options.RelaxInlinedAccess;
+        set => Decompiler.RelaxInlinedAccess = value;
+    }
+
     /// <summary>Renders a type (method == null) or a single method in the requested representation.</summary>
     private const int RenderCacheCapacity = 128;
 
-    private readonly record struct RenderCacheKey(int TypeIndex, int MethodIndex, CodeView View, bool SubstituteBcl);
+    private readonly record struct RenderCacheKey(int TypeIndex, int MethodIndex, CodeView View, bool SubstituteBcl, bool RelaxInlinedAccess);
 
     private readonly Lock _renderGate = new();
     private readonly Lock _renderCacheGate = new();
@@ -94,7 +105,7 @@ public sealed partial class Il2CppWorkspace
     public string Render(TypeModel type, MethodModel? method, CodeView view, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        var key = new RenderCacheKey(type.Index, method?.Index ?? -1, view, SubstituteBcl);
+        var key = new RenderCacheKey(type.Index, method?.Index ?? -1, view, SubstituteBcl, RelaxInlinedAccess);
         lock (_renderCacheGate)
         {
             if (_renderCache.TryGetValue(key, out var node))

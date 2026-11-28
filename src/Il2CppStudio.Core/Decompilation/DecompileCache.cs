@@ -35,7 +35,8 @@ internal static class DecompileCache
         bool includeIl,
         bool substituteBcl,
         bool showTokens,
-        string? bclRefDir)
+        string? bclRefDir,
+        bool relaxInlinedAccess = false)
     {
         using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         Span<byte> hdr = stackalloc byte[8];
@@ -43,7 +44,7 @@ internal static class DecompileCache
         hdr[4] = includeIl ? (byte)1 : (byte)0;
         hdr[5] = substituteBcl ? (byte)1 : (byte)0;
         hdr[6] = showTokens ? (byte)1 : (byte)0;
-        hdr[7] = 0;
+        hdr[7] = relaxInlinedAccess ? (byte)1 : (byte)0;
         hasher.AppendData(hdr);
 
         Span<byte> mvid = stackalloc byte[16];

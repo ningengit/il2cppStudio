@@ -75,7 +75,14 @@ public sealed class MethodAddressMap
                     if (cpp is "NULL" or "0") cpp = null;
                     // Identical code folding (COMDAT folding) maps many methods to one address; keep the first.
                     var symbol = new NativeSymbol(va, m, -1, $"{model.Types[t].FullName}::{md.GetString(md.Methods[m].NameIndex)}", cpp);
-                    if (!_byVa.TryAdd(va, symbol)) (_folded.TryGetValue(va, out var group) ? group : _folded[va] = [_byVa[va]]).Add(symbol);
+                    if (!_byVa.TryAdd(va, symbol))
+                    {
+                        var group = _folded.TryGetValue(va, out var existingGroup) ? existingGroup : _folded[va] = [_byVa[va]];
+                        group.Add(symbol);
+                        var curIdx = _byVa[va].MethodIndex;
+                        if ((md.Methods[curIdx].Flags & 0x0007) != 0x0006 && (md.Methods[m].Flags & 0x0007) == 0x0006)
+                            _byVa[va] = symbol;
+                    }
                 }
             }
         }

@@ -47,7 +47,7 @@ public sealed class RuntimeHelperMap
                     $"{s.FollowedByTrap}/{s.Sites} sites end in int3/another trap call (no return), rcx set before {s.RcxSetJustBefore}/{s.Sites}", s.Sites);
             else if (s.Sites >= 2 && Ratio(s.FollowedByIndirectCallAtRax, s) >= 0.5)
                 map.Add(va, RuntimeHelperKind.InterfaceLookup, $"{s.FollowedByIndirectCallAtRax}/{s.Sites} sites followed by call [rax]", s.Sites);
-            else if (s.Sites >= 2 && Ratio(s.RcxLeaStack, s) >= 0.9 && s.RaxUsedAfter == 0 && s.FollowedByInt3 == 0 && IsScopeGuardDestructor(disasm, va))
+            else if (s.Sites >= 2 && Ratio(s.RcxLeaStack, s) >= 0.8 && Ratio(s.RaxUsedAfter, s) < 0.3 && s.FollowedByInt3 == 0 && IsScopeGuardDestructor(disasm, va))
                 map.Add(va, RuntimeHelperKind.ScopeCleanup, $"{s.RcxLeaStack}/{s.Sites} sites pass lea rcx,[rsp+d] to scope-guard destructor", s.Sites);
             else if (Agrees(s.RdxFromTypeInfo, s, 0.4) && Ratio(s.RaxUsedAfter, s) >= 0.8 && s.FollowedByInt3 == 0)
                 map.Add(va, RuntimeHelperKind.Cast, $"{s.RdxFromTypeInfo}/{s.Sites} sites pass a TypeInfo in rdx, result used {s.RaxUsedAfter}/{s.Sites}", s.Sites);

@@ -413,9 +413,11 @@ public sealed class ReadabilityTests(TemplateBuildFixture fx)
         Assert.Contains("protected override void Awake()", inputMgrCs);
         Assert.DoesNotContain("protected internal", inputMgrCs);
 
-        Assert.Contains("internal int audioInQueue;", audioQCs);
+        Assert.Contains("private int audioInQueue;", audioQCs);
+        Assert.DoesNotContain("widened because", audioQCs);
         var doorCs = ws.Render(Assert.Single(ws.FindTypes("DoorScript")), null, CodeView.CSharp);
-        Assert.Contains("internal bool bDoorLocked;", doorCs);
+        Assert.Contains("private bool bDoorLocked;", doorCs);
+        Assert.DoesNotContain("widened because", doorCs);
 
         var vertexShakeACs = ws.Render(Assert.Single(ws.FindTypes("VertexShakeA")), null, CodeView.CSharp);
         Assert.Contains("Quaternion.Euler(", vertexShakeACs);

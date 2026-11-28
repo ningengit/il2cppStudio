@@ -18,6 +18,26 @@ public sealed class LoadMaterializer(BlockGraph graph, RegisterTracker regs, Bra
         foreach (var (r, e) in regs.Registers)
         {
             if (e is StructChunkExpr || !ReadsMemory(e) || !graph.IsLiveAfter(block, index, r)) continue;   // chunks are copied field-wise later
+            if (e is PackedFloatsExpr pf)
+            {
+                var single = pf.Type!;
+                var l0 = MaterializeScalar(ctx, pf.Lane0, single);
+                var l1 = MaterializeScalar(ctx, pf.Lane1, single);
+                var matPair = new PackedFloatsExpr(l0, l1, single, pf.WholeSource);
+                regs.ReplaceAll(e, matPair);
+                branch?.ReplaceExpr(e, matPair);
+                continue;
+            }
+            if (e is PackedIntsExpr pi)
+            {
+                var i32 = regs.TypeFor(new ConstExpr(0, ValueKind.I4));
+                var lo = MaterializeScalar(ctx, pi.Lo, pi.Lo.Type ?? i32);
+                var hi = MaterializeScalar(ctx, pi.Hi, pi.Hi.Type ?? i32);
+                var matInts = new PackedIntsExpr(lo, hi);
+                regs.ReplaceAll(e, matInts);
+                branch?.ReplaceExpr(e, matInts);
+                continue;
+            }
             var local = regs.NewLocal(regs.TypeFor(e));
             Expr.EmitAs(ctx, e, local.VariableType);
             ctx.IL.Add(CilOpCodes.Stloc, local);
@@ -26,6 +46,16 @@ public sealed class LoadMaterializer(BlockGraph graph, RegisterTracker regs, Bra
             branch?.ReplaceExpr(e, materialized);
             Materialized++;
         }
+    }
+
+    private Expr MaterializeScalar(EmitContext ctx, Expr expr, AsmResolver.DotNet.Signatures.TypeSignature targetType)
+    {
+        if (!ReadsMemory(expr)) return expr;
+        var local = regs.NewLocal(expr.Type ?? targetType);
+        Expr.EmitAs(ctx, expr, local.VariableType);
+        ctx.IL.Add(CilOpCodes.Stloc, local);
+        Materialized++;
+        return new LocalExpr(local);
     }
 
     /// <summary>True when evaluating the expression reads mutable memory (fields, statics, array elements).</summary>
@@ -37,6 +67,8 @@ public sealed class LoadMaterializer(BlockGraph graph, RegisterTracker regs, Bra
         FieldExpr { Instance: { Kind: ValueKind.Struct } inner } => ReadsMemory(inner),
         FieldExpr or StaticFieldExpr or ArrayElementExpr or ThisStructExpr => true,
         StructChunkExpr c => ReadsMemory(c.Source),
+        PackedFloatsExpr pf => ReadsMemory(pf.Lane0) || ReadsMemory(pf.Lane1),
+        PackedIntsExpr pi => ReadsMemory(pi.Lo) || ReadsMemory(pi.Hi),
         BinaryExpr b => ReadsMemory(b.Left) || ReadsMemory(b.Right),
         UnaryExpr u => ReadsMemory(u.Operand),
         ConvExpr c => ReadsMemory(c.Operand),

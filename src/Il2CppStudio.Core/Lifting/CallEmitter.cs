@@ -27,6 +27,9 @@ public sealed class CallEmitter(
     /// <summary>Declaring typedef of the method currently being lifted (used to distinguish <c>base.M()</c> from <c>this.M()</c>).</summary>
     public int CurrentTypeDef { get; init; } = -1;
 
+    internal MemoryResolver Mem => mem;
+    internal StructSlotTable Slots => slots;
+
     /// <summary>Registers a call clobbers under the active calling convention.</summary>
     public static Register[] Volatile => ArgumentLocations.Abi switch
     {
@@ -161,15 +164,13 @@ public sealed class CallEmitter(
         }
         var v = ArgumentLocations.Read(regs, position, MethodShape.IsFloat(type));
         if (v is StructChunkExpr { Offset: 0 } c && Expr.KindOf(type) == ValueKind.Struct) v = c.Source;
-        // Windows x64 passes 8-byte structs in a GPR: a Vector2 built with unpcklps arrives as two packed floats.
-        if (v is PackedFloatsExpr packed && type.FullName == "UnityEngine.Vector2")
+        // Windows x64 passes small structs (<= 8 bytes) in a GPR: Vector2 via unpcklps/movsd, InputBinding/SimulatedKeyState via packed ints or constants.
+        if (Expr.KindOf(type) == ValueKind.Struct && !MethodShape.PassedByPointer(type, mem)
+            && (v is PackedFloatsExpr or PackedIntsExpr
+                || (v is ConstExpr && mem.ValueSize(type) <= 8)
+                || (v.Kind is ValueKind.I4 or ValueKind.I8 && mem.ValueSize(type) <= 8 && (v.Type is null || !SignatureComparer.Default.Equals(v.Type, type)) && CanUnpackScalarStruct(type, mem))))
         {
-            var single = ctx.Module.CorLibTypeFactory.Single;
-            Expr.EmitAs(ctx, packed.Lane0, single);
-            Expr.EmitAs(ctx, packed.Lane1, single);
-            var ctor = new AsmResolver.DotNet.MemberReference(type.ToTypeDefOrRef(), ".ctor",
-                MethodSignature.CreateInstance(ctx.Module.CorLibTypeFactory.Void, [single, single]));
-            ctx.IL.Add(CilOpCodes.Newobj, ctor);
+            EmitStructFromChunks(ctx, type, [v], mem, regs);
             return;
         }
         // Delegate constructors take (object target, IntPtr method): a MethodInfo* marker becomes ldftn.
@@ -420,6 +421,11 @@ public sealed class CallEmitter(
                 mem.Store(ctx, addr, null, 0, off, 4, pf.Lane0);
                 if (off + 4 < size) mem.Store(ctx, addr, null, 0, off + 4, 4, pf.Lane1);
             }
+            else if (ch is PackedIntsExpr pi)
+            {
+                mem.Store(ctx, addr, null, 0, off, 4, pi.Lo);
+                if (off + 4 < size) mem.Store(ctx, addr, null, 0, off + 4, 4, pi.Hi);
+            }
             else if (ch is VectorConstExpr vc)
             {
                 var lanes = Math.Min(4, (cSize + 3) / 4);
@@ -432,5 +438,20 @@ public sealed class CallEmitter(
             }
         }
         ctx.IL.Add(CilOpCodes.Ldloc, local);
+    }
+
+    internal static bool CanUnpackScalarStruct(TypeSignature type, MemoryResolver mem)
+    {
+        var td = mem.TypeDefOf(type);
+        if (td < 0) return false;
+        var fields = mem.FieldsOf(td, type).Where(f => !f.IsStatic).OrderBy(f => f.Offset).ToList();
+        if (fields.Count == 0 || fields.Count > 4) return false;
+        foreach (var f in fields)
+        {
+            var ft = mem.FieldType(f, type);
+            if (Expr.KindOf(ft) is not (ValueKind.I4 or ValueKind.I8 or ValueKind.R4 or ValueKind.R8))
+                return false;
+        }
+        return true;
     }
 }

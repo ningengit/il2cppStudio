@@ -1304,6 +1304,8 @@ public static class CompileFixups
                 {
                     if (parentInv is not null)
                     {
+                        if (TryRemapInaccessibleBinding(parentInv, mr, member, declTd))
+                            continue;
                         var nativeCall = new InvocationExpression(
                             new MemberReferenceExpression(new TypeReferenceExpression(new MemberType(new MemberType(new SimpleType("Il2CppStudio"), "Native"), "NativeIntrinsics")), "CallNative"),
                             new PrimitiveExpression($"inaccessible:{member.DeclaringType.Name}.{member.Name}"),
@@ -1495,6 +1497,52 @@ public static class CompileFixups
 
     private static bool IsStrictDerivedType(IType derived, IType baseType) =>
         !derived.Equals(baseType) && derived.GetAllBaseTypes().Any(b => b.Equals(baseType));
+
+    private static bool TryRemapInaccessibleBinding(InvocationExpression parentInv, MemberReferenceExpression mr, IMember member, ITypeDefinition declTd)
+    {
+        var name = member.Name;
+        string? propName = null;
+        var isSet = false;
+        if (name.StartsWith("Set", StringComparison.Ordinal) && name.Length > 3) { propName = name[3..]; isSet = true; }
+        else if (name.StartsWith("Get", StringComparison.Ordinal) && name.Length > 3) { propName = name[3..]; }
+        else if (name.StartsWith("set_", StringComparison.Ordinal) && name.EndsWith("_Injected", StringComparison.Ordinal) && name.Length > 13)
+        { propName = name[4..^9]; isSet = true; }
+        else if (name.StartsWith("get_", StringComparison.Ordinal) && name.EndsWith("_Injected", StringComparison.Ordinal) && name.Length > 13)
+        { propName = name[4..^9]; }
+        if (propName is null) return false;
+
+        var prop = declTd.GetProperties(p => p.Name.Equals(propName, StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
+        if (prop is null) return false;
+
+        var args = parentInv.Arguments.ToList();
+        if (isSet && prop.CanSet && prop.Setter?.Accessibility == Accessibility.Public)
+        {
+            if (member.IsStatic && args.Count == 2)
+            {
+                parentInv.ReplaceWith(new AssignmentExpression(new MemberReferenceExpression(args[0].Detach(), prop.Name), args[1].Detach()));
+                return true;
+            }
+            if (!member.IsStatic && args.Count == 1)
+            {
+                parentInv.ReplaceWith(new AssignmentExpression(new MemberReferenceExpression(mr.Target.Detach(), prop.Name), args[0].Detach()));
+                return true;
+            }
+        }
+        else if (!isSet && prop.CanGet && prop.Getter?.Accessibility == Accessibility.Public)
+        {
+            if (member.IsStatic && args.Count == 1)
+            {
+                parentInv.ReplaceWith(new MemberReferenceExpression(args[0].Detach(), prop.Name));
+                return true;
+            }
+            if (!member.IsStatic && args.Count == 0)
+            {
+                parentInv.ReplaceWith(new MemberReferenceExpression(mr.Target.Detach(), prop.Name));
+                return true;
+            }
+        }
+        return false;
+    }
 
     private static bool HasMemberCached(IType type, string name) =>
         type.GetDefinition()?.ParentModule?.Compilation is { } comp

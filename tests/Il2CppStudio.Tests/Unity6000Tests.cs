@@ -177,4 +177,81 @@ public sealed class Unity6000Tests
             Assert.Empty(v106Sink.Query(DiagnosticSeverity.Error));
         }
     }
+
+    [Fact]
+    public void Unity6000_3_Win64_PackedSse_Box_Setters_Crt_And_DefaultPrivateVisibility()
+    {
+        var dir = Target("template il2cpp 6000.3 win64");
+        var sink = Sink();
+        using var ws = Il2CppWorkspace.Load(dir, sink, new WorkspaceOptions { UseBuildBackup = false, SubstituteBcl = true });
+        WorkspaceSetup.Attach(ws);
+
+        // 1. Packed-single SSE (addps/subps/mulps/shufps) lifts cleanly with no Asm/Reinterpret<float> fallbacks.
+        foreach (var typeName in new[] { "BaldiScript", "BsodaSparyScript", "HuggingScript", "Billboard" })
+        {
+            var t = Assert.Single(ws.FindTypes(typeName));
+            var cs = ws.Render(t, null, CodeView.CSharp);
+            Assert.DoesNotContain("NativeIntrinsics.Asm(", cs, StringComparison.Ordinal);
+            Assert.DoesNotContain("NativeIntrinsics.Reinterpret<float>", cs, StringComparison.Ordinal);
+        }
+
+        // Check UnsupportedInstruction error log notes for those methods are zero.
+        var logText = string.Join("\n", ws.Decompiler.ErrorLog.EntriesFor("Assembly-CSharp.dll").Select(e => $"{e.Kind}: {e.Member}: {e.Message}"));
+        Assert.DoesNotContain("addps", logText, StringComparison.Ordinal);
+        Assert.DoesNotContain("subps", logText, StringComparison.Ordinal);
+        Assert.DoesNotContain("mulps", logText, StringComparison.Ordinal);
+        Assert.DoesNotContain("shufps", logText, StringComparison.Ordinal);
+
+        // 2. CallNative fallbacks resolved: il2cpp_value_box, AudioSource.pitch, sinf, modf, ScopeCleanup.
+        var endlessCs = ws.Render(Assert.Single(ws.FindTypes("EndlessTextScript")), null, CodeView.CSharp);
+        Assert.DoesNotContain("il2cpp_value_box", endlessCs, StringComparison.Ordinal);
+
+        var controlsCs = ws.Render(Assert.Single(ws.FindTypes("ControlsMenu")), null, CodeView.CSharp);
+        Assert.DoesNotContain("il2cpp_value_box", controlsCs, StringComparison.Ordinal);
+
+        var mathCs = ws.Render(Assert.Single(ws.FindTypes("MathGameScript")), null, CodeView.CSharp);
+        Assert.DoesNotContain("il2cpp_value_box", mathCs, StringComparison.Ordinal);
+
+        var firstPrizeCs = ws.Render(Assert.Single(ws.FindTypes("FirstPrizeScript")), null, CodeView.CSharp);
+        Assert.DoesNotContain("inaccessible:AudioSource.SetPitch", firstPrizeCs, StringComparison.Ordinal);
+        Assert.Contains(".pitch =", firstPrizeCs, StringComparison.Ordinal);
+
+        var pickupCs = ws.Render(Assert.Single(ws.FindTypes("PickupAnimationScript")), null, CodeView.CSharp);
+        Assert.DoesNotContain("sub_236510", pickupCs, StringComparison.Ordinal);
+        Assert.Contains("Math.Sin(", pickupCs, StringComparison.Ordinal);
+
+        var bullyCs = ws.Render(Assert.Single(ws.FindTypes("BullyScript")), null, CodeView.CSharp);
+        Assert.DoesNotContain("sub_2358F0", bullyCs, StringComparison.Ordinal);
+
+        var debugCs = ws.Render(Assert.Single(ws.FindTypes("DebugScript")), null, CodeView.CSharp);
+        Assert.DoesNotContain("sub_267000", debugCs, StringComparison.Ordinal);
+        Assert.DoesNotContain("NativeIntrinsics.Reinterpret<Color>", debugCs, StringComparison.Ordinal);
+
+        var inputMgrCs = ws.Render(Assert.Single(ws.FindTypes("InputManager")), null, CodeView.CSharp);
+        Assert.DoesNotContain("il2cpp_value_box", inputMgrCs, StringComparison.Ordinal);
+
+        // 3. Exact original metadata visibility (`private`) preserved by default (no AccessRelaxer widening).
+        var baldiCs = ws.Render(Assert.Single(ws.FindTypes("BaldiScript")), null, CodeView.CSharp);
+        Assert.Contains("private float currentPriority;", baldiCs, StringComparison.Ordinal);
+        Assert.Contains("private NavMeshAgent agent;", baldiCs, StringComparison.Ordinal);
+        Assert.DoesNotContain("widened because", baldiCs, StringComparison.Ordinal);
+
+        var doorCs = ws.Render(Assert.Single(ws.FindTypes("DoorScript")), null, CodeView.CSharp);
+        Assert.Contains("private bool bDoorLocked;", doorCs, StringComparison.Ordinal);
+        Assert.DoesNotContain("widened because", doorCs, StringComparison.Ordinal);
+
+        var craftersCs = ws.Render(Assert.Single(ws.FindTypes("CraftersScript")), null, CodeView.CSharp);
+        Assert.Contains("private NavMeshAgent agent;", craftersCs, StringComparison.Ordinal);
+        Assert.DoesNotContain("widened because", craftersCs, StringComparison.Ordinal);
+
+        Assert.Contains("private Dictionary<KeyCode, SimulatedKeyState>", inputMgrCs, StringComparison.Ordinal);
+        Assert.DoesNotContain("widened because", inputMgrCs, StringComparison.Ordinal);
+
+        // Opt-in RelaxInlinedAccess = true still widens cross-type accessed members when requested.
+        using var relaxedWs = Il2CppWorkspace.Load(dir, Sink(), new WorkspaceOptions { UseBuildBackup = false, SubstituteBcl = true, RelaxInlinedAccess = true });
+        WorkspaceSetup.Attach(relaxedWs);
+        var relaxedDoorCs = relaxedWs.Render(Assert.Single(relaxedWs.FindTypes("DoorScript")), null, CodeView.CSharp);
+        Assert.Contains("internal bool bDoorLocked;", relaxedDoorCs, StringComparison.Ordinal);
+        Assert.Contains("widened because", relaxedDoorCs, StringComparison.Ordinal);
+    }
 }

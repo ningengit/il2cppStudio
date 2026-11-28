@@ -845,13 +845,14 @@ public sealed class MemoryResolver
     private bool TryStorePackedScalarFields(
         EmitContext ctx, Expr owner, bool isStructAddr, int td, TypeSignature ownerType, long disp, int size, Expr value)
     {
-        if (!TryExtract64BitConstant(value, out var rawBits))
+        var hasConst = TryExtract64BitConstant(value, out var rawBits);
+        if (!hasConst && value.Kind is not (ValueKind.I4 or ValueKind.I8))
             return false;
         var subFields = FieldsOf(td)
             .Where(f => !f.IsStatic && f.Offset >= disp && f.Offset < disp + size)
             .OrderBy(f => f.Offset)
             .ToList();
-        if (subFields.Count < 2)
+        if (subFields.Count < (hasConst ? 2 : 1))
             return false;
 
         var parts = new List<(IFieldDescriptor Field, TypeSignature Type, Expr PartExpr, long Offset)>(subFields.Count);
@@ -870,8 +871,31 @@ public sealed class MemoryResolver
             prevEnd = sf.Offset + fsz;
             var bitOff = (int)((sf.Offset - disp) * 8);
             var mask = fsz >= 8 ? ulong.MaxValue : ((1UL << (fsz * 8)) - 1UL);
-            var slice = (rawBits >> bitOff) & mask;
-            var partExpr = PackedSliceExpr(slice, sft, sk);
+            Expr partExpr;
+            if (hasConst)
+            {
+                var slice = (rawBits >> bitOff) & mask;
+                partExpr = PackedSliceExpr(slice, sft, sk);
+            }
+            else
+            {
+                if (sk is not (ValueKind.I4 or ValueKind.I8))
+                    return false;
+                if (value.Kind == ValueKind.I4 && bitOff >= 32)
+                {
+                    partExpr = new ConstExpr(0, ValueKind.I4);
+                }
+                else
+                {
+                    Expr shifted = bitOff == 0
+                        ? value
+                        : new BinaryExpr(CilOpCodes.Shr_Un, value, new ConstExpr(bitOff, ValueKind.I4), value.Kind);
+                    partExpr = fsz >= 4 || value.Kind == ValueKind.I8 && fsz >= 8
+                        ? (shifted.Kind == ValueKind.I8 && fsz <= 4 ? new ConvExpr(shifted, _module.CorLibTypeFactory.Int32) : shifted)
+                        : new BinaryExpr(CilOpCodes.And, shifted.Kind == ValueKind.I8 ? new ConvExpr(shifted, _module.CorLibTypeFactory.Int32) : shifted,
+                            new ConstExpr(unchecked((int)mask), ValueKind.I4), ValueKind.I4);
+                }
+            }
             parts.Add((sfr, sft, partExpr, sf.Offset));
         }
 

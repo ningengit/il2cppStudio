@@ -16,6 +16,8 @@ public sealed class RegisterTracker(CilMethodBody body, CorLibTypeFactory corlib
     private readonly Dictionary<long, Expr> _slots = [];
     private readonly Dictionary<long, CilLocalVariable> _slotLocals = [];
     private readonly Dictionary<Register, List<CilLocalVariable>> _spillLocals = [];
+    private readonly Dictionary<Register, (CilLocalVariable Lo, CilLocalVariable Hi)> _spillFloatPairs = [];
+    private readonly Dictionary<Register, (CilLocalVariable Lo, CilLocalVariable Hi)> _spillIntPairs = [];
 
     /// <summary>Bytes pushed / allocated below the entry RSP (positive = deeper).</summary>
     public long RspDelta { get; set; }
@@ -67,6 +69,11 @@ public sealed class RegisterTracker(CilMethodBody body, CorLibTypeFactory corlib
     /// <summary>Applies sub-register semantics: reading a 32-bit register of a 64-bit integer yields an int32 view.</summary>
     private Expr Narrow(Register r, Expr e)
     {
+        if (e is PackedIntsExpr pi)
+        {
+            if (r.IsGPR32()) return pi.Lo;
+            if (r.IsGPR64() || !r.IsGPR()) return pi;
+        }
         if (!r.IsGPR() || r.IsGPR64() || e.Kind != ValueKind.I8 || e is StructChunkExpr or PackedFloatsExpr) return e;
         if (e is ConstExpr c) return new ConstExpr(r.IsGPR32() ? (int)c.Value : r.IsGPR16() ? (short)c.Value : (sbyte)c.Value, ValueKind.I4, c.FromFloatBits);
         return new ConvExpr(e, corlib.Int32);
@@ -106,6 +113,33 @@ public sealed class RegisterTracker(CilMethodBody body, CorLibTypeFactory corlib
         {
             if (isEntry && _regs.ContainsKey(r)) continue;
             var values = preds.Where(_exit.ContainsKey).Select(p => _exit[p].GetValueOrDefault(r)).Where(v => v is not null).ToList();
+            if (values.Count > 0 && values.All(v => v is PackedFloatsExpr))
+            {
+                var pairs = values.Cast<PackedFloatsExpr>().ToList();
+                var single = pairs[0].Type ?? corlib.Single;
+                (CilLocalVariable Lo, CilLocalVariable Hi) pairLocals;
+                if (allDone && pairs.All(p => p.Lane0 is LocalExpr && p.Lane1 is LocalExpr)
+                    && pairs.Select(p => (((LocalExpr)p.Lane0).Local, ((LocalExpr)p.Lane1).Local)).Distinct().ToList() is [var singlePair])
+                    pairLocals = singlePair;
+                else
+                    pairLocals = SpillFloatPairFor(r, single);
+                _regs[r] = new PackedFloatsExpr(new LocalExpr(pairLocals.Lo), new LocalExpr(pairLocals.Hi), single);
+                (_entryFloatPairs.TryGetValue(block, out var fpm) ? fpm : _entryFloatPairs[block] = [])[r] = pairLocals;
+                continue;
+            }
+            if (values.Count > 0 && values.All(v => v is PackedIntsExpr))
+            {
+                var pairs = values.Cast<PackedIntsExpr>().ToList();
+                (CilLocalVariable Lo, CilLocalVariable Hi) pairLocals;
+                if (allDone && pairs.All(p => p.Lo is LocalExpr && p.Hi is LocalExpr)
+                    && pairs.Select(p => (((LocalExpr)p.Lo).Local, ((LocalExpr)p.Hi).Local)).Distinct().ToList() is [var singlePair])
+                    pairLocals = singlePair;
+                else
+                    pairLocals = SpillIntPairFor(r);
+                _regs[r] = new PackedIntsExpr(new LocalExpr(pairLocals.Lo), new LocalExpr(pairLocals.Hi));
+                (_entryIntPairs.TryGetValue(block, out var ipm) ? ipm : _entryIntPairs[block] = [])[r] = pairLocals;
+                continue;
+            }
             if (values.Count > 0 && values[0] is { } first && IsRematerializable(first)
                 && (allDone || !IsStorable(first)) && values.All(v => SameValue(v!, first)))
                 _regs[r] = first;
@@ -131,6 +165,8 @@ public sealed class RegisterTracker(CilMethodBody body, CorLibTypeFactory corlib
         (ArgExpr x, ArgExpr y) => x.Parameter == y.Parameter,
         (MarkerExpr x, MarkerExpr y) => x.Marker == y.Marker && x.Index == y.Index && x.Describe() == y.Describe(),
         (StringExpr x, StringExpr y) => x.Describe() == y.Describe(),
+        (PackedFloatsExpr x, PackedFloatsExpr y) => SameValue(x.Lane0, y.Lane0) && SameValue(x.Lane1, y.Lane1),
+        (PackedIntsExpr x, PackedIntsExpr y) => SameValue(x.Lo, y.Lo) && SameValue(x.Hi, y.Hi),
         _ => false,
     };
 
@@ -160,6 +196,43 @@ public sealed class RegisterTracker(CilMethodBody body, CorLibTypeFactory corlib
         {
             if (!_regs.TryGetValue(r, out var e)) continue;
             exit[r] = e;
+            if (e is PackedFloatsExpr pf)
+            {
+                var single = pf.Type ?? corlib.Single;
+                var pair = block.Successors
+                    .Select(s => _entryFloatPairs.GetValueOrDefault(s) is { } m && m.TryGetValue(r, out var ep) ? ep : default((CilLocalVariable Lo, CilLocalVariable Hi)?))
+                    .FirstOrDefault(p => p is not null) ?? SpillFloatPairFor(r, single);
+                if (pf.Lane0 is not LocalExpr l0 || l0.Local != pair.Lo)
+                {
+                    Expr.EmitAs(ctx, pf.Lane0, pair.Lo.VariableType);
+                    ctx.IL.Add(CilOpCodes.Stloc, pair.Lo);
+                }
+                if (pf.Lane1 is not LocalExpr l1 || l1.Local != pair.Hi)
+                {
+                    Expr.EmitAs(ctx, pf.Lane1, pair.Hi.VariableType);
+                    ctx.IL.Add(CilOpCodes.Stloc, pair.Hi);
+                }
+                exit[r] = _regs[r] = new PackedFloatsExpr(new LocalExpr(pair.Lo), new LocalExpr(pair.Hi), single);
+                continue;
+            }
+            if (e is PackedIntsExpr pi)
+            {
+                var pair = block.Successors
+                    .Select(s => _entryIntPairs.GetValueOrDefault(s) is { } m && m.TryGetValue(r, out var ep) ? ep : default((CilLocalVariable Lo, CilLocalVariable Hi)?))
+                    .FirstOrDefault(p => p is not null) ?? SpillIntPairFor(r);
+                if (pi.Lo is not LocalExpr l0 || l0.Local != pair.Lo)
+                {
+                    Expr.EmitAs(ctx, pi.Lo, pair.Lo.VariableType);
+                    ctx.IL.Add(CilOpCodes.Stloc, pair.Lo);
+                }
+                if (pi.Hi is not LocalExpr l1 || l1.Local != pair.Hi)
+                {
+                    Expr.EmitAs(ctx, pi.Hi, pair.Hi.VariableType);
+                    ctx.IL.Add(CilOpCodes.Stloc, pair.Hi);
+                }
+                exit[r] = _regs[r] = new PackedIntsExpr(new LocalExpr(pair.Lo), new LocalExpr(pair.Hi));
+                continue;
+            }
             if (!IsStorable(e)) continue;
             var type = SpillType(e);
             // A successor lifted earlier (loop header via back edge) already reads a specific local for r: store into
@@ -175,6 +248,24 @@ public sealed class RegisterTracker(CilMethodBody body, CorLibTypeFactory corlib
 
     /// <summary>Locals each lifted block reads its live-in registers from (decided in <see cref="EnterBlock"/>).</summary>
     private readonly Dictionary<NativeBlock, Dictionary<Register, CilLocalVariable>> _entryLocals = [];
+    private readonly Dictionary<NativeBlock, Dictionary<Register, (CilLocalVariable Lo, CilLocalVariable Hi)>> _entryFloatPairs = [];
+    private readonly Dictionary<NativeBlock, Dictionary<Register, (CilLocalVariable Lo, CilLocalVariable Hi)>> _entryIntPairs = [];
+
+    private (CilLocalVariable Lo, CilLocalVariable Hi) SpillFloatPairFor(Register r, TypeSignature single)
+    {
+        if (_spillFloatPairs.TryGetValue(r, out var existing)) return existing;
+        var created = (NewLocal(single), NewLocal(single));
+        _spillFloatPairs[r] = created;
+        return created;
+    }
+
+    private (CilLocalVariable Lo, CilLocalVariable Hi) SpillIntPairFor(Register r)
+    {
+        if (_spillIntPairs.TryGetValue(r, out var existing)) return existing;
+        var created = (NewLocal(corlib.Int32), NewLocal(corlib.Int32));
+        _spillIntPairs[r] = created;
+        return created;
+    }
 
     /// <summary>
     /// Pre-creates or retrieves the spill local of a register for a specific type. 32- and 64-bit integers share one

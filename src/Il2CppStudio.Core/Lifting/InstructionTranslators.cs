@@ -50,6 +50,8 @@ public sealed class InstructionTranslators(RegisterTracker regs, OperandReader o
             case Mnemonic.Shl: return Binary(ctx, ins, CilOpCodes.Shl);
             case Mnemonic.Sar: return Binary(ctx, ins, CilOpCodes.Shr);
             case Mnemonic.Shr: return Binary(ctx, ins, CilOpCodes.Shr_Un);
+            case Mnemonic.Rol or Mnemonic.Ror when ins.Op1Kind is OpKind.Immediate8:
+                return Rotate(ctx, ins);
             case Mnemonic.Inc or Mnemonic.Dec:
                 Write(ctx, ins, LastResult = new BinaryExpr(m == Mnemonic.Inc ? CilOpCodes.Add : CilOpCodes.Sub, ops.Read(ins, 0), new ConstExpr(1, IntKind(ins)), IntKind(ins)));
                 return true;
@@ -156,6 +158,37 @@ public sealed class InstructionTranslators(RegisterTracker regs, OperandReader o
 
     private static bool IsSelf(in Instruction ins) =>
         ins.Op0Kind == OpKind.Register && ins.Op1Kind == OpKind.Register && ins.Op0Register == ins.Op1Register;
+
+    private bool Rotate(EmitContext ctx, in Instruction ins)
+    {
+        var bitWidth = (ins.Op0Kind == OpKind.Register ? ins.Op0Register.GetSize() : ins.MemorySize.GetSize()) * 8;
+        if (bitWidth is not (8 or 16 or 32 or 64)) return false;
+        var count = (int)(ins.GetImmediate(1) % (ulong)bitWidth);
+        var val = ops.Read(ins, 0);
+        if (count == 0)
+        {
+            Write(ctx, ins, val);
+            return true;
+        }
+        var kind = bitWidth == 64 ? ValueKind.I8 : ValueKind.I4;
+        if (bitWidth < 32)
+        {
+            var mask = (1L << bitWidth) - 1L;
+            val = new BinaryExpr(CilOpCodes.And, val, new ConstExpr(mask, ValueKind.I4), ValueKind.I4);
+        }
+        var lshift = ins.Mnemonic == Mnemonic.Rol ? count : bitWidth - count;
+        var rshift = bitWidth - lshift;
+        var left = new BinaryExpr(CilOpCodes.Shl, val, new ConstExpr(lshift, ValueKind.I4), kind);
+        var right = new BinaryExpr(CilOpCodes.Shr_Un, val, new ConstExpr(rshift, ValueKind.I4), kind);
+        Expr rotated = new BinaryExpr(CilOpCodes.Or, left, right, kind);
+        if (bitWidth < 32)
+        {
+            var mask = (1L << bitWidth) - 1L;
+            rotated = new BinaryExpr(CilOpCodes.And, rotated, new ConstExpr(mask, ValueKind.I4), ValueKind.I4);
+        }
+        Write(ctx, ins, rotated);
+        return true;
+    }
 
     private void Write(EmitContext ctx, in Instruction ins, Expr value) => writer.Write(ctx, ins, value);
 }

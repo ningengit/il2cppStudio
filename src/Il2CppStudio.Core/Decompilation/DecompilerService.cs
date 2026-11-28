@@ -45,6 +45,9 @@ public sealed class DecompilerService : IDisposable
 
     public bool SubstituteBcl { get; set; }
 
+    /// <summary>When true, widens private/protected members accessed cross-type by inlined native code to internal.</summary>
+    public bool RelaxInlinedAccess { get; set; } = false;
+
     /// <summary>Token/RVA annotations and fallback explanations (null = plain output).</summary>
     public AnnotationContext? Annotations { get; set; }
 
@@ -154,8 +157,11 @@ public sealed class DecompilerService : IDisposable
             ExportProfiler.RecordHygCore(tSub);
 
             tSub = ExportProfiler.Start();
-            var tokens = crossTypeTokens ?? (CachedStubBytes(image) is { } stubBytes ? CrossTypeTokens(stubBytes) : null);
-            if (tokens is not null) Transforms.AccessRelaxer.Apply(tree, tokens, in flags);
+            if (RelaxInlinedAccess)
+            {
+                var tokens = crossTypeTokens ?? (CachedStubBytes(image) is { } stubBytes ? CrossTypeTokens(stubBytes) : null);
+                if (tokens is not null) Transforms.AccessRelaxer.Apply(tree, tokens, in flags);
+            }
             ExportProfiler.RecordHygAccessRelax(tSub);
 
             tSub = ExportProfiler.Start();
@@ -394,7 +400,7 @@ public sealed class DecompilerService : IDisposable
         if (types.Count == 0) return;
         var pristine = IsSubstitutedBcl(imageIndex) ? TryPristine(imageIndex) : null;
         MetadataFile file = pristine ?? GetStubFile(imageIndex);
-        var crossTypeTokens = pristine is null && CachedStubBytes(imageIndex) is { } bytes ? CrossTypeTokens(bytes) : null;   // warm shared caches before fan-out
+        var crossTypeTokens = RelaxInlinedAccess && pristine is null && CachedStubBytes(imageIndex) is { } bytes ? CrossTypeTokens(bytes) : null;   // warm shared caches before fan-out
         var noAstTransforms = Environment.GetEnvironmentVariable("IL2CPPSTUDIO_NO_AST_TRANSFORMS") == "1";
         _ = Mapper();
         if (includeIl && pristine is null) _ = TypeMapFor(file);
@@ -517,7 +523,7 @@ public sealed class DecompilerService : IDisposable
             }
             var effectiveIl = req.IncludeIl && !req.Substituted;
             var key = useCache
-                ? DecompileCache.ComputeKey(fingerprint!, req.ImageName, effectiveIl, SubstituteBcl, showTokens, bclDir)
+                ? DecompileCache.ComputeKey(fingerprint!, req.ImageName, effectiveIl, SubstituteBcl, showTokens, bclDir, RelaxInlinedAccess)
                 : null;
             cacheKeys[reqIdx] = key;
             if (key is null || !DecompileCache.TryRead(key, out var cached) || cached.Count != req.TopLevelTypes.Count)
@@ -579,7 +585,7 @@ public sealed class DecompilerService : IDisposable
                 var pristine = IsSubstitutedBcl(req.ImageIndex) ? TryPristine(req.ImageIndex) : null;
                 var isPristine = pristine is not null;
                 MetadataFile file = pristine ?? GetStubFile(req.ImageIndex);
-                var crossTypeTokens = !isPristine && CachedStubBytes(req.ImageIndex) is { } bytes ? CrossTypeTokens(bytes) : null;
+                var crossTypeTokens = RelaxInlinedAccess && !isPristine && CachedStubBytes(req.ImageIndex) is { } bytes ? CrossTypeTokens(bytes) : null;
                 if (effectiveIl && !isPristine) _ = TypeMapFor(file);
                 var settings = isPristine ? CreateBclSettings() : CreateSettings();
                 var typeSystem = new DecompilerTypeSystem(file, _sharedResolver, settings);
@@ -636,7 +642,7 @@ public sealed class DecompilerService : IDisposable
                     var pristine = IsSubstitutedBcl(req.ImageIndex) ? TryPristine(req.ImageIndex) : null;
                     var isPristine = pristine is not null;
                     MetadataFile file = pristine ?? GetStubFile(req.ImageIndex);
-                    var crossTypeTokens = !isPristine && CachedStubBytes(req.ImageIndex) is { } bytes ? CrossTypeTokens(bytes) : null;
+                    var crossTypeTokens = RelaxInlinedAccess && !isPristine && CachedStubBytes(req.ImageIndex) is { } bytes ? CrossTypeTokens(bytes) : null;
                     if (effectiveIl && !isPristine) _ = TypeMapFor(file);
                     var settings = isPristine ? CreateBclSettings() : CreateSettings();
                     var typeSystem = new DecompilerTypeSystem(file, _sharedResolver, settings);
