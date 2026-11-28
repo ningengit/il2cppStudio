@@ -40,6 +40,15 @@ public sealed class ReturnEmitter(MethodShape shape, RegisterTracker regs, Entry
         }
         // bool returns arrive in AL; narrow before converting.
         if (kind == ValueKind.I4 && value.Kind == ValueKind.I8) value = new ConvExpr(value, ctx.Module.CorLibTypeFactory.Int32);
+        if (type is GenericParameterSignature gp && value is ConstExpr { Value: 0 })
+        {
+            var tmp = regs.NewLocal(gp);
+            ctx.IL.Add(CilOpCodes.Ldloca, tmp);
+            ctx.IL.Add(CilOpCodes.Initobj, Expr.TypeToken(gp));
+            ctx.IL.Add(CilOpCodes.Ldloc, tmp);
+            ctx.IL.Add(CilOpCodes.Ret);
+            return;
+        }
         Expr.EmitAs(ctx, value, type);
         ctx.IL.Add(CilOpCodes.Ret);
     }

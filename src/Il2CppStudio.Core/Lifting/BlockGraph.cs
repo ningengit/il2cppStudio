@@ -41,18 +41,22 @@ public sealed class BlockGraph
     private readonly Dictionary<ulong, int> _indexOfVa = [];
     private readonly Dictionary<ulong, NativeBlock> _blockAt = [];
     private readonly Func<ulong, Runtime.RuntimeHelperKind> _helperKind;
+    private readonly Func<ulong, bool> _isManagedCall;
     private readonly Register[] _returnRegs;
     private readonly Func<Instruction, Register[]> _callReads;
 
     public BlockGraph(IReadOnlyList<Instruction> instructions, Il2CppRegistration reg, Func<ulong, Runtime.RuntimeHelperKind>? helperKind = null,
-        Register returnReg = Register.RAX, Func<Instruction, Register[]>? callReads = null, Register[]? returnRegs = null)
+        Register returnReg = Register.RAX, Func<Instruction, Register[]>? callReads = null, Register[]? returnRegs = null,
+        Func<ulong, bool>? isManagedCall = null)
     {
         Instructions = instructions;
         _helperKind = helperKind ?? (_ => Runtime.RuntimeHelperKind.Unknown);
+        _isManagedCall = isManagedCall ?? (_ => false);
         _returnRegs = returnRegs ?? (returnReg == Register.None ? [] : [returnReg]);
         _callReads = callReads ?? (_ => CallArgs);
         for (var i = 0; i < instructions.Count; i++) _indexOfVa[instructions[i].IP] = i;
         FindMetadataInitGuards(reg);
+        ElideInlineClassInitGuards();
         FindInterfaceOffsetLoops();
         FindJumpTables(reg);
         BuildBlocks();
@@ -117,6 +121,57 @@ public sealed class BlockGraph
                 ElidedGuards++;
                 break;
             }
+        }
+    }
+
+    /// <summary>
+    /// Elides inline Il2CppClass init/RGCTX guards:
+    /// <c>test byte [reg+135h], 1 / jne skip / [mov rcx, reg] / call init</c> and
+    /// <c>cmp dword [reg+0E4h|70h], 0 / jne skip / [mov rcx, reg] / call cctor</c>.
+    /// </summary>
+    private void ElideInlineClassInitGuards()
+    {
+        for (var i = 0; i + 2 < Instructions.Count; i++)
+        {
+            if (Elided.Contains(i)) continue;
+            var c = Instructions[i];
+            var isRgctxTest = c.Mnemonic == Mnemonic.Test && c.MemorySize == MemorySize.UInt8
+                && c.Op0Kind == OpKind.Memory && !c.IsIPRelativeMemoryOperand && c.MemoryIndex == Register.None
+                && (long)c.MemoryDisplacement64 == 0x135 && c.Op1Kind is OpKind.Immediate8 && c.Immediate8 == 1;
+            var isCctorCmp = c.Mnemonic == Mnemonic.Cmp && c.MemorySize == MemorySize.UInt32
+                && c.Op0Kind == OpKind.Memory && !c.IsIPRelativeMemoryOperand && c.MemoryIndex == Register.None
+                && (long)c.MemoryDisplacement64 is 0x70 or 0xE0 or 0xE4 or 0xE8 or 0xEC
+                && c.Op1Kind is OpKind.Immediate8 or OpKind.Immediate8to32 or OpKind.Immediate32 && c.GetImmediate(1) == 0;
+            if (!isRgctxTest && !isCctorCmp) continue;
+
+            var br = Instructions[i + 1];
+            if (br.Mnemonic != Mnemonic.Jne || !_indexOfVa.TryGetValue(br.NearBranchTarget, out var target)) continue;
+            var gap = target - (i + 2);
+            if (gap is < 1 or > 2) continue;
+
+            var callIdx = i + 2;
+            if (gap == 2)
+            {
+                var mv = Instructions[i + 2];
+                if (mv.Mnemonic != Mnemonic.Mov || mv.Op0Kind != OpKind.Register || mv.Op1Kind != OpKind.Register
+                    || Normalize(mv.Op0Register) != Register.RCX || Normalize(mv.Op1Register) != Normalize(c.MemoryBase))
+                    continue;
+                callIdx = i + 3;
+            }
+            var callIns = Instructions[callIdx];
+            if (callIns.FlowControl != FlowControl.Call || callIns.Op0Kind is not (OpKind.NearBranch64 or OpKind.NearBranch32)) continue;
+            var kind = CallKind(callIns);
+            if (isCctorCmp)
+            {
+                if (kind is not (Runtime.RuntimeHelperKind.ClassInit or Runtime.RuntimeHelperKind.MetadataInit)) continue;
+            }
+            else if (kind is not (Runtime.RuntimeHelperKind.ClassInit or Runtime.RuntimeHelperKind.MetadataInit or Runtime.RuntimeHelperKind.Unknown)
+                || _isManagedCall(callIns.NearBranchTarget))
+            {
+                continue;
+            }
+            for (var k = i; k < target; k++) Elided.Add(k);
+            ElidedGuards++;
         }
     }
 

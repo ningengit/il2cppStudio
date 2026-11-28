@@ -49,3 +49,16 @@ public enum MetadataUsageKind : byte
 }
 
 public readonly record struct MetadataUsage(ulong Va, MetadataUsageKind Kind, int Index);
+
+/// <summary>Il2CppRGCTXDataType (il2cpp-runtime-metadata.h).</summary>
+public enum Il2CppRgctxDataType
+{
+    Invalid = 0,
+    Type = 1,
+    Class = 2,
+    Method = 3,
+    Array = 4,
+    Constrained = 5,
+}
+
+public readonly record struct Il2CppRgctxEntry(Il2CppRgctxDataType Kind, int Index);

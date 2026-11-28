@@ -79,7 +79,13 @@ public sealed class CallEmitter(
         {
             var pending = pending2;
             for (var i = 0; i < shape.Parameters.Count; i++) EmitParameter(ctx, shape.Parameters[i], shape.FirstParameterPosition + i);
-            ctx.IL.Add(CilOpCodes.Newobj, DelegateCtorFor(pending, target) ?? target);
+            var ctorTarget = DelegateCtorFor(pending, target) ?? target;
+            if (pending.Type is GenericInstanceTypeSignature pgi
+                && (ctorTarget.DeclaringType is not TypeSpecification { Signature: var cts } || !SignatureComparer.Default.Equals(cts, pgi)))
+            {
+                ctorTarget = new MemberReference(new TypeSpecification(pgi), ctorTarget.Name, ctorTarget.Signature as MethodSignature);
+            }
+            ctx.IL.Add(CilOpCodes.Newobj, ctorTarget);
             regs.ClobberVolatiles(Volatile);
             var obj = regs.NewLocal(pending.Type);
             ctx.IL.Add(CilOpCodes.Stloc, obj);
@@ -186,7 +192,7 @@ public sealed class CallEmitter(
         if (type.FullName == "System.RuntimeTypeHandle" && v is MarkerExpr { Marker: MarkerKind.Il2CppType, Usage: { Kind: MetadataUsageKind.Il2CppType } tu }
             && stubs.ToSig(module, tu.Index) is { } typeSig)
         {
-            ctx.IL.Add(CilOpCodes.Ldtoken, typeSig.ToTypeDefOrRef());
+            ctx.IL.Add(CilOpCodes.Ldtoken, Expr.TypeToken(typeSig));
             return;
         }
         // RuntimeHelpers.InitializeArray(..., RuntimeFieldHandle): FieldInfo/FieldRva marker becomes ldtoken <Field>.
@@ -281,7 +287,7 @@ public sealed class CallEmitter(
         }
 
         if (matchingRecvGen is null
-            || HasOpenGenericParam(matchingRecvGen)
+            || (HasOpenGenericParam(matchingRecvGen) && thisValue is not (ArgExpr { Parameter.Index: -1 } or NewObjExpr))
             || matchingRecvGen.TypeArguments.Count != targetGen.TypeArguments.Count
             || SignatureComparer.Default.Equals(targetGen, matchingRecvGen))
             return false;

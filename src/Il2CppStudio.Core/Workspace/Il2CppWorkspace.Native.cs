@@ -103,7 +103,13 @@ public sealed partial class Il2CppWorkspace
         return fi => names.GetValueOrDefault(fi);
     }
 
-    public ulong GetMethodRva(MethodModel m) => AddressMap?.GetMethodRva(m.Index) ?? 0;
+    public ulong GetMethodRva(MethodModel m)
+    {
+        if (AddressMap is null) return 0;
+        var rva = AddressMap.GetMethodRva(m.Index);
+        if (rva != 0 || Registration is null) return rva;
+        return AddressMap.TryGetGenericDonor(m.Index, out var donorVa, out _) ? donorVa - Registration.Reader.ImageBase : 0;
+    }
 
     /// <summary>File offset of a method's code (for hex editors), or -1.</summary>
     public long GetMethodFileOffset(MethodModel m)
@@ -116,6 +122,7 @@ public sealed partial class Il2CppWorkspace
     {
         if (AddressMap is null) return null;
         var va = AddressMap.GetMethodVa(m.Index);
+        if (va == 0 && AddressMap.TryGetGenericDonor(m.Index, out var donorVa, out _)) va = donorVa;
         if (va == 0) return null;
         if (Binary is Core.Binary.AsmJsBinaryImage asmJs && asmJs.TryGetFunctionSource(va, out var fnName, out var src))
             return $"// asm.js function {fnName}\n{src}";

@@ -30,7 +30,7 @@ public sealed class RuntimeHelperEmitter(RuntimeHelperMap map, StubAssemblyBuild
             case RuntimeHelperKind.WriteBarrier or RuntimeHelperKind.MetadataInit or RuntimeHelperKind.ClassInit or RuntimeHelperKind.ScopeCleanup:
                 regs.ClobberVolatiles(CallEmitter.Volatile);
                 // Some init helpers return the initialized metadata (lea rcx,[usage]; call; mov rcx,rax): RAX = that value.
-                if (kind == RuntimeHelperKind.MetadataInit && rcx is MarkerExpr or StringExpr) regs.Set(Register.RAX, rcx);
+                if (kind is RuntimeHelperKind.MetadataInit or RuntimeHelperKind.ClassInit && rcx is MarkerExpr or StringExpr) regs.Set(Register.RAX, rcx);
                 return HelperOutcome.Handled;
             case RuntimeHelperKind.ArrayElementAddress when rcx.Type is SzArrayTypeSignature elemArr && rdx.Kind is ValueKind.I4 or ValueKind.I8:
             {
@@ -45,16 +45,16 @@ public sealed class RuntimeHelperEmitter(RuntimeHelperMap map, StubAssemblyBuild
                 return HelperOutcome.Handled;
             case RuntimeHelperKind.ArrayNew when TypeOf(rcx) is SzArrayTypeSignature arr:
                 Expr.EmitAs(ctx, rdx, module.CorLibTypeFactory.Int32);
-                ctx.IL.Add(CilOpCodes.Newarr, arr.BaseType.ToTypeDefOrRef());
+                ctx.IL.Add(CilOpCodes.Newarr, Expr.TypeToken(arr.BaseType));
                 return Result(ctx, arr);
             case RuntimeHelperKind.Box when (TypeOf(rcx) ?? InferBoxType(rdx)) is { } t:
                 Expr.EmitAs(ctx, BoxedValue(ctx, rdx, t), t);
-                ctx.IL.Add(CilOpCodes.Box, t.ToTypeDefOrRef());
+                ctx.IL.Add(CilOpCodes.Box, Expr.TypeToken(t));
                 return Result(ctx, module.CorLibTypeFactory.Object);
             case RuntimeHelperKind.Unbox:
                 var unboxType = TypeOf(ArgumentLocations.ReadHelperArg(regs, 2)) ?? TypeOf(rdx) ?? module.CorLibTypeFactory.Int32;
                 CompareExpr.EmitOperand(ctx, rcx, ValueKind.Ref);
-                ctx.IL.Add(CilOpCodes.Unbox_Any, unboxType.ToTypeDefOrRef());
+                ctx.IL.Add(CilOpCodes.Unbox_Any, Expr.TypeToken(unboxType));
                 var unboxedLocal = regs.NewLocal(unboxType);
                 ctx.IL.Add(CilOpCodes.Stloc, unboxedLocal);
                 regs.ClobberVolatiles(CallEmitter.Volatile);
@@ -67,7 +67,9 @@ public sealed class RuntimeHelperEmitter(RuntimeHelperMap map, StubAssemblyBuild
                 return HelperOutcome.Handled;
             case RuntimeHelperKind.Cast when TypeOf(rdx) is { } t:
                 CompareExpr.EmitOperand(ctx, rcx, ValueKind.Ref);
-                ctx.IL.Add(resultNullTested ? CilOpCodes.Isinst : CilOpCodes.Castclass, t.ToTypeDefOrRef());
+                ctx.IL.Add(resultNullTested ? CilOpCodes.Isinst : CilOpCodes.Castclass, Expr.TypeToken(t));
+                if (t is GenericParameterSignature)
+                    ctx.IL.Add(CilOpCodes.Unbox_Any, Expr.TypeToken(t));
                 return Result(ctx, t);
             case RuntimeHelperKind.InterfaceLookup when rdx is MarkerExpr { Marker: MarkerKind.TypeInfo } iface:
                 var slot = ArgumentLocations.ReadHelperArg(regs, 2) is ConstExpr c ? (int)c.Value : 0;

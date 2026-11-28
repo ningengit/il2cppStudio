@@ -43,7 +43,24 @@ public sealed class OutputFeatureTests(TemplateBuildFixture fx)
     [Fact]
     public void Fallback_ThrowNullIsExplained()
     {
-        var cs = Render("Singleton`1", "get_Instance");
+        var ws = fx.Workspace;
+        var candidate = (
+            from a in ws.Model.Assemblies
+            where !a.Name.StartsWith("System", StringComparison.Ordinal)
+                && a.Name is not ("mscorlib" or "netstandard")
+                && !a.Name.StartsWith("Microsoft.", StringComparison.Ordinal)
+                && !a.Name.StartsWith("Mono.", StringComparison.Ordinal)
+            from ns in a.Namespaces
+            from t in ns.Types
+            where !t.Raw.IsInterface
+            from m in t.Methods
+            where !m.IsAbstract
+                && (m.Flags & 0x2000) == 0
+                && (m.ImplFlags & 0x1003) == 0
+                && m.Name is not (".ctor" or ".cctor")
+                && ws.GetMethodRva(m) == 0
+            select (t, m)).First();
+        var cs = ws.Render(candidate.t, candidate.m, CodeView.CSharp);
         Assert.Contains("throw null;", cs);
         Assert.Contains("Il2CppStudio Decompilation Fallback: throw null; emitted because", cs);
     }

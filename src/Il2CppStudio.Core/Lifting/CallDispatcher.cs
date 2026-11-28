@@ -81,7 +81,7 @@ public sealed class CallDispatcher(NativeSymbolizer sym, CallEmitter emitter, Re
                 {
                     var slot = (int)((disp - vtOff) / vtSize);
                     var td = klass.Index;
-                    if (VTableResolver.Resolve(sym.Metadata, td, slot) is { } t && emitter.Emit(ctx, t.MethodIndex, t.SpecIndex, obj)) return false;
+                    if (VTableResolver.Resolve(sym.Metadata, td, slot, sym.Registration, sym.Names) is { } t && emitter.Emit(ctx, t.MethodIndex, t.SpecIndex, obj)) return false;
                     Report(DiagnosticCodes.UnresolvedVTableCall, $"vtable slot {slot} of {sym.Names.TypeDefName(td, true)} could not be resolved.", ins.IP);
                 }
             }
@@ -114,12 +114,36 @@ public sealed class CallDispatcher(NativeSymbolizer sym, CallEmitter emitter, Re
             case Runtime.HelperOutcome.Handled: Elided++; return false;
             case Runtime.HelperOutcome.Terminated: return true;
         }
+        // Known CRT math imports/thunks must run before runtime-metadata marker heuristics: eliding an inline
+        // class-init guard before a math call can leave TypeInfo in RCX when entering modf/floor/ceil.
+        var name = helperMap?.ExportNames.GetValueOrDefault(target);
+        if (name is not null)
+        {
+            if (Runtime.CrtMath.TryEmitModF(name, ctx, regs, emitter.Mem, emitter.Slots, ctx.Module.CorLibTypeFactory))
+                return false;
+            if (Runtime.CrtMath.Build(name, regs, ctx.Module.CorLibTypeFactory) is { } math)
+            {
+                var result = regs.NewLocal(math.Type!);
+                math.Emit(ctx);
+                ctx.IL.Add(CilOpCodes.Stloc, result);
+                regs.ClobberVolatiles(CallEmitter.Volatile);
+                regs.Set(Register.XMM0, new LocalExpr(result));
+                return false;
+            }
+        }
         // Legacy heuristic (no helper map available): a call taking a runtime-metadata marker is treated as
         // metadata/class initialization. With a helper map this is NOT applied: it would also swallow object_new.
         if (helpers is null && ArgumentLocations.TryReadHelperArg(regs, 0, out var rcx) && rcx is MarkerExpr { Marker: MarkerKind.TypeInfo or MarkerKind.StaticFields or MarkerKind.MethodInfo or MarkerKind.Il2CppType })
         {
             Elided++;
             regs.ClobberVolatiles(CallEmitter.Volatile);
+            return false;
+        }
+        if (ArgumentLocations.TryReadHelperArg(regs, 0, out var a0) && a0 is MarkerExpr { Marker: MarkerKind.TypeInfo })
+        {
+            Elided++;
+            regs.ClobberVolatiles(CallEmitter.Volatile);
+            regs.Set(Register.RAX, a0);
             return false;
         }
         if (ArgumentLocations.TryReadHelperArg(regs, 1, out var a1) && a1 is MarkerExpr { Marker: MarkerKind.ElementClass })
@@ -130,18 +154,7 @@ public sealed class CallDispatcher(NativeSymbolizer sym, CallEmitter emitter, Re
             regs.Set(Register.RAX, a0Keep);
             return false;
         }
-        var name = helperMap?.ExportNames.GetValueOrDefault(target) ?? $"sub_{target - sym.Registration.Reader.ImageBase:X}";
-        if (Runtime.CrtMath.TryEmitModF(name, ctx, regs, emitter.Mem, emitter.Slots, ctx.Module.CorLibTypeFactory))
-            return false;
-        if (Runtime.CrtMath.Build(name, regs, ctx.Module.CorLibTypeFactory) is { } math)
-        {
-            var result = regs.NewLocal(math.Type!);
-            math.Emit(ctx);
-            ctx.IL.Add(CilOpCodes.Stloc, result);
-            regs.ClobberVolatiles(CallEmitter.Volatile);
-            regs.Set(Register.XMM0, new LocalExpr(result));
-            return false;
-        }
+        name ??= $"sub_{target - sym.Registration.Reader.ImageBase:X}";
         Report(DiagnosticCodes.UnresolvedCall, $"Call to {name} (no metadata method; runtime helper or inlined-function thunk).", ip);
         EmitNative(ctx, name);
         return false;

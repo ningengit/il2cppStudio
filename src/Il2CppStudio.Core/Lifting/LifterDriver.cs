@@ -35,6 +35,12 @@ public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs
         var stub = stubs.GetModule(image);   // builds the stub module (and its MethodDefinitions) on first use
         var method = stubs.GetMethodDef(methodIndex);
         var va = sym.Map.GetMethodVa(methodIndex);
+        var donorSpec = -1;
+        if (va == 0 && method is not null && !method.IsAbstract && sym.Map.TryGetGenericDonor(methodIndex, out var donorVa, out var specIdx))
+        {
+            va = donorVa;
+            donorSpec = specIdx;
+        }
         if (method is null || va == 0 || method.IsAbstract) return new(methodIndex, false, 0, 0, 0, 0, 0, "no native code");
         var loc = (ulong ip) => new DiagnosticLocation { Rva = ip - sym.Registration.Reader.ImageBase, MethodName = sym.MethodName(methodIndex) };
         try
@@ -71,7 +77,7 @@ public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs
                 ? Register.None
                 : MethodShape.IsFloat(shape.ReturnType) ? Register.XMM0 : Register.RAX;
             var returnRegs = abi == NativeAbi.SysV ? MethodShape.SysVReturnRegs(shape.ReturnType, mem) : null;
-            var graph = new BlockGraph(fn.Instructions, sym.Registration, helpers is null ? null : helpers.KindOf, returnReg, ins => CallRegisters(ins, stub.Module, mem), returnRegs);
+            var graph = new BlockGraph(fn.Instructions, sym.Registration, helpers is null ? null : helpers.KindOf, returnReg, ins => CallRegisters(ins, stub.Module, mem), returnRegs, targetVa => sym.Map.SymbolAt(targetVa) is not null);
             var entry = new EntryState(method, shape, regs, mem);
             var returns = new ReturnEmitter(shape, regs, entry, mem);
             var loads = new LoadMaterializer(graph, regs, branch);
@@ -92,6 +98,8 @@ public sealed class LifterDriver(NativeSymbolizer sym, StubAssemblyBuilder stubs
             if (last is not (CilCode.Ret or CilCode.Throw or CilCode.Br)) returns.EmitDefault(ctx);
 
             body.Instructions.OptimizeMacros();
+            if (donorSpec >= 0)
+                GenericBodyReparameterizer.Apply(body, stub.Module, sym.Registration, stubs, donorSpec);
             method.CilMethodBody = body;
             stub.MarkLifted(methodIndex);
             var result = new LiftResult(methodIndex, true, fn.Instructions.Count, body.Instructions.Count,

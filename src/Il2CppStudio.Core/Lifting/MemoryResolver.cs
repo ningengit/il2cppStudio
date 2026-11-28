@@ -81,6 +81,11 @@ public sealed class MemoryResolver
     public int StaticFieldsOffset => _ptr == 8
         ? (_md.Version.Major >= 108 ? StaticFieldsOffset64V108 : StaticFieldsOffset64)
         : (_md.Version.Major >= 108 ? 0x4C : 0x5C);
+    public int RgctxDataOffset => StaticFieldsOffset + _ptr;
+    public int MethodInfoKlassOffset => _ptr == 8
+        ? (_md.Version.Major >= 29 ? 0x20 : 0x18)
+        : (_md.Version.Major >= 29 ? 0x10 : 0x0C);
+    public int MethodInfoRgctxOffset => _ptr == 8 ? 0x38 : 0x1C;
     public int VTableOffset => _ptr == 8
         ? (_md.Version.Major >= 108 ? VTableOffset64V108 : VTableOffset64)
         : 0xB8;
@@ -320,11 +325,36 @@ public sealed class MemoryResolver
         return FieldsOf(typeDef).Where(f => !f.IsStatic && f.Offset == offset).Cast<ResolvedField?>().FirstOrDefault();
     }
 
-    public ResolvedField? FindStaticField(int typeDef, long offset)
+    public ResolvedField? FindStaticField(int typeDef, long offset, TypeSignature? ownerSig = null)
     {
         if ((uint)typeDef >= (uint)_md.TypeDefinitions.Length) return null;
         // Statics are per declaring type only (no inheritance).
-        return FieldsOf(typeDef).Where(f => f.IsStatic && f.DeclaringTypeDef == typeDef && f.Offset == offset).Cast<ResolvedField?>().FirstOrDefault();
+        var direct = FieldsOf(typeDef).Where(f => f.IsStatic && f.DeclaringTypeDef == typeDef && f.Offset == offset).Cast<ResolvedField?>().FirstOrDefault();
+        if (direct is not null || ownerSig is not GenericInstanceTypeSignature) return direct;
+        return ComputedStaticFields(typeDef, ownerSig).Where(f => f.Offset == offset).Cast<ResolvedField?>().FirstOrDefault();
+    }
+
+    private List<ResolvedField> ComputedStaticFields(int typeDef, TypeSignature ownerSig)
+    {
+        var list = new List<ResolvedField>();
+        var def = _md.TypeDefinitions[typeDef];
+        var cursor = 0;
+        for (var k = 0; k < def.FieldCount; k++)
+        {
+            var fi = def.FieldStart + k;
+            var fd = _md.Fields[fi];
+            var isStatic = _reg.TryGetType(fd.TypeIndex, out var ft) && (ft.Attrs & 0x10) != 0;
+            var isLiteral = (ft.Attrs & 0x40) != 0;
+            if (!isStatic || isLiteral) continue;
+            var probe = new ResolvedField(fi, typeDef, 0, fd.TypeIndex, true);
+            var fType = FieldType(probe, ownerSig);
+            var rawOff = _reg.GetFieldOffset(typeDef, k);
+            var align = FieldAlignment(fType);
+            var off = rawOff >= 0 && (list.Count == 0 || rawOff > 0) ? rawOff : (cursor + align - 1) / align * align;
+            cursor = Math.Max(cursor, off + Math.Max(1, ValueSize(fType)));
+            list.Add(new ResolvedField(fi, typeDef, off, fd.TypeIndex, true));
+        }
+        return list;
     }
 
     /// <summary>Field of a value type that starts at <paramref name="offset"/>, descending into nested structs.</summary>
@@ -414,6 +444,13 @@ public sealed class MemoryResolver
         {
             baseExpr = rb;
             disp = rd;
+        }
+        if (baseExpr is MarkerExpr { Marker: MarkerKind.StaticFields } sm)
+        {
+            var ownerSig = sm.Usage is { Kind: MetadataUsageKind.TypeInfo } su ? _stubs.ToSig(_module, su.Index) : null;
+            if (FindStaticField(sm.Index, disp, ownerSig) is { } sf && FieldRef(sf, ownerSig) is { } sfr)
+                return new AddressExpr(new StaticFieldExpr(sfr, FieldType(sf, ownerSig)));
+            return null;
         }
         if (baseExpr.Kind != ValueKind.Ref || baseExpr.Type is null) return null;
         var td = TypeDefOf(baseExpr.Type);
@@ -527,24 +564,44 @@ public sealed class MemoryResolver
         {
             switch (m.Marker)
             {
+                case MarkerKind.MethodInfo when index is null && size == _ptr && (disp == MethodInfoKlassOffset || (_ptr == 8 && disp is 0x18 or 0x20)):
+                {
+                    var declTd = m.Usage is { Kind: MetadataUsageKind.MethodRef } mu && (uint)mu.Index < (uint)_reg.MethodSpecs.Count
+                        ? _md.Methods[_reg.MethodSpecs[mu.Index].MethodDefinitionIndex].DeclaringType
+                        : (uint)m.Index < (uint)_md.Methods.Length ? _md.Methods[m.Index].DeclaringType : -1;
+                    return (uint)declTd < (uint)_md.TypeDefinitions.Length
+                        ? new MarkerExpr(MarkerKind.TypeInfo, declTd, $"{_names.TypeDefName(declTd, true)}_Class")
+                        : null;
+                }
+                case MarkerKind.MethodInfo when index is null && size == _ptr && disp == MethodInfoRgctxOffset:
+                    return new MarkerExpr(MarkerKind.RgctxData, m.Index, $"method_{m.Index}.rgctx_data", usage: new MetadataUsage(0, MetadataUsageKind.MethodDef, m.Index));
                 case MarkerKind.TypeInfo when disp == 0 && index is null && size == _ptr:
                     // The TypeInfo runtime-metadata global holds Il2CppClass* itself; [TypeInfo] is the klass pointer.
                     return new MarkerExpr(MarkerKind.Klass, m.Index, $"{_names.TypeDefName(m.Index, true)}->klass", m, m.Usage);
                 case MarkerKind.TypeInfo when disp == StaticFieldsOffset && index is null:
-                    return new MarkerExpr(MarkerKind.StaticFields, m.Index, $"{_names.TypeDefName(m.Index, true)}.static_fields");
+                    return new MarkerExpr(MarkerKind.StaticFields, m.Index, $"{_names.TypeDefName(m.Index, true)}.static_fields", usage: m.Usage);
+                case MarkerKind.TypeInfo when disp == RgctxDataOffset && index is null && size == _ptr:
+                    return new MarkerExpr(MarkerKind.RgctxData, m.Index, $"{_names.TypeDefName(m.Index, true)}.rgctx_data", usage: m.Usage);
+                case MarkerKind.TypeInfo when index is null && ((size == 1 && disp >= 0x90 && disp <= 0x180) || (size == 4 && disp is 0x70 or 0xE4 or 0xE8 or 0xEC)):
+                    return new MarkerExpr(MarkerKind.InitFlag, m.Index, $"{_names.TypeDefName(m.Index, true)}.initialized");
+                case MarkerKind.RgctxData when index is null && disp >= 0 && disp % _ptr == 0:
+                    return ResolveRgctxLoad(m, (int)(disp / _ptr));
                 case MarkerKind.StaticFields when index is null:
-                    if (FindStaticField(m.Index, disp) is { } sf && FieldRef(sf) is { } sfr)
+                {
+                    var ownerSig = m.Usage is { Kind: MetadataUsageKind.TypeInfo } su ? _stubs.ToSig(_module, su.Index) : null;
+                    if (FindStaticField(m.Index, disp, ownerSig) is { } sf && FieldRef(sf, ownerSig) is { } sfr)
                     {
-                        var ft = FieldType(sf, null);
+                        var ft = FieldType(sf, ownerSig);
                         var se = new StaticFieldExpr(sfr, ft);
                         return size < ValueSize(ft) && Expr.KindOf(ft) == ValueKind.Struct ? StructFieldOrChunk(se, ft, 0, size) : se;
                     }
-                    if (FindContainingStatic(m.Index, disp) is { } outer && FieldRef(outer) is { } ofr)
+                    if (FindContainingStatic(m.Index, disp, ownerSig) is { } outer && FieldRef(outer, ownerSig) is { } ofr)
                     {
-                        var oft = FieldType(outer, null);
+                        var oft = FieldType(outer, ownerSig);
                         return StructFieldOrChunk(new StaticFieldExpr(ofr, oft), oft, (int)(disp - outer.Offset), size);
                     }
                     return null;
+                }
                 case MarkerKind.Klass when index is null && disp == ElementClassOffset && size == _ptr:
                     // Il2CppClass::element_class - read by the array-store covariance check before stelem.ref.
                     return new MarkerExpr(MarkerKind.ElementClass, m.Index, $"{m.Describe()}.element_class", m.Base);
@@ -646,9 +703,54 @@ public sealed class MemoryResolver
         FieldsOf(td).Where(f => !f.IsStatic && disp > f.Offset).Select(f => (f, t: _stubs.ToSig(_module, f.TypeIndex)))
             .Where(x => Expr.KindOf(x.t) == ValueKind.Struct && disp < x.f.Offset + ValueSize(x.t)).Select(x => (ResolvedField?)x.f).FirstOrDefault();
 
-    private ResolvedField? FindContainingStatic(int td, long disp) =>
-        FieldsOf(td).Where(f => f.IsStatic && f.DeclaringTypeDef == td && disp > f.Offset).Select(f => (f, t: _stubs.ToSig(_module, f.TypeIndex)))
-            .Where(x => Expr.KindOf(x.t) == ValueKind.Struct && disp < x.f.Offset + ValueSize(x.t)).Select(x => (ResolvedField?)x.f).FirstOrDefault();
+    private Expr? ResolveRgctxLoad(MarkerExpr m, int slot)
+    {
+        int img;
+        uint token;
+        if (m.Usage is { Kind: MetadataUsageKind.MethodDef } mu)
+        {
+            if ((uint)mu.Index >= (uint)_md.Methods.Length) return null;
+            var decl = _md.Methods[mu.Index].DeclaringType;
+            img = _stubs.ImageOfType(decl);
+            token = _md.Methods[mu.Index].Token;
+        }
+        else
+        {
+            if ((uint)m.Index >= (uint)_md.TypeDefinitions.Length) return null;
+            img = _stubs.ImageOfType(m.Index);
+            token = _md.TypeDefinitions[m.Index].Token;
+        }
+        if (img < 0 || token == 0) return null;
+        var entries = _reg.GetRgctx(_stubs.ImageName(img), token);
+        if ((uint)slot >= (uint)entries.Count) return null;
+        var e = entries[slot];
+        if (e.Index < 0) return null;
+        return e.Kind switch
+        {
+            Il2CppRgctxDataType.Type => new MarkerExpr(MarkerKind.Il2CppType,
+                _reg.TryGetType(e.Index, out var rt) ? _names.ResolveTypeDefIndex(rt) : -1,
+                $"rgctx_type[{slot}]", usage: new MetadataUsage(0, MetadataUsageKind.Il2CppType, e.Index)),
+            Il2CppRgctxDataType.Class or Il2CppRgctxDataType.Array => new MarkerExpr(MarkerKind.TypeInfo,
+                _reg.TryGetType(e.Index, out var rc) ? _names.ResolveTypeDefIndex(rc) : -1,
+                $"rgctx_class[{slot}]", usage: new MetadataUsage(0, MetadataUsageKind.TypeInfo, e.Index)),
+            Il2CppRgctxDataType.Method => new MarkerExpr(MarkerKind.MethodInfo, e.Index,
+                $"rgctx_method[{slot}]", usage: new MetadataUsage(0, MetadataUsageKind.MethodRef, e.Index)),
+            _ => null,
+        };
+    }
+
+    private ResolvedField? FindContainingStatic(int td, long disp, TypeSignature? ownerSig = null)
+    {
+        var list = FieldsOf(td).Where(f => f.IsStatic && f.DeclaringTypeDef == td && disp > f.Offset);
+        var match = list.Select(f => (f, t: FieldType(f, ownerSig)))
+            .Where(x => Expr.KindOf(x.t) == ValueKind.Struct && disp < x.f.Offset + ValueSize(x.t))
+            .Select(x => (ResolvedField?)x.f).FirstOrDefault();
+        if (match is not null || ownerSig is not GenericInstanceTypeSignature) return match;
+        return ComputedStaticFields(td, ownerSig).Where(f => disp > f.Offset)
+            .Select(f => (f, t: FieldType(f, ownerSig)))
+            .Where(x => Expr.KindOf(x.t) == ValueKind.Struct && disp < x.f.Offset + ValueSize(x.t))
+            .Select(x => (ResolvedField?)x.f).FirstOrDefault();
+    }
 
     // ------------------------------------------------------------------ stores
 
@@ -700,6 +802,12 @@ public sealed class MemoryResolver
         if (baseExpr.Type is ByReferenceTypeSignature sbrDirect && index is null)
         {
             var elem = sbrDirect.BaseType;
+            if (disp == 0 && elem is GenericParameterSignature && value is ConstExpr { Value: 0 })
+            {
+                baseExpr.Emit(ctx);
+                il.Add(CilOpCodes.Initobj, Expr.TypeToken(elem));
+                return true;
+            }
             if (disp == 0 && (Expr.KindOf(elem) != ValueKind.Struct || IsEnumType(elem)))
             {
                 baseExpr.Emit(ctx);
@@ -752,18 +860,27 @@ public sealed class MemoryResolver
 
         if (baseExpr is MarkerExpr { Marker: MarkerKind.StaticFields } sm && index is null)
         {
-            if (FindStaticField(sm.Index, disp) is { } sf && FieldRef(sf) is { } sfr)
+            var ownerSig = sm.Usage is { Kind: MetadataUsageKind.TypeInfo } su ? _stubs.ToSig(_module, su.Index) : null;
+            if (FindStaticField(sm.Index, disp, ownerSig) is { } sf && FieldRef(sf, ownerSig) is { } sfr)
             {
-                var st = FieldType(sf, null);
+                var st = FieldType(sf, ownerSig);
                 var se = new StaticFieldExpr(sfr, st);
                 BeforeFieldStored?.Invoke(ctx, value, se);
-                Expr.EmitAs(ctx, value, st);
-                il.Add(CilOpCodes.Stsfld, sfr);
+                if (st is GenericParameterSignature && value is ConstExpr { Value: 0 })
+                {
+                    il.Add(CilOpCodes.Ldsflda, sfr);
+                    il.Add(CilOpCodes.Initobj, Expr.TypeToken(st));
+                }
+                else
+                {
+                    Expr.EmitAs(ctx, value, st);
+                    il.Add(CilOpCodes.Stsfld, sfr);
+                }
                 NotifyStored(value, se);
                 return true;
             }
-            if (FindContainingStatic(sm.Index, disp) is { } outer && FieldRef(outer) is { } ofr)
-                return Store(ctx, new AddressExpr(new StaticFieldExpr(ofr, FieldType(outer, null))), null, 1, disp - outer.Offset, size, value);
+            if (FindContainingStatic(sm.Index, disp, ownerSig) is { } outer && FieldRef(outer, ownerSig) is { } ofr)
+                return Store(ctx, new AddressExpr(new StaticFieldExpr(ofr, FieldType(outer, ownerSig))), null, 1, disp - outer.Offset, size, value);
             return false;
         }
 

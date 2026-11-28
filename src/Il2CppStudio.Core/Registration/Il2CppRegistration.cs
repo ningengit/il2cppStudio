@@ -49,6 +49,10 @@ public sealed partial class Il2CppRegistration
 
     private readonly Dictionary<ulong, int> _typeIndexByVa = [];
     private readonly ConcurrentDictionary<ulong, Il2CppTypeRecord> _typeCache = new();
+    private readonly Dictionary<(string Module, uint Token), Il2CppRgctxEntry[]> _rgctxByModuleToken = [];
+
+    public IReadOnlyList<Il2CppRgctxEntry> GetRgctx(string moduleName, uint token) =>
+        _rgctxByModuleToken.TryGetValue((moduleName, token), out var arr) ? arr : [];
 
     private ulong _codeGenModulesArrayVa;
 
@@ -492,6 +496,7 @@ public sealed partial class Il2CppRegistration
             var ptrCount = Reader.ReadU32(m + (ulong)Ptr);   // uint32_t methodPointerCount (padded on 64-bit)
             var ptrs = CodePointers(ReadPointerArray(At(m, 2), (int)Math.Min(ptrCount, 1_000_000)));
             modules.Add(new CodeGenModuleRecord(m, name, ptrs));
+            ReadModuleRgctx(m, name);
         }
         CodeGenModules = modules;
 
@@ -504,6 +509,57 @@ public sealed partial class Il2CppRegistration
             $"CodeRegistration at RVA 0x{cr - Reader.ImageBase:X}: {modules.Count} code gen modules, " +
             $"{modules.Sum(m => m.MethodPointers.Count):N0} method pointers, {GenericMethodPointers.Count:N0} generic method pointers.",
             new() { Rva = cr - Reader.ImageBase, VirtualAddress = cr });
+    }
+
+    private void ReadModuleRgctx(ulong moduleVa, string moduleName)
+    {
+        if (_md.Version.Major < 24 || _md.Version.HasCodegenIndices) return;
+        ulong rangesOff = Ptr == 8 ? 0x40UL : 0x20UL;
+        ulong rangesPtrOff = Ptr == 8 ? 0x48UL : 0x24UL;
+        ulong valuesOff = Ptr == 8 ? 0x50UL : 0x28UL;
+        ulong valuesPtrOff = Ptr == 8 ? 0x58UL : 0x2CUL;
+
+        var rangesCount = Reader.ReadU32(moduleVa + rangesOff);
+        var rangesVa = P(moduleVa + rangesPtrOff);
+        var valuesCount = Reader.ReadU32(moduleVa + valuesOff);
+        var valuesVa = P(moduleVa + valuesPtrOff);
+        if (rangesCount == 0 || rangesCount >= 200_000 || valuesCount == 0 || valuesCount >= 2_000_000) return;
+        if (!Reader.IsMapped(rangesVa) || !Reader.IsMapped(valuesVa)) return;
+
+        var pointerValues = _md.Version.Major > 27 || (_md.Version.Major == 27 && _md.Version.Minor >= 2);
+        var entryStride = pointerValues ? Ptr * 2 : 8;
+        var valSpan = Reader.Slice(valuesVa, (int)valuesCount * entryStride);
+        if (valSpan.Length < (int)valuesCount * entryStride) return;
+
+        var entries = new Il2CppRgctxEntry[valuesCount];
+        for (var i = 0; i < (int)valuesCount; i++)
+        {
+            var entryVa = valuesVa + (ulong)(i * entryStride);
+            var kind = (Il2CppRgctxDataType)Reader.ReadI32(entryVa);
+            int idx;
+            if (pointerValues)
+            {
+                var dataPtr = P(entryVa + (ulong)Ptr);
+                idx = kind != Il2CppRgctxDataType.Invalid && Reader.IsMapped(dataPtr) ? Reader.ReadI32(dataPtr) : -1;
+            }
+            else
+            {
+                idx = Reader.ReadI32(entryVa + 4);
+            }
+            entries[i] = new Il2CppRgctxEntry(kind, idx);
+        }
+
+        var rangeSpan = Reader.Slice(rangesVa, (int)rangesCount * 12);
+        if (rangeSpan.Length < (int)rangesCount * 12) return;
+        for (var i = 0; i < (int)rangesCount; i++)
+        {
+            var rVa = rangesVa + (ulong)(i * 12);
+            var token = Reader.ReadU32(rVa);
+            var start = Reader.ReadI32(rVa + 4);
+            var len = Reader.ReadI32(rVa + 8);
+            if (start >= 0 && len > 0 && start + len <= entries.Length)
+                _rgctxByModuleToken[(moduleName, token)] = entries[start..(start + len)];
+        }
     }
 
     /// <summary>

@@ -39,6 +39,11 @@ public abstract class Expr
     public virtual bool IsMarker => false;
     public virtual string Describe() => GetType().Name;
 
+    public static ITypeDefOrRef TypeToken(TypeSignature sig) =>
+        sig is TypeDefOrRefSignature tdr ? tdr.Type
+        : sig is CorLibTypeSignature cl ? cl.Type
+        : new TypeSpecification(sig);
+
     public static ValueKind KindOf(TypeSignature? t)
     {
         if (t is null) return ValueKind.I8;
@@ -70,7 +75,13 @@ public abstract class Expr
         if (e is AddressExpr ae && target is not ByReferenceTypeSignature && tk != ValueKind.Native)
             e = ae.Target;
         var sk = e.Kind;
-        if (e is ConstExpr { Value: 0 } && tk == ValueKind.Ref) { ctx.IL.Add(CilOpCodes.Ldnull); return; }
+        if (e is ConstExpr { Value: 0 } && tk == ValueKind.Ref)
+        {
+            ctx.IL.Add(CilOpCodes.Ldnull);
+            if (target is GenericParameterSignature)
+                ctx.IL.Add(CilOpCodes.Unbox_Any, TypeToken(target));
+            return;
+        }
         if (!numeric && IsBitMove(sk, tk))
         {
             // x86 moves floats through GPRs/immediates as raw bits (mov [mem], 41F00000h == 30f); only cvt* converts.
@@ -112,11 +123,21 @@ public abstract class Expr
         }
         if (from == ValueKind.Ref && to == ValueKind.Ref)
         {
+            if (src is GenericParameterSignature && reinterpTarget is not GenericParameterSignature)
+            {
+                il.Add(CilOpCodes.Box, TypeToken(src));
+                return;
+            }
+            if (src is not GenericParameterSignature && reinterpTarget is GenericParameterSignature)
+            {
+                il.Add(CilOpCodes.Unbox_Any, TypeToken(reinterpTarget));
+                return;
+            }
             if (src is not null && reinterpTarget is not GenericParameterSignature && reinterpTarget.ElementType != E.Object
                 && !SignatureComparer.Default.Equals(src, reinterpTarget)
                 && (src.ElementType == E.Object || src.FullName == "UnityEngine.Object"))
             {
-                il.Add(CilOpCodes.Castclass, reinterpTarget.ToTypeDefOrRef());
+                il.Add(CilOpCodes.Castclass, TypeToken(reinterpTarget));
             }
             return;
         }
@@ -225,6 +246,7 @@ public sealed class IndirectExpr(Expr pointer, TypeSignature type) : Expr
     public static void EmitLoad(EmitContext ctx, TypeSignature type)
     {
         var il = ctx.IL;
+        if (type is GenericParameterSignature) { il.Add(CilOpCodes.Ldobj, Expr.TypeToken(type)); return; }
         if (KindOf(type) == ValueKind.Struct) { il.Add(CilOpCodes.Ldobj, type.ToTypeDefOrRef()); return; }
         if (KindOf(type) == ValueKind.Ref) { il.Add(CilOpCodes.Ldind_Ref); return; }
         switch (type.ElementType)
@@ -247,6 +269,7 @@ public sealed class IndirectExpr(Expr pointer, TypeSignature type) : Expr
     public static void EmitStore(EmitContext ctx, TypeSignature type)
     {
         var il = ctx.IL;
+        if (type is GenericParameterSignature) { il.Add(CilOpCodes.Stobj, Expr.TypeToken(type)); return; }
         if (KindOf(type) == ValueKind.Struct) { il.Add(CilOpCodes.Stobj, type.ToTypeDefOrRef()); return; }
         if (KindOf(type) == ValueKind.Ref) { il.Add(CilOpCodes.Stind_Ref); return; }
         switch (type.ElementType)
@@ -515,4 +538,4 @@ public sealed class Const128Expr(ulong lo, ulong hi) : Expr
     public override string Describe() => $"0x{hi:X16}_{lo:X16}";
 }
 
-public enum MarkerKind { TypeInfo, StaticFields, MethodInfo, Klass, VTableEntry, FieldInfo, Il2CppType, ElementClass, InitFlag }
+public enum MarkerKind { TypeInfo, StaticFields, MethodInfo, Klass, VTableEntry, FieldInfo, Il2CppType, ElementClass, InitFlag, RgctxData }

@@ -27,17 +27,19 @@ public static class DistanceRecognizer
             if (body is null || sqrtStmt is null) continue;
             var helpers = new List<Statement>();
             var postDeclarations = new HashSet<string>(StringComparer.Ordinal);
-            List<string>? locals;
             VariableDeclarationStatement? dDecl = null;
+            Expression squareSource = rawArg;
             if (rawArg is IdentifierExpression dRef)
             {
                 if (Decl(body, dRef.Identifier) is not { } foundDecl || Uses(body, dRef.Identifier) != 2) continue;
                 dDecl = foundDecl;
-                locals = Squares(dDecl.Variables.Single().Initializer);
+                squareSource = dDecl.Variables.Single().Initializer;
                 helpers.Add(dDecl);
             }
-            else locals = Squares(rawArg);
-            if (locals is not { Count: 3 }) continue;
+
+            var locals = Squares(squareSource);
+            var inlinePairs = locals is { Count: 3 } ? null : InlineDiffSquares(squareSource);
+            if (locals is not { Count: 3 } && inlinePairs is null) continue;
 
             var sumStmt = (Statement?)dDecl ?? sqrtStmt;
             Expression? a = null, b = null;
@@ -46,60 +48,73 @@ public static class DistanceRecognizer
             var bVecReads = new List<(Statement ReadStmt, MemberReferenceExpression Access)>();
             var allDiffDecls = true;
             var ok = true;
-            foreach (var l in locals)
+            if (inlinePairs is not null)
             {
-                var sub = FindSub(body, sumStmt, l);
-                if (sub is not null)
+                foreach (var (ma, mb) in inlinePairs)
                 {
-                    allDiffDecls = false;
-                    var (init, initValue) = Init(sub, l);
-                    if (init is null || initValue is not MemberReferenceExpression ma) { ok = false; break; }
+                    components.Add(ma.MemberName);
+                    aVecReads.Add((sumStmt, ma));
+                    bVecReads.Add((sumStmt, mb));
+                }
+            }
+            else
+            {
+                foreach (var l in locals!)
+                {
+                    var sub = FindSub(body, sumStmt, l);
+                    if (sub is not null)
+                    {
+                        allDiffDecls = false;
+                        var (init, initValue) = Init(sub, l);
+                        if (init is null || initValue is not MemberReferenceExpression ma) { ok = false; break; }
 
-                    MemberReferenceExpression? mb = null;
-                    Statement readStmtB = sub;
-                    if (sub.Expression is AssignmentExpression { Right: MemberReferenceExpression directMb })
-                    {
-                        mb = directMb;
-                    }
-                    else if (sub.Expression is AssignmentExpression { Right: IdentifierExpression rhsId })
-                    {
-                        var (rhsInit, rhsVal) = Init(sub, rhsId.Identifier);
-                        if (rhsInit is not null && rhsVal is MemberReferenceExpression rhsMem && IsScalarLocalValidForRange(body, rhsInit, sub, rhsId.Identifier, out var rhsReused))
+                        MemberReferenceExpression? mb = null;
+                        Statement readStmtB = sub;
+                        if (sub.Expression is AssignmentExpression { Right: MemberReferenceExpression directMb })
                         {
-                            mb = rhsMem;
-                            readStmtB = rhsInit;
-                            helpers.Add(rhsInit);
-                            if (rhsReused && rhsInit is VariableDeclarationStatement) postDeclarations.Add(rhsId.Identifier);
+                            mb = directMb;
                         }
-                    }
+                        else if (sub.Expression is AssignmentExpression { Right: IdentifierExpression rhsId })
+                        {
+                            var (rhsInit, rhsVal) = Init(sub, rhsId.Identifier);
+                            if (rhsInit is not null && rhsVal is MemberReferenceExpression rhsMem && IsScalarLocalValidForRange(body, rhsInit, sub, rhsId.Identifier, out var rhsReused))
+                            {
+                                mb = rhsMem;
+                                readStmtB = rhsInit;
+                                helpers.Add(rhsInit);
+                                if (rhsReused && rhsInit is VariableDeclarationStatement) postDeclarations.Add(rhsId.Identifier);
+                            }
+                        }
 
-                    if (mb is null || ma.MemberName != mb.MemberName || !components.Add(ma.MemberName)
-                        || !IsComponentLocalValid(body, init, sub, sumStmt, l, out var reusedAfter))
-                    {
-                        ok = false; break;
+                        if (mb is null || ma.MemberName != mb.MemberName || !components.Add(ma.MemberName)
+                            || !IsComponentLocalValid(body, init, sub, sumStmt, l, out var reusedAfter))
+                        {
+                            ok = false; break;
+                        }
+                        aVecReads.Add((init, ma));
+                        bVecReads.Add((readStmtB, mb));
+                        helpers.Add(init);
+                        helpers.Add(sub);
+                        if (reusedAfter && init is VariableDeclarationStatement) postDeclarations.Add(l);
                     }
-                    aVecReads.Add((init, ma));
-                    bVecReads.Add((readStmtB, mb));
-                    helpers.Add(init);
-                    helpers.Add(sub);
-                    if (reusedAfter && init is VariableDeclarationStatement) postDeclarations.Add(l);
+                    else if (DeclBefore(body, sumStmt, l) is { } diffDecl && diffDecl.Variables.Single().Initializer is BinaryOperatorExpression
+                        { Operator: BinaryOperatorType.Subtract, Left: MemberReferenceExpression ma2, Right: MemberReferenceExpression mb2 }
+                        && ma2.MemberName == mb2.MemberName && components.Add(ma2.MemberName)
+                        && IsComponentLocalValid(body, diffDecl, diffDecl, sumStmt, l, out var reusedDiff))
+                    {
+                        aVecReads.Add((diffDecl, ma2));
+                        bVecReads.Add((diffDecl, mb2));
+                        helpers.Add(diffDecl);
+                        if (reusedDiff && diffDecl is VariableDeclarationStatement) postDeclarations.Add(l);
+                    }
+                    else { ok = false; break; }
                 }
-                else if (DeclBefore(body, sumStmt, l) is { } diffDecl && diffDecl.Variables.Single().Initializer is BinaryOperatorExpression
-                    { Operator: BinaryOperatorType.Subtract, Left: MemberReferenceExpression ma2, Right: MemberReferenceExpression mb2 }
-                    && ma2.MemberName == mb2.MemberName && components.Add(ma2.MemberName)
-                    && IsComponentLocalValid(body, diffDecl, diffDecl, sumStmt, l, out var reusedDiff))
-                {
-                    aVecReads.Add((diffDecl, ma2));
-                    bVecReads.Add((diffDecl, mb2));
-                    helpers.Add(diffDecl);
-                    if (reusedDiff && diffDecl is VariableDeclarationStatement) postDeclarations.Add(l);
-                }
-                else { ok = false; break; }
             }
             if (!ok || !components.SetEquals(["x", "y", "z"])) continue;
 
-            if (!TryResolveVectorSource(body, sqrtStmt, aVecReads, helpers, postDeclarations, out a, out var vecStmtA)
-                || !TryResolveVectorSource(body, sqrtStmt, bVecReads, helpers, postDeclarations, out b, out var vecStmtB)
+            var readsPerEntry = inlinePairs is not null ? 2 : 1;
+            if (!TryResolveVectorSource(body, sqrtStmt, sqrt, aVecReads, helpers, postDeclarations, out a, out var vecStmtA, readsPerEntry)
+                || !TryResolveVectorSource(body, sqrtStmt, sqrt, bVecReads, helpers, postDeclarations, out b, out var vecStmtB, readsPerEntry)
                 || a is null || b is null)
                 continue;
             if (vecStmtA is not null && ReferenceEquals(vecStmtA, vecStmtB)) continue;
@@ -280,11 +295,13 @@ public static class DistanceRecognizer
     private static bool TryResolveVectorSource(
         BlockStatement body,
         Statement sqrtStmt,
+        CastExpression sqrt,
         List<(Statement ReadStmt, MemberReferenceExpression Access)> reads,
         List<Statement> knownHelpers,
         HashSet<string> postDeclarations,
         out Expression? source,
-        out Statement? vecStmt)
+        out Statement? vecStmt,
+        int readsPerEntry = 1)
     {
         source = null;
         vecStmt = null;
@@ -322,7 +339,7 @@ public static class DistanceRecognizer
                 if (commonDef is VariableDeclarationStatement) postDeclarations.Add(id.Identifier);
                 break;
             }
-            var allowedReads = reads.Count(r => r.ReadStmt == s);
+            var allowedReads = reads.Count(r => r.ReadStmt == s) * readsPerEntry;
             var totalRefs = s.DescendantsAndSelf.OfType<IdentifierExpression>().Count(i => i.Identifier == id.Identifier);
             if (s == sqrtStmt)
             {
@@ -333,7 +350,16 @@ public static class DistanceRecognizer
                         || !IsSafeInBranchAfterSqrt(ifs.FalseStatement, id.Identifier, ref branchUnused))
                         return false;
                     if (branchUnused && commonDef is VariableDeclarationStatement) postDeclarations.Add(id.Identifier);
-                    totalRefs = s.Descendants.OfType<IdentifierExpression>().Count(i => i.Identifier == id.Identifier && !i.Ancestors.Contains(ifs.TrueStatement) && !i.Ancestors.Contains(ifs.FalseStatement));
+                    totalRefs = s.Descendants.OfType<IdentifierExpression>().Count(i =>
+                        i.Identifier == id.Identifier
+                        && !i.Ancestors.Contains(ifs.TrueStatement)
+                        && !i.Ancestors.Contains(ifs.FalseStatement)
+                        && !i.Ancestors.Contains(sqrt));
+                }
+                else
+                {
+                    totalRefs = s.DescendantsAndSelf.OfType<IdentifierExpression>().Count(i =>
+                        i.Identifier == id.Identifier && !i.Ancestors.Contains(sqrt));
                 }
                 if (totalRefs != 0) return false;
                 break;
@@ -500,5 +526,34 @@ public static class DistanceRecognizer
         }
         Walk(e);
         return result.Contains("\0") ? null : result;
+    }
+
+    /// <summary>"(a.y - b.y)*(a.y - b.y) + (a.x - b.x)*(a.x - b.x) + (a.z - b.z)*(a.z - b.z)" → [(a.y, b.y), ...].</summary>
+    private static List<(MemberReferenceExpression A, MemberReferenceExpression B)>? InlineDiffSquares(Expression e)
+    {
+        var terms = new List<Expression>();
+        void Walk(Expression x)
+        {
+            x = Unparen(x);
+            if (x is CastExpression c) { Walk(c.Expression); return; }
+            if (x is BinaryOperatorExpression { Operator: BinaryOperatorType.Add } add) { Walk(add.Left); Walk(add.Right); return; }
+            terms.Add(x);
+        }
+        Walk(e);
+        if (terms.Count != 3) return null;
+
+        var pairs = new List<(MemberReferenceExpression A, MemberReferenceExpression B)>(3);
+        var comps = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var t in terms)
+        {
+            if (t is not BinaryOperatorExpression { Operator: BinaryOperatorType.Multiply, Left: var l, Right: var r }
+                || !Unparen(l).IsMatch(Unparen(r))
+                || Unparen(l) is not BinaryOperatorExpression { Operator: BinaryOperatorType.Subtract, Left: MemberReferenceExpression ma, Right: MemberReferenceExpression mb }
+                || ma.MemberName != mb.MemberName
+                || !comps.Add(ma.MemberName))
+                return null;
+            pairs.Add((ma, mb));
+        }
+        return comps.SetEquals(["x", "y", "z"]) ? pairs : null;
     }
 }

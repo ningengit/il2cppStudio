@@ -40,7 +40,11 @@ public sealed class EntryState(MethodDefinition method, MethodShape shape, Regis
         }
         if (!shape.IsStatic)
         {
-            var thisType = method.DeclaringType!.ToTypeSignature(shape.DeclaringIsValueType);
+            var decl = method.DeclaringType!;
+            TypeSignature thisType = decl.GenericParameters.Count > 0
+                ? new GenericInstanceTypeSignature(decl, shape.DeclaringIsValueType,
+                    decl.GenericParameters.Select((_, i) => (TypeSignature)new GenericParameterSignature(GenericParameterType.Type, i)).ToArray())
+                : decl.ToTypeSignature(shape.DeclaringIsValueType);
             Expr value = shape.DeclaringIsValueType
                 ? new AddressExpr(new ThisStructExpr(thisType))
                 : new ArgExpr(method.Parameters.ThisParameter!, thisType);

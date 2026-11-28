@@ -18,6 +18,8 @@ public sealed record NativeSymbol(ulong Va, int MethodIndex, int MethodSpecIndex
 public sealed class MethodAddressMap
 {
     private readonly ulong[] _methodVa;              // by method index
+    private readonly (ulong Va, int SpecIndex)[] _genericDonors;
+    private readonly int[] _genericDonorRank;
     private readonly Dictionary<ulong, NativeSymbol> _byVa = [];
     private readonly Dictionary<ulong, List<NativeSymbol>> _folded = [];
     private readonly (uint Begin, uint End)[] _functions;
@@ -34,6 +36,9 @@ public sealed class MethodAddressMap
         _imageBase = reg.Reader.ImageBase;
         _functions = [.. functions];
         _methodVa = new ulong[md.Methods.Length];
+        _genericDonors = new (ulong, int)[md.Methods.Length];
+        _genericDonorRank = new int[md.Methods.Length];
+        Array.Fill(_genericDonorRank, int.MaxValue);
         var wasmSplit = reg.Reader.Image is WasmBinaryImage { IsSplitFunctionTable: true } w ? w : null;
         var asmJs = reg.Reader.Image as AsmJsBinaryImage;
 
@@ -107,6 +112,16 @@ public sealed class MethodAddressMap
                 if (va == 0) continue;
             }
             generic++;
+            if (_methodVa[spec.MethodDefinitionIndex] == 0 && (md.Methods[spec.MethodDefinitionIndex].Flags & 0x0400) == 0)
+            {
+                var rank = RankGenericDonor(md, model, reg, spec);
+                if (rank >= 0 && (rank < _genericDonorRank[spec.MethodDefinitionIndex]
+                    || (rank == _genericDonorRank[spec.MethodDefinitionIndex] && g.GenericMethodIndex < _genericDonors[spec.MethodDefinitionIndex].SpecIndex)))
+                {
+                    _genericDonors[spec.MethodDefinitionIndex] = (va, g.GenericMethodIndex);
+                    _genericDonorRank[spec.MethodDefinitionIndex] = rank;
+                }
+            }
             if (_byVa.ContainsKey(va)) continue;
             _byVa[va] = new NativeSymbol(va, spec.MethodDefinitionIndex, g.GenericMethodIndex, SpecDisplayName(md, model, reg, names, spec), null);
         }
@@ -139,6 +154,87 @@ public sealed class MethodAddressMap
     }
 
     public ulong GetMethodVa(int methodIndex) => (uint)methodIndex < (uint)_methodVa.Length ? _methodVa[methodIndex] : 0;
+
+    public bool TryGetGenericDonor(int methodIndex, out ulong va, out int specIndex)
+    {
+        if ((uint)methodIndex < (uint)_genericDonors.Length && _genericDonors[methodIndex].Va != 0)
+        {
+            (va, specIndex) = _genericDonors[methodIndex];
+            return true;
+        }
+        va = 0;
+        specIndex = -1;
+        return false;
+    }
+
+    private static int RankGenericDonor(GlobalMetadata md, MetadataModel model, Il2CppRegistration reg, Il2CppMethodSpecRecord spec)
+    {
+        var typeArgs = new List<Il2CppTypeRecord>();
+        void CollectInst(int instIdx)
+        {
+            if (instIdx >= 0 && (uint)instIdx < (uint)reg.GenericInstVas.Count)
+                foreach (var va in reg.ReadGenericInst(reg.GenericInstVas[instIdx]).TypeArgVas)
+                    typeArgs.Add(reg.GetTypeAt(va));
+        }
+        CollectInst(spec.ClassInstIndex);
+        CollectInst(spec.MethodInstIndex);
+        if (typeArgs.Count == 0) return -1;
+
+        var allShared = true;
+        var allRef = true;
+        foreach (var t in typeArgs)
+        {
+            var isShared = t.Type == Il2CppTypeEnum.Object
+                || (t.Type is Il2CppTypeEnum.Class or Il2CppTypeEnum.ValueType
+                    && (uint)t.KlassIndex < (uint)model.Types.Count
+                    && model.Types[t.KlassIndex].Namespace == "Unity.IL2CPP.Metadata"
+                    && model.Types[t.KlassIndex].Name == "__Il2CppFullySharedGenericType");
+            if (!isShared) allShared = false;
+
+            var isRef = isShared || t.Type is Il2CppTypeEnum.Object or Il2CppTypeEnum.String or Il2CppTypeEnum.SzArray or Il2CppTypeEnum.Array
+                || (t.Type == Il2CppTypeEnum.Class && ((uint)t.KlassIndex >= (uint)md.TypeDefinitions.Length || !md.TypeDefinitions[t.KlassIndex].IsValueType))
+                || (t.Type == Il2CppTypeEnum.GenericInst && IsRefGenericInst(reg, t));
+            if (!isRef) allRef = false;
+        }
+        if (allShared) return 0;
+        if (allRef) return 1;
+
+        var mdef = md.Methods[spec.MethodDefinitionIndex];
+        if (reg.TryGetType(mdef.ReturnType, out var rt) && ContainsGenericParam(reg, rt)) return -1;
+        for (var p = 0; p < mdef.ParameterCount; p++)
+            if (reg.TryGetType(md.Parameters[mdef.ParameterStart + p].TypeIndex, out var pt) && ContainsGenericParam(reg, pt))
+                return -1;
+        return 2;
+    }
+
+    private static bool IsRefGenericInst(Il2CppRegistration reg, Il2CppTypeRecord t)
+    {
+        var gc = reg.ReadGenericClass(t.Data);
+        var defType = reg.GetTypeAt(gc.TypeVa);
+        return !defType.IsValueTypeFlag && defType.Type != Il2CppTypeEnum.ValueType;
+    }
+
+    private static bool ContainsGenericParam(Il2CppRegistration reg, Il2CppTypeRecord t, int depth = 0)
+    {
+        if (depth > 16) return false;
+        switch (t.Type)
+        {
+            case Il2CppTypeEnum.Var or Il2CppTypeEnum.MVar:
+                return true;
+            case Il2CppTypeEnum.SzArray or Il2CppTypeEnum.Ptr:
+                return ContainsGenericParam(reg, reg.GetTypeAt(t.Data), depth + 1);
+            case Il2CppTypeEnum.Array:
+                return ContainsGenericParam(reg, reg.GetTypeAt(reg.ReadArrayType(t.Data).ElementTypeVa), depth + 1);
+            case Il2CppTypeEnum.GenericInst:
+                var gc = reg.ReadGenericClass(t.Data);
+                if (gc.ClassInstVa != 0)
+                    foreach (var v in reg.ReadGenericInst(gc.ClassInstVa).TypeArgVas)
+                        if (ContainsGenericParam(reg, reg.GetTypeAt(v), depth + 1)) return true;
+                return false;
+            default:
+                return false;
+        }
+    }
 
     public ulong GetMethodRva(int methodIndex) => GetMethodVa(methodIndex) is var va and > 0 ? va - _imageBase : 0;
 

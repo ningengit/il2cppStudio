@@ -290,4 +290,32 @@ public sealed class Unity6000Tests
         Assert.DoesNotContain("unsafe void UpdateSimulatedKeys", inputMgrCs, StringComparison.Ordinal);
         Assert.Contains("enumerator.Current.Value.primaryKey", inputMgrCs, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Unity6000_3_Win64_GenericDefinitionBodyRecovery_Singleton()
+    {
+        var dir = Target("template il2cpp 6000.3 win64");
+        using var ws = Il2CppWorkspace.Load(dir, Sink(), new WorkspaceOptions { UseBuildBackup = false, SubstituteBcl = true });
+        WorkspaceSetup.Attach(ws);
+
+        var acs = ws.Model.Assemblies.Single(a => a.Name == "Assembly-CSharp");
+        var singletonType = acs.Namespaces.SelectMany(n => n.Types).Single(t => t.Name == "Singleton`1");
+        foreach (var name in new[] { "get_Instance", "Init", "Awake", "OnDestroy", "TryGetInstance", "CreateInstance" })
+        {
+            var method = singletonType.Methods.Single(m => m.Name == name);
+            Assert.NotEqual(0UL, ws.GetMethodRva(method));
+        }
+
+        var singletonCs = ws.Render(singletonType, null, CodeView.CSharp);
+        Assert.Contains("FindObjectOfType<T>()", singletonCs, StringComparison.Ordinal);
+        Assert.Contains("typeof(T).Name", singletonCs, StringComparison.Ordinal);
+        Assert.Contains("AddComponent<T>()", singletonCs, StringComparison.Ordinal);
+        Assert.Contains("DontDestroyOnLoad", singletonCs, StringComparison.Ordinal);
+        Assert.Contains("isApplicationQuitting", singletonCs, StringComparison.Ordinal);
+        Assert.Contains("TryGetInstance", singletonCs, StringComparison.Ordinal);
+        Assert.Contains("CreateInstance", singletonCs, StringComparison.Ordinal);
+        Assert.Contains("OnDestroy", singletonCs, StringComparison.Ordinal);
+        Assert.DoesNotContain("NativeIntrinsics", singletonCs, StringComparison.Ordinal);
+        Assert.DoesNotContain("throw null;", singletonCs, StringComparison.Ordinal);
+    }
 }
